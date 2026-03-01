@@ -54,10 +54,13 @@ pub enum NodeKind {
         value: f32,
     },
 
-    /// Stacked data bar: multiple segments share the same track.
-    /// Each segment occupies a proportion of the total bar width based on
-    /// its `value / max` ratio relative to the sum of all segments.
+    /// Stacked data bar: multiple segments share a single track.
+    /// Each segment's fill width is `value / max * bar_width`.
+    /// Segments are drawn end-to-end. `max` is resolved at runtime
+    /// from the `max_binding` data value.
     DataBarStack {
+        max_binding: String,
+        max: f32,
         segments: Vec<BarSegment>,
     },
 
@@ -76,7 +79,6 @@ pub enum NodeKind {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct BarSegment {
     pub binding: String,
-    pub max: f32,
     pub value: f32,
     /// Fill color for this segment (RGBA).
     pub color: [f32; 4],

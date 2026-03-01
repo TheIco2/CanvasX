@@ -665,6 +665,14 @@ fn determine_node_kind(parsed: &ParsedNode, variables: &HashMap<String, String>)
             NodeKind::DataBar { binding, max, value: 0.0 }
         }
         "data-bar-stack" => {
+            // The stack-level max comes from a data binding (e.g. "storage.total_bytes").
+            let max_binding = parsed.attributes.get("max-binding")
+                .cloned()
+                .unwrap_or_default();
+            let max: f32 = parsed.attributes.get("max")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(100.0);
+
             // Collect segments from children (<data-bar-segment> void elements).
             let mut segments = Vec::new();
             for child in &parsed.children {
@@ -673,9 +681,6 @@ fn determine_node_kind(parsed: &ParsedNode, variables: &HashMap<String, String>)
                         .or_else(|| child.attributes.get("binding"))
                         .cloned()
                         .unwrap_or_default();
-                    let max: f32 = child.attributes.get("max")
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(100.0);
                     // Parse color from inline style `color: ...`
                     let color = child.inline_style.split(';')
                         .find_map(|decl| {
@@ -689,10 +694,10 @@ fn determine_node_kind(parsed: &ParsedNode, variables: &HashMap<String, String>)
                             None
                         })
                         .unwrap_or([1.0, 1.0, 1.0, 0.8]);
-                    segments.push(BarSegment { binding, max, value: 0.0, color });
+                    segments.push(BarSegment { binding, value: 0.0, color });
                 }
             }
-            NodeKind::DataBarStack { segments }
+            NodeKind::DataBarStack { max_binding, max, segments }
         }
         "data-bar-segment" => {
             // Segments are consumed by their parent data-bar-stack.

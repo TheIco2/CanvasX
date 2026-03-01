@@ -141,16 +141,23 @@ impl Renderer {
     }
 
     /// Begin a new frame — update timestamp and viewport uniforms.
+    ///
+    /// When `scale_factor > 1.0` the layout operates in virtual pixels
+    /// (physical / scale) so the shader's viewport is also virtual.
+    /// The GPU surface stays at physical resolution for crisp rendering.
     pub fn begin_frame(&mut self, ctx: &GpuContext, dt: f32, scale_factor: f32) {
         self.frame_time += dt;
         self.scale_factor = scale_factor;
 
+        let vp_w = ctx.size.0 as f32 / scale_factor;
+        let vp_h = ctx.size.1 as f32 / scale_factor;
+
         let globals = GlobalUniforms {
             viewport: [
-                ctx.size.0 as f32,
-                ctx.size.1 as f32,
-                1.0 / ctx.size.0 as f32,
-                1.0 / ctx.size.1 as f32,
+                vp_w,
+                vp_h,
+                1.0 / vp_w,
+                1.0 / vp_h,
             ],
             time: self.frame_time,
             scale: scale_factor,
@@ -173,12 +180,14 @@ impl Renderer {
         // Upload instances
         self.upload_instances(&ctx.device, &ctx.queue, instances);
 
-        // Update text viewport.
+        // Update text viewport (use virtual dims matching our UI viewport).
+        let vp_w = (ctx.size.0 as f32 / self.scale_factor) as u32;
+        let vp_h = (ctx.size.1 as f32 / self.scale_factor) as u32;
         self.text_viewport.update(
             &ctx.queue,
             glyphon::Resolution {
-                width: ctx.size.0,
-                height: ctx.size.1,
+                width: vp_w.max(1),
+                height: vp_h.max(1),
             },
         );
 

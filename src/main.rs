@@ -522,7 +522,7 @@ impl App {
             .map(|w| w.scale_factor() as f32)
             .unwrap_or(1.0);
 
-        let (vw, vh) = (ctx.size.0 as f32, ctx.size.1 as f32);
+        let (vw, vh) = (ctx.size.0 as f32 / scale, ctx.size.1 as f32 / scale);
 
         // Tick the scene graph: layout → animate → paint.
         let (instances, clear_color) = scene.tick(vw, vh, dt, &mut renderer.font_system);

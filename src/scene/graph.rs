@@ -118,10 +118,17 @@ impl SceneGraph {
                         *value = raw.parse::<f32>().unwrap_or(0.0).clamp(0.0, *max);
                     }
                 }
-                NodeKind::DataBarStack { ref mut segments } => {
+                NodeKind::DataBarStack { ref max_binding, ref mut max, ref mut segments } => {
+                    // Update the shared max from its data binding.
+                    if !max_binding.is_empty() {
+                        if let Some(raw) = self.data_values.get(max_binding) {
+                            *max = raw.parse::<f32>().unwrap_or(*max);
+                        }
+                    }
+                    // Update each segment's value.
                     for seg in segments.iter_mut() {
                         if let Some(raw) = self.data_values.get(&seg.binding) {
-                            seg.value = raw.parse::<f32>().unwrap_or(0.0).clamp(0.0, seg.max);
+                            seg.value = raw.parse::<f32>().unwrap_or(0.0);
                         }
                     }
                 }

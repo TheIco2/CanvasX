@@ -44,8 +44,8 @@ fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>) {
     }
 
     // For DataBarStack nodes, emit stacked fill rects for each segment.
-    if let NodeKind::DataBarStack { ref segments } = node.kind {
-        paint_data_bar_stack(node, segments, out);
+    if let NodeKind::DataBarStack { max, ref segments, .. } = node.kind {
+        paint_data_bar_stack(node, max, segments, out);
     }
 
     // Paint children (sorted by z-index for correct stacking).
@@ -118,18 +118,14 @@ fn paint_data_bar(node: &CxrdNode, value: f32, max: f32, out: &mut Vec<UiInstanc
     out.push(filled_rect(r.x, r.y, fill_w, r.height, fill_color, radius, clip, node.style.opacity));
 }
 
-/// Paint stacked bar segments side-by-side within the node's content rect.
+/// Paint stacked bar segments end-to-end within the node's content rect.
 ///
-/// Each segment's width is proportional to its `value / max` relative to the
-/// total bar. Segments that sum to more than the bar width are clamped.
-fn paint_data_bar_stack(node: &CxrdNode, segments: &[BarSegment], out: &mut Vec<UiInstance>) {
+/// All segments share the same `max` (resolved from the stack's `max_binding`).
+/// Each segment fills `value / max` of the total bar width, placed immediately
+/// after the previous segment's fill.
+fn paint_data_bar_stack(node: &CxrdNode, max: f32, segments: &[BarSegment], out: &mut Vec<UiInstance>) {
     let r = &node.layout.content_rect;
-    if r.width <= 0.0 || r.height <= 0.0 { return; }
-
-    // Total capacity = sum of all maxes. Each segment's share of the bar
-    // is proportional to its max relative to the total.
-    let total_max: f32 = segments.iter().map(|s| s.max).sum();
-    if total_max <= 0.0 { return; }
+    if r.width <= 0.0 || r.height <= 0.0 || max <= 0.0 { return; }
 
     let br = &node.style.border_radius;
     let radius = [br.top_left, br.top_right, br.bottom_right, br.bottom_left];
@@ -140,20 +136,14 @@ fn paint_data_bar_stack(node: &CxrdNode, segments: &[BarSegment], out: &mut Vec<
     let mut x_offset = r.x;
 
     for seg in segments {
-        if seg.max <= 0.0 { continue; }
-        let pct = (seg.value / seg.max).clamp(0.0, 1.0);
-        // This segment's portion of the overall bar width.
-        let segment_full_w = r.width * (seg.max / total_max);
-        let fill_w = segment_full_w * pct;
-
+        let fill_w = (seg.value / max).clamp(0.0, 1.0) * r.width;
         if fill_w > 0.0 {
-            // Only first and last segments get rounded corners.
             out.push(filled_rect(
                 x_offset, r.y, fill_w, r.height,
                 seg.color, radius, clip, node.style.opacity,
             ));
+            x_offset += fill_w;
         }
-        x_offset += segment_full_w;
     }
 }
 
