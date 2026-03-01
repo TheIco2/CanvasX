@@ -143,12 +143,12 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Anti-aliasing: 1px smooth edge
     let aa = fwidth(d_outer);
     let outer_alpha = 1.0 - smoothstep(-aa, aa, d_outer);
+    let inner_alpha = 1.0 - smoothstep(-aa, aa, d_inner);
 
     var color = vec4<f32>(0.0, 0.0, 0.0, 0.0);
 
-    // Background
+    // Background — fills the inner rect (inside the border)
     if (in.flags & FLAG_HAS_BG) != 0u {
-        let inner_alpha = 1.0 - smoothstep(-aa, aa, d_inner);
         var bg = in.bg_color;
 
         // Sample texture if available
@@ -157,20 +157,25 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
             bg = tex_sample;
         }
 
-        color = bg * inner_alpha;
+        // Convert straight-alpha bg to premultiplied, then apply SDF mask.
+        // Without this, rgb channels (e.g. 1.0 for white @ 6% alpha) would
+        // pass through at full intensity under PREMULTIPLIED_ALPHA_BLENDING.
+        let premul_bg = vec4<f32>(bg.rgb * bg.a, bg.a);
+        color = premul_bg * inner_alpha;
     }
 
-    // Border
+    // Border — fills the ring between outer and inner rects
     if (in.flags & FLAG_HAS_BORDER) != 0u && bw > 0.0 {
-        let border_mask = outer_alpha * (1.0 - (1.0 - smoothstep(-aa, aa, d_inner)));
-        color = mix(color, in.border_color, border_mask * in.border_color.a);
+        let border_alpha = max(outer_alpha - inner_alpha, 0.0);
+        let premul_border = vec4<f32>(
+            in.border_color.rgb * in.border_color.a,
+            in.border_color.a
+        );
+        color = color + premul_border * border_alpha;
     }
 
-    // Apply outer shape mask
-    color = color * outer_alpha;
-
-    // Apply opacity
-    color = vec4<f32>(color.rgb, color.a * in.opacity);
+    // Apply opacity (premultiplied: scale all channels uniformly)
+    color = color * in.opacity;
 
     return color;
 }

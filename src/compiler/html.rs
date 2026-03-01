@@ -12,7 +12,7 @@
 use crate::cxrd::document::{CxrdDocument, SceneType};
 use crate::cxrd::node::{CxrdNode, NodeKind, ImageFit, NodeId, EventBinding, EventAction};
 use crate::cxrd::input::{InputKind, TextInputType, ButtonVariant, CheckboxStyle};
-use crate::cxrd::style::{ComputedStyle, FontWeight, TextAlign};
+use crate::cxrd::style::{ComputedStyle, Display, FlexDirection, FontWeight, TextAlign};
 use crate::compiler::css::{parse_css, apply_property, parse_color, CssRule, CompoundSelector};
 use std::collections::HashMap;
 use std::path::Path;
@@ -59,7 +59,7 @@ pub fn compile_html(
     // Pass ancestor chain for descendant selector matching.
     let root_ancestors: Vec<AncestorInfo> = Vec::new();
     for child in root_children {
-        let child_id = add_node_recursive(&mut doc, child, &rules, &variables, &root_ancestors);
+        let child_id = add_node_recursive(&mut doc, child, &rules, &variables, &root_ancestors, None);
         doc.add_child(doc.root, child_id);
     }
 
@@ -419,7 +419,7 @@ fn build_node_tree(tokens: &[HtmlToken], start: usize) -> (Vec<ParsedNode>, usiz
 }
 
 fn is_void_element(tag: &str) -> bool {
-    matches!(tag, "img" | "br" | "hr" | "input" | "meta" | "link" | "source" | "svg" | "path" | "line" | "circle" | "rect" | "polyline" | "ellipse" | "polygon")
+    matches!(tag, "img" | "br" | "hr" | "input" | "meta" | "link" | "source" | "svg" | "path" | "line" | "circle" | "rect" | "polyline" | "ellipse" | "polygon" | "data-bind")
 }
 
 /// Info about an ancestor element, used for descendant selector matching.
@@ -437,6 +437,7 @@ fn add_node_recursive(
     rules: &[CssRule],
     variables: &HashMap<String, String>,
     ancestors: &[AncestorInfo],
+    parent_style: Option<&ComputedStyle>,
 ) -> NodeId {
     let kind = determine_node_kind(&parsed);
 
@@ -448,12 +449,45 @@ fn add_node_recursive(
         NodeKind::Input(InputKind::TextArea { .. })
     );
 
+    let mut style = ComputedStyle::default();
+
+    // Tag-specific display defaults — mirrors HTML's block/inline model.
+    // Inline-level tags default to flex-row so their children flow horizontally,
+    // which is the closest equivalent to inline-flow in our block/flex engine.
+    match parsed.tag.as_str() {
+        "span" | "a" | "label" | "strong" | "em" | "b" | "i" | "code" | "small" => {
+            style.display = Display::Flex;
+            style.flex_direction = FlexDirection::Row;
+        }
+        // data-bind is a void (leaf) element — its own display doesn't affect
+        // children, but we still mark it InlineBlock for semantic correctness.
+        // flex_grow = 1.0 ensures it expands to fill available space in flex rows
+        // (content is dynamic/unknown at layout time, so the width estimate is unreliable).
+        "data-bind" => {
+            style.display = Display::InlineBlock;
+            style.flex_grow = 1.0;
+        }
+        _ => {} // default Block
+    }
+
+    // Inherit CSS properties from parent (CSS inheritance model).
+    if let Some(ps) = parent_style {
+        style.color = ps.color;
+        style.font_size = ps.font_size;
+        style.font_family = ps.font_family.clone();
+        style.font_weight = ps.font_weight;
+        style.letter_spacing = ps.letter_spacing;
+        style.line_height = ps.line_height;
+        style.text_align = ps.text_align;
+        style.text_transform = ps.text_transform;
+    }
+
     let mut node = CxrdNode {
         id: 0, // Will be set by add_node
         tag: Some(parsed.tag.clone()),
         classes: parsed.classes.clone(),
         kind,
-        style: ComputedStyle::default(),
+        style,
         children: Vec::new(),
         events: extract_event_bindings(&parsed),
         animations: Vec::new(),
@@ -477,6 +511,8 @@ fn add_node_recursive(
         }
     }
 
+    // Snapshot the finalized style for children to inherit from.
+    let inherited_style = node.style.clone();
     let node_id = doc.add_node(node);
 
     // Build ancestor info for children.
@@ -490,7 +526,7 @@ fn add_node_recursive(
     // Add children (unless consumed by widget).
     if !skip_children {
         for child in parsed.children {
-            let child_id = add_node_recursive(doc, child, rules, variables, &child_ancestors);
+            let child_id = add_node_recursive(doc, child, rules, variables, &child_ancestors, Some(&inherited_style));
             doc.add_child(node_id, child_id);
         }
     }

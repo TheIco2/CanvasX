@@ -19,7 +19,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use crate::ipc::client::send_ipc_request_to;
+use crate::ipc::client::{send_ipc_request_to, send_ipc_request_with_timeout};
 use crate::ipc::protocol::{IpcRequest, IpcResponse};
 
 /// The Sentinel pipe name.
@@ -267,6 +267,7 @@ fn sentinel_poll_loop(state: BridgeThreadState) {
 
     let mut heartbeat_timer = Instant::now();
     let mut demands_sent = false;
+    let ipc_timeout = Duration::from_secs(5);
 
     loop {
         let interval = state.poll_interval_ms.load(Ordering::Relaxed);
@@ -285,7 +286,7 @@ fn sentinel_poll_loop(state: BridgeThreadState) {
                     "set_tracking_demands",
                     json!({ "sections": sections }),
                 );
-                if send_ipc_request_to(&state.pipe_name, request).is_ok() {
+                if send_ipc_request_with_timeout(&state.pipe_name, request, ipc_timeout).is_ok() {
                     demands_sent = true;
                 }
             }
@@ -299,7 +300,7 @@ fn sentinel_poll_loop(state: BridgeThreadState) {
             json!({ "sections": sections }),
         );
 
-        match send_ipc_request_to(&state.pipe_name, request) {
+        match send_ipc_request_with_timeout(&state.pipe_name, request, ipc_timeout) {
             Ok(resp) if resp.ok => {
                 state.connected.store(true, Ordering::Relaxed);
 
@@ -319,7 +320,8 @@ fn sentinel_poll_loop(state: BridgeThreadState) {
             Ok(_) => {
                 state.connected.store(true, Ordering::Relaxed);
             }
-            Err(_) => {
+            Err(e) => {
+                log::warn!("Sentinel bridge: snapshot failed: {}", e);
                 state.connected.store(false, Ordering::Relaxed);
                 demands_sent = false; // Re-send demands on reconnect.
                 thread::sleep(Duration::from_millis(1000));
@@ -329,9 +331,10 @@ fn sentinel_poll_loop(state: BridgeThreadState) {
 
         // Heartbeat every 500ms.
         if state.send_heartbeats && heartbeat_timer.elapsed() >= Duration::from_millis(500) {
-            let _ = send_ipc_request_to(
+            let _ = send_ipc_request_with_timeout(
                 &state.pipe_name,
                 IpcRequest::new("backend", "ui_heartbeat"),
+                Duration::from_secs(2),
             );
             heartbeat_timer = Instant::now();
         }

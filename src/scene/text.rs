@@ -54,11 +54,7 @@ impl TextPainter {
             NodeKind::Text { content } => Some(content.clone()),
             NodeKind::DataBound { binding, format } => {
                 let raw = data_values.get(binding).cloned().unwrap_or_default();
-                Some(if let Some(fmt) = format {
-                    fmt.replace("{}", &raw)
-                } else {
-                    raw
-                })
+                Some(format_data_value(&raw, format.as_deref()))
             }
             _ => None,
         };
@@ -158,4 +154,104 @@ impl TextPainter {
 
         areas
     }
+}
+
+// ─── Data-bind format helpers ───
+
+/// Format a raw data value using an optional format string.
+///
+/// Supported format tokens (matched as the *entire* format string):
+///   `{bytes}`  — human-readable bytes (e.g. "16.0 GB")
+///   `{speed}`  — bytes-per-second    (e.g. "1.2 MB/s")
+///   `{uptime}` — seconds → "Xd Yh Zm"
+///   `{.N}`     — round numeric value to N decimal places
+///
+/// If the format string contains `{}`, the raw value is substituted at that
+/// position (e.g. `"{}%"` → `"47.5%"`).
+///
+/// If no format string is provided the raw value is returned as-is.
+fn format_data_value(raw: &str, format: Option<&str>) -> String {
+    let fmt = match format {
+        Some(f) => f,
+        None => return raw.to_string(),
+    };
+
+    // If there's no data yet, don't show the format template literally.
+    if raw.is_empty() {
+        return String::new();
+    }
+
+    match fmt {
+        "{bytes}" => format_bytes(raw),
+        "{speed}" => {
+            let bytes = format_bytes(raw);
+            format!("{}/s", bytes)
+        }
+        "{uptime}" => format_uptime(raw),
+        _ if fmt.starts_with("{.") && fmt.ends_with('}') => {
+            // Exact `{.N}` — precision only, no suffix
+            if let Ok(prec) = fmt[2..fmt.len() - 1].parse::<usize>() {
+                if let Ok(v) = raw.parse::<f64>() {
+                    format!("{:.prec$}", v, prec = prec)
+                } else {
+                    raw.to_string()
+                }
+            } else {
+                fmt.replace("{}", raw)
+            }
+        }
+        _ if fmt.contains("{.") => {
+            // `{.N}` with surrounding text, e.g. `{.1}%` or `{.0} W`
+            if let Some(start) = fmt.find("{.") {
+                if let Some(end) = fmt[start..].find('}') {
+                    let spec = &fmt[start + 2..start + end]; // e.g. "1"
+                    if let Ok(prec) = spec.parse::<usize>() {
+                        if let Ok(v) = raw.parse::<f64>() {
+                            let formatted = format!("{:.prec$}", v, prec = prec);
+                            let mut result = String::new();
+                            result.push_str(&fmt[..start]);
+                            result.push_str(&formatted);
+                            result.push_str(&fmt[start + end + 1..]);
+                            return result;
+                        }
+                    }
+                }
+            }
+            fmt.replace("{}", raw)
+        }
+        _ => fmt.replace("{}", raw),
+    }
+}
+
+fn format_bytes(raw: &str) -> String {
+    let v: f64 = match raw.parse() {
+        Ok(v) => v,
+        Err(_) => return raw.to_string(),
+    };
+    if v >= 1_099_511_627_776.0 {
+        format!("{:.1} TB", v / 1_099_511_627_776.0)
+    } else if v >= 1_073_741_824.0 {
+        format!("{:.1} GB", v / 1_073_741_824.0)
+    } else if v >= 1_048_576.0 {
+        format!("{:.1} MB", v / 1_048_576.0)
+    } else if v >= 1024.0 {
+        format!("{:.1} KB", v / 1024.0)
+    } else {
+        format!("{:.0} B", v)
+    }
+}
+
+fn format_uptime(raw: &str) -> String {
+    let sec: u64 = match raw.parse::<f64>() {
+        Ok(v) => v as u64,
+        Err(_) => return raw.to_string(),
+    };
+    let d = sec / 86400;
+    let h = (sec % 86400) / 3600;
+    let m = (sec % 3600) / 60;
+    let mut s = String::new();
+    if d > 0 { s += &format!("{}d ", d); }
+    if h > 0 || d > 0 { s += &format!("{}h ", h); }
+    s += &format!("{}m", m);
+    s
 }

@@ -155,26 +155,33 @@ pub fn send_ipc_request_to(pipe_name: &str, request: IpcRequest) -> Result<IpcRe
     unsafe {
         let wide_name = to_wide(pipe_name);
 
-        let handle: HANDLE = loop {
-            let result = CreateFileW(
-                PCWSTR(wide_name.as_ptr()),
-                FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
-                None,
-                OPEN_EXISTING,
-                FILE_FLAGS_AND_ATTRIBUTES(0),
-                None,
-            );
+        let handle: HANDLE = {
+            let mut attempts = 0;
+            loop {
+                let result = CreateFileW(
+                    PCWSTR(wide_name.as_ptr()),
+                    FILE_GENERIC_READ.0 | FILE_GENERIC_WRITE.0,
+                    FILE_SHARE_READ | FILE_SHARE_WRITE,
+                    None,
+                    OPEN_EXISTING,
+                    FILE_FLAGS_AND_ATTRIBUTES(0),
+                    None,
+                );
 
-            match result {
-                Ok(h) => break h,
-                Err(err) => {
-                    let code = err.code().0 as u32;
-                    if code == ERROR_PIPE_BUSY.0 {
-                        let _ = WaitNamedPipeW(PCWSTR(wide_name.as_ptr()), 2000);
-                        continue;
+                match result {
+                    Ok(h) => break h,
+                    Err(err) => {
+                        let code = err.code().0 as u32;
+                        if code == ERROR_PIPE_BUSY.0 {
+                            attempts += 1;
+                            if attempts > 3 {
+                                return Err("IPC pipe busy after 3 retries".into());
+                            }
+                            let _ = WaitNamedPipeW(PCWSTR(wide_name.as_ptr()), 2000);
+                            continue;
+                        }
+                        return Err(format!("IPC connect failed: {:?}", err));
                     }
-                    return Err(format!("IPC connect failed: {:?}", err));
                 }
             }
         };
@@ -211,4 +218,21 @@ pub fn send_ipc_request_to(pipe_name: &str, request: IpcRequest) -> Result<IpcRe
         serde_json::from_slice(&response)
             .map_err(|e| format!("Response parse error: {}", e))
     }
+}
+
+/// Send an IPC request with a timeout. Spawns a worker thread and waits
+/// up to `timeout` for a response. Returns `Err` if the timeout expires.
+pub fn send_ipc_request_with_timeout(
+    pipe_name: &str,
+    request: IpcRequest,
+    timeout: Duration,
+) -> Result<IpcResponse, String> {
+    let pipe_name = pipe_name.to_string();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::spawn(move || {
+        let result = send_ipc_request_to(&pipe_name, request);
+        let _ = tx.send(result);
+    });
+    rx.recv_timeout(timeout)
+        .map_err(|_| "IPC request timed out".to_string())?
 }

@@ -4,8 +4,8 @@
 // computes layout positions for each node using block flow or flexbox.
 
 use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::node::{NodeId};
-use crate::cxrd::style::{Display, Position, GridTrackSize};
+use crate::cxrd::node::{NodeId, NodeKind};
+use crate::cxrd::style::{Display, FlexDirection, Position, GridTrackSize};
 use crate::cxrd::value::{Dimension, Rect, EdgeInsets};
 use crate::layout::types::LayoutConstraints;
 
@@ -461,9 +461,12 @@ fn estimate_content_height(doc: &CxrdDocument, node_id: NodeId, constraints: &La
         return padding_v + border_v + margin_v + line_h;
     }
 
-    // Sum children heights (block flow).
+    // Sum children heights (block flow) or max (flex-row).
     let gap = cs.gap;
+    let is_flex_row = matches!(cs.display, Display::Flex)
+        && matches!(cs.flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
     let mut total_h: f32 = 0.0;
+    let mut max_h: f32 = 0.0;
     let mut count = 0;
     for &child_id in &node.children {
         if let Some(child) = doc.nodes.get(child_id as usize) {
@@ -471,14 +474,82 @@ fn estimate_content_height(doc: &CxrdDocument, node_id: NodeId, constraints: &La
                 continue;
             }
         }
-        total_h += estimate_content_height(doc, child_id, constraints);
+        let ch = estimate_content_height(doc, child_id, constraints);
+        total_h += ch;
+        if ch > max_h { max_h = ch; }
         count += 1;
     }
-    if count > 1 {
+    if count > 1 && !is_flex_row {
         total_h += gap * (count - 1) as f32;
     }
 
-    padding_v + border_v + margin_v + total_h
+    let children_h = if is_flex_row { max_h } else { total_h };
+    padding_v + border_v + margin_v + children_h
+}
+
+/// Estimate the intrinsic content width of a node (for flex-row auto-basis).
+///
+/// For leaf text/data-bound nodes, uses a heuristic based on font metrics.
+/// For containers, sums children widths (flex-row) or takes max (block/column).
+fn estimate_content_width(doc: &CxrdDocument, node_id: NodeId, constraints: &LayoutConstraints) -> f32 {
+    let node = match doc.nodes.get(node_id as usize) {
+        Some(n) => n,
+        None => return 0.0,
+    };
+
+    let cs = &node.style;
+    let resolve = |d: Dimension, parent: f32| -> f32 {
+        d.resolve(parent, constraints.viewport_width, constraints.viewport_height, cs.font_size, constraints.root_font_size)
+    };
+
+    // If width is explicitly set, use it.
+    if !cs.width.is_auto() {
+        return resolve(cs.width, constraints.viewport_width);
+    }
+
+    let padding_h = resolve(cs.padding.left, 0.0) + resolve(cs.padding.right, 0.0);
+    let border_h = cs.border_width.left + cs.border_width.right;
+    let margin_h = resolve(cs.margin.left, 0.0) + resolve(cs.margin.right, 0.0);
+
+    if node.children.is_empty() {
+        // Leaf node: estimate text width from content.
+        let font_size = cs.font_size.max(12.0);
+        // Average character width ~0.55 × font-size for a proportional sans-serif.
+        let char_width = font_size * 0.55;
+        let text_chars = match &node.kind {
+            NodeKind::Text { content } => content.len(),
+            NodeKind::DataBound { .. } => 8, // reasonable default for data values
+            _ => 0,
+        };
+        return padding_h + border_h + margin_h + (text_chars as f32 * char_width);
+    }
+
+    // Container node.
+    let is_flex_row = matches!(cs.display, Display::Flex)
+        && matches!(cs.flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
+    let gap = cs.gap;
+    let mut total_w: f32 = 0.0;
+    let mut max_w: f32 = 0.0;
+    let mut count = 0;
+    for &child_id in &node.children {
+        if let Some(child) = doc.nodes.get(child_id as usize) {
+            if matches!(child.style.display, Display::None)
+                || matches!(child.style.position, Position::Absolute | Position::Fixed)
+            {
+                continue;
+            }
+        }
+        let cw = estimate_content_width(doc, child_id, constraints);
+        total_w += cw;
+        if cw > max_w { max_w = cw; }
+        count += 1;
+    }
+    if count > 1 && is_flex_row {
+        total_w += gap * (count - 1) as f32;
+    }
+
+    let children_w = if is_flex_row { total_w } else { max_w };
+    padding_h + border_h + margin_h + children_w
 }
 
 /// Layout children using flexbox.
@@ -575,7 +646,12 @@ fn layout_flex_children(
         } else if !is_row && !cs.height.is_auto() {
             resolve(cs.height, container_rect.height)
         } else {
-            0.0
+            // Auto basis: use intrinsic content size.
+            if !is_row {
+                estimate_content_height(doc, cid, constraints)
+            } else {
+                estimate_content_width(doc, cid, constraints)
+            }
         };
 
         let cross = if is_row && !cs.height.is_auto() {
