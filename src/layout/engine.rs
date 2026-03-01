@@ -518,7 +518,7 @@ fn estimate_content_width(doc: &CxrdDocument, node_id: NodeId, constraints: &Lay
         let char_width = font_size * 0.55;
         let text_chars = match &node.kind {
             NodeKind::Text { content } => content.len(),
-            NodeKind::DataBound { .. } => 8, // reasonable default for data values
+            NodeKind::DataBound { .. } => 2, // tight estimate; "val" data-binds grow via flex_grow
             _ => 0,
         };
         return padding_h + border_h + margin_h + (text_chars as f32 * char_width);

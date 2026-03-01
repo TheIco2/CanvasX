@@ -38,6 +38,11 @@ fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>) {
         paint_input_widget(node, input, out);
     }
 
+    // For DataBar nodes, emit a fill rect proportional to value/max.
+    if let NodeKind::DataBar { max, value, .. } = &node.kind {
+        paint_data_bar(node, *value, *max, out);
+    }
+
     // Paint children (sorted by z-index for correct stacking).
     let mut child_ids = node.children.clone();
     child_ids.sort_by_key(|&cid| {
@@ -80,6 +85,33 @@ fn should_paint(node: &CxrdNode) -> bool {
 // ---------------------------------------------------------------------------
 // Widget-specific quad painting
 // ---------------------------------------------------------------------------
+
+/// Paint the fill portion of a data-bar.
+///
+/// The node's background (track) is already emitted by the normal paint path.
+/// This adds the fill rect on top, sized proportionally to `value / max`.
+fn paint_data_bar(node: &CxrdNode, value: f32, max: f32, out: &mut Vec<UiInstance>) {
+    if max <= 0.0 { return; }
+    let pct = (value / max).clamp(0.0, 1.0);
+    if pct <= 0.0 { return; }
+
+    let r = &node.layout.content_rect;
+    let fill_w = r.width * pct;
+
+    // Use the node's text color as fill color (set via CSS `color` property).
+    let c = &node.style.color;
+    let fill_color = [c.r, c.g, c.b, c.a];
+
+    // Inherit border-radius from the node.
+    let br = &node.style.border_radius;
+    let radius = [br.top_left, br.top_right, br.bottom_right, br.bottom_left];
+
+    let clip = node.layout.clip
+        .map(|c| c.to_array())
+        .unwrap_or([0.0, 0.0, 99999.0, 99999.0]);
+
+    out.push(filled_rect(r.x, r.y, fill_w, r.height, fill_color, radius, clip, node.style.opacity));
+}
 
 /// Helper: create a simple filled rect instance.
 fn filled_rect(

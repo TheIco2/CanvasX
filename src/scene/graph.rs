@@ -6,6 +6,7 @@
 
 use std::collections::HashMap;
 use crate::cxrd::document::CxrdDocument;
+use crate::cxrd::node::NodeKind;
 use crate::cxrd::value::Color;
 use crate::gpu::vertex::UiInstance;
 use crate::layout::engine::compute_layout;
@@ -91,10 +92,13 @@ impl SceneGraph {
         // 2. Advance animations.
         self.timeline.advance(&mut self.document, dt);
 
-        // 3. Prepare text.
+        // 3. Update data-bar values from live data.
+        self.update_data_bars();
+
+        // 4. Prepare text.
         self.text_painter.prepare(&self.document, font_system, &self.data_values);
 
-        // 4. Paint.
+        // 5. Paint.
         self.cached_instances = paint_document(&self.document);
 
         (&self.cached_instances, self.document.background)
@@ -103,5 +107,16 @@ impl SceneGraph {
     /// Get text areas for the current frame (call after tick).
     pub fn text_areas(&self) -> Vec<glyphon::TextArea<'_>> {
         self.text_painter.text_areas(&self.document)
+    }
+
+    /// Update DataBar nodes with current data values.
+    fn update_data_bars(&mut self) {
+        for node in &mut self.document.nodes {
+            if let NodeKind::DataBar { ref binding, max, ref mut value } = node.kind {
+                if let Some(raw) = self.data_values.get(binding) {
+                    *value = raw.parse::<f32>().unwrap_or(0.0).clamp(0.0, max);
+                }
+            }
+        }
     }
 }

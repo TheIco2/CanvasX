@@ -419,7 +419,7 @@ fn build_node_tree(tokens: &[HtmlToken], start: usize) -> (Vec<ParsedNode>, usiz
 }
 
 fn is_void_element(tag: &str) -> bool {
-    matches!(tag, "img" | "br" | "hr" | "input" | "meta" | "link" | "source" | "svg" | "path" | "line" | "circle" | "rect" | "polyline" | "ellipse" | "polygon" | "data-bind")
+    matches!(tag, "img" | "br" | "hr" | "input" | "meta" | "link" | "source" | "svg" | "path" | "line" | "circle" | "rect" | "polyline" | "ellipse" | "polygon" | "data-bind" | "data-bar")
 }
 
 /// Info about an ancestor element, used for descendant selector matching.
@@ -461,11 +461,18 @@ fn add_node_recursive(
         }
         // data-bind is a void (leaf) element — its own display doesn't affect
         // children, but we still mark it InlineBlock for semantic correctness.
-        // flex_grow = 1.0 ensures it expands to fill available space in flex rows
-        // (content is dynamic/unknown at layout time, so the width estimate is unreliable).
+        // Only data-binds with class "val" get flex_grow (they fill remaining
+        // row space so text-align: right can push text to the far edge).
+        // Other data-binds (e.g. clock digits) stay at intrinsic width.
         "data-bind" => {
             style.display = Display::InlineBlock;
-            style.flex_grow = 1.0;
+            if parsed.classes.iter().any(|c| c == "val") {
+                style.flex_grow = 1.0;
+            }
+        }
+        // data-bar is a void progress bar element — block-level, height from CSS.
+        "data-bar" => {
+            style.display = Display::Block;
         }
         _ => {} // default Block
     }
@@ -637,6 +644,16 @@ fn determine_node_kind(parsed: &ParsedNode) -> NodeKind {
                 .unwrap_or_default();
             let format = parsed.attributes.get("format").cloned();
             NodeKind::DataBound { binding, format }
+        }
+        "data-bar" => {
+            let binding = parsed.attributes.get("data-binding")
+                .or_else(|| parsed.attributes.get("binding"))
+                .cloned()
+                .unwrap_or_default();
+            let max: f32 = parsed.attributes.get("max")
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(100.0);
+            NodeKind::DataBar { binding, max, value: 0.0 }
         }
         "path" => {
             let d = parsed.attributes.get("d").cloned().unwrap_or_default();

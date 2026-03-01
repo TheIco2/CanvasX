@@ -46,6 +46,14 @@ pub enum NodeKind {
         format: Option<String>,
     },
 
+    /// Data-bound progress bar: fill width is proportional to `value / max`.
+    /// The `value` is updated at runtime from IPC data.
+    DataBar {
+        binding: String,
+        max: f32,
+        value: f32,
+    },
+
     /// Scroll container.
     ScrollContainer {
         scroll_x: bool,

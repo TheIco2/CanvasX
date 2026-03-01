@@ -5,8 +5,9 @@
 
 use crate::cxrd::document::CxrdDocument;
 use crate::cxrd::node::{NodeId, NodeKind};
-use crate::cxrd::style::{Display, TextTransform};
+use crate::cxrd::style::{Display, TextAlign, TextTransform};
 use glyphon::{Attrs, Buffer, Color as GlyphonColor, Family, Metrics, Shaping, TextArea, TextBounds, Weight};
+use glyphon::cosmic_text::Align;
 use std::collections::HashMap;
 
 /// Holds prepared text buffers for all text nodes in a document.
@@ -104,8 +105,14 @@ impl TextPainter {
                     .family(family)
                     .weight(weight);
 
+                let alignment = match style.text_align {
+                    TextAlign::Right => Some(Align::Right),
+                    TextAlign::Center => Some(Align::Center),
+                    TextAlign::Left => None, // Left is the default
+                };
+
                 buffer.set_size(font_system, Some(rect.width), Some(rect.height));
-                buffer.set_text(font_system, &content, &attrs, Shaping::Advanced, None);
+                buffer.set_text(font_system, &content, &attrs, Shaping::Advanced, alignment);
                 buffer.shape_until_scroll(font_system, false);
 
                 self.buffers.insert(node.id, buffer);
