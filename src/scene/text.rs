@@ -53,10 +53,6 @@ impl TextPainter {
 
         let text_content = match &node.kind {
             NodeKind::Text { content } => Some(content.clone()),
-            NodeKind::DataBound { binding, format } => {
-                let raw = data_values.get(binding).cloned().unwrap_or_default();
-                Some(format_data_value(&raw, format.as_deref()))
-            }
             _ => None,
         };
 

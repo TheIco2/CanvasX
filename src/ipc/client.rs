@@ -245,3 +245,42 @@ pub fn send_ipc_request_with_timeout(
     rx.recv_timeout(timeout)
         .map_err(|_| "IPC request timed out".to_string())?
 }
+
+// ---------------------------------------------------------------------------
+// Utility — flatten JSON to dotted-path map (preserved from sentinel bridge)
+// ---------------------------------------------------------------------------
+
+/// Flatten a nested JSON object into dotted-path key-value pairs.
+/// e.g., `{"cpu": {"usage": 47}}` → `{"cpu.usage": "47"}`
+pub fn flatten_json_to_map(value: &serde_json::Value, prefix: &str, map: &mut std::collections::HashMap<String, String>) {
+    match value {
+        serde_json::Value::Object(obj) => {
+            for (key, val) in obj {
+                let full_key = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{}.{}", prefix, key)
+                };
+                flatten_json_to_map(val, &full_key, map);
+            }
+        }
+        serde_json::Value::Array(arr) => {
+            for (i, val) in arr.iter().enumerate() {
+                let full_key = format!("{}.{}", prefix, i);
+                flatten_json_to_map(val, &full_key, map);
+            }
+        }
+        serde_json::Value::String(s) => {
+            map.insert(prefix.to_string(), s.clone());
+        }
+        serde_json::Value::Number(n) => {
+            map.insert(prefix.to_string(), n.to_string());
+        }
+        serde_json::Value::Bool(b) => {
+            map.insert(prefix.to_string(), b.to_string());
+        }
+        serde_json::Value::Null => {
+            map.insert(prefix.to_string(), String::new());
+        }
+    }
+}

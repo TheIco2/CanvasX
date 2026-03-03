@@ -154,14 +154,15 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
         // Sample texture if available
         if (in.flags & FLAG_HAS_TEXTURE) != 0u {
             let tex_sample = textureSample(t_diffuse, s_diffuse, in.uv);
-            bg = tex_sample;
+            // tiny-skia canvas data is already premultiplied alpha,
+            // so use it directly without re-premultiplying.
+            color = tex_sample * inner_alpha;
+        } else {
+            // Non-texture background: convert straight-alpha bg to premultiplied,
+            // then apply SDF mask.
+            let premul_bg = vec4<f32>(bg.rgb * bg.a, bg.a);
+            color = premul_bg * inner_alpha;
         }
-
-        // Convert straight-alpha bg to premultiplied, then apply SDF mask.
-        // Without this, rgb channels (e.g. 1.0 for white @ 6% alpha) would
-        // pass through at full intensity under PREMULTIPLIED_ALPHA_BLENDING.
-        let premul_bg = vec4<f32>(bg.rgb * bg.a, bg.a);
-        color = premul_bg * inner_alpha;
     }
 
     // Border — fills the ring between outer and inner rects

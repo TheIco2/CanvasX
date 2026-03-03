@@ -19,7 +19,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use crate::ipc::client::{send_ipc_request_to, send_ipc_request_with_timeout};
+use crate::ipc::client::{send_ipc_request_to, send_ipc_request_with_timeout, flatten_json_to_map};
 use crate::ipc::protocol::{IpcRequest, IpcResponse};
 
 /// The Sentinel pipe name.
@@ -346,37 +346,4 @@ fn sentinel_poll_loop(state: BridgeThreadState) {
     }
 }
 
-/// Flatten a nested JSON object into dotted-path key-value pairs.
-/// e.g., `{"cpu": {"usage": 47}}` → `{"cpu.usage": "47"}`
-fn flatten_json_to_map(value: &Value, prefix: &str, map: &mut HashMap<String, String>) {
-    match value {
-        Value::Object(obj) => {
-            for (key, val) in obj {
-                let full_key = if prefix.is_empty() {
-                    key.clone()
-                } else {
-                    format!("{}.{}", prefix, key)
-                };
-                flatten_json_to_map(val, &full_key, map);
-            }
-        }
-        Value::Array(arr) => {
-            for (i, val) in arr.iter().enumerate() {
-                let full_key = format!("{}.{}", prefix, i);
-                flatten_json_to_map(val, &full_key, map);
-            }
-        }
-        Value::String(s) => {
-            map.insert(prefix.to_string(), s.clone());
-        }
-        Value::Number(n) => {
-            map.insert(prefix.to_string(), n.to_string());
-        }
-        Value::Bool(b) => {
-            map.insert(prefix.to_string(), b.to_string());
-        }
-        Value::Null => {
-            map.insert(prefix.to_string(), String::new());
-        }
-    }
-}
+// flatten_json_to_map is now imported from crate::ipc::client

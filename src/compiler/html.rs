@@ -10,12 +10,26 @@
 // Attributes: class, id, style (inline), data-*, src, alt
 
 use crate::cxrd::document::{CxrdDocument, SceneType};
-use crate::cxrd::node::{CxrdNode, NodeKind, ImageFit, NodeId, EventBinding, EventAction, BarSegment};
+use crate::cxrd::node::{CxrdNode, NodeKind, ImageFit, NodeId, EventBinding, EventAction};
 use crate::cxrd::input::{InputKind, TextInputType, ButtonVariant, CheckboxStyle};
 use crate::cxrd::style::{ComputedStyle, Display, FlexDirection, FontWeight, TextAlign};
 use crate::compiler::css::{parse_css, apply_property, parse_color, resolve_var_pub, CssRule, CompoundSelector};
 use std::collections::HashMap;
 use std::path::Path;
+
+/// A collected script block from the HTML source.
+#[derive(Debug, Clone)]
+pub struct ScriptBlock {
+    /// Inline script text content, or empty if external.
+    pub content: String,
+    /// External script src path (relative to HTML file).
+    pub src: Option<String>,
+}
+
+// Thread-local storage for collecting scripts during tokenization.
+std::thread_local! {
+    static COLLECTED_SCRIPTS: std::cell::RefCell<Vec<ScriptBlock>> = std::cell::RefCell::new(Vec::new());
+}
 
 /// Compile an HTML file + CSS into a CXRD document.
 ///
@@ -29,7 +43,7 @@ pub fn compile_html(
     name: &str,
     scene_type: SceneType,
     _asset_dir: Option<&Path>,
-) -> anyhow::Result<CxrdDocument> {
+) -> anyhow::Result<(CxrdDocument, Vec<ScriptBlock>, Vec<CssRule>)> {
     let mut doc = CxrdDocument::new(name, scene_type);
 
     // 1. Parse CSS rules.
@@ -48,12 +62,19 @@ pub fn compile_html(
     }
     doc.variables = variables.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
 
+    // Collect script blocks from the HTML.
+    // Clear thread-local storage before tokenization.
+    COLLECTED_SCRIPTS.with(|s| s.borrow_mut().clear());
+
     // 2b. Extract document background from body/html CSS rules.
     extract_document_background(&mut doc, &rules, &variables);
 
     // 3. Parse HTML into node tree.
     let tokens = tokenize_html(html_source);
     let (root_children, _) = build_node_tree(&tokens, 0);
+
+    // 3b. Retrieve collected scripts.
+    let scripts = COLLECTED_SCRIPTS.with(|s| s.borrow().clone());
 
     // 4. Add nodes to document and apply CSS.
     // Pass ancestor chain for descendant selector matching.
@@ -73,7 +94,7 @@ pub fn compile_html(
     //     letter-spacing, text-align) from parent to child nodes.
     propagate_inherited_styles(&mut doc);
 
-    Ok(doc)
+    Ok((doc, scripts, rules))
 }
 
 /// Extract document background color from body/html/:root CSS rules.
@@ -333,8 +354,9 @@ fn tokenize_html(source: &str) -> Vec<HtmlToken> {
             if self_closing { pos += 1; }
             if pos < bytes.len() && bytes[pos] == b'>' { pos += 1; }
 
-            // Skip <script>, <style>, <head>, <meta>, <link> tags entirely
-            let skip_tags = ["script", "style", "head", "meta", "link", "title"];
+            // Skip <style>, <head>, <meta>, <link> tags entirely.
+            // <script> tags are collected as ScriptBlock rather than skipped.
+            let skip_tags = ["style", "head", "meta", "link", "title"];
             if skip_tags.contains(&tag.as_str()) {
                 if !self_closing {
                     // Find closing tag
@@ -342,6 +364,33 @@ fn tokenize_html(source: &str) -> Vec<HtmlToken> {
                     if let Some(end) = source[pos..].to_lowercase().find(&close) {
                         pos += end + close.len();
                     }
+                }
+                continue;
+            }
+
+            // Collect <script> tags as ScriptBlock entries.
+            if tag == "script" {
+                if !self_closing {
+                    let close = "</script>";
+                    if let Some(end) = source[pos..].to_lowercase().find(close) {
+                        let script_content = &source[pos..pos + end];
+                        let src = attributes.get("src").cloned();
+                        // Store script block in a thread-local for later retrieval.
+                        COLLECTED_SCRIPTS.with(|s| {
+                            s.borrow_mut().push(ScriptBlock {
+                                content: script_content.trim().to_string(),
+                                src,
+                            });
+                        });
+                        pos += end + close.len();
+                    }
+                } else if let Some(src) = attributes.get("src") {
+                    COLLECTED_SCRIPTS.with(|s| {
+                        s.borrow_mut().push(ScriptBlock {
+                            content: String::new(),
+                            src: Some(src.clone()),
+                        });
+                    });
                 }
                 continue;
             }
@@ -419,15 +468,15 @@ fn build_node_tree(tokens: &[HtmlToken], start: usize) -> (Vec<ParsedNode>, usiz
 }
 
 fn is_void_element(tag: &str) -> bool {
-    matches!(tag, "img" | "br" | "hr" | "input" | "meta" | "link" | "source" | "svg" | "path" | "line" | "circle" | "rect" | "polyline" | "ellipse" | "polygon" | "data-bind" | "data-bar" | "data-bar-segment")
+    matches!(tag, "img" | "br" | "hr" | "input" | "meta" | "link" | "source" | "svg" | "path" | "line" | "circle" | "rect" | "polyline" | "ellipse" | "polygon")
 }
 
 /// Info about an ancestor element, used for descendant selector matching.
 #[derive(Clone)]
-struct AncestorInfo {
-    tag: Option<String>,
-    classes: Vec<String>,
-    html_id: Option<String>,
+pub struct AncestorInfo {
+    pub tag: Option<String>,
+    pub classes: Vec<String>,
+    pub html_id: Option<String>,
 }
 
 /// Add a parsed node tree to the CXRD document.
@@ -446,8 +495,7 @@ fn add_node_recursive(
     let skip_children = matches!(&kind,
         NodeKind::Input(InputKind::Button { .. }) |
         NodeKind::Input(InputKind::Dropdown { .. }) |
-        NodeKind::Input(InputKind::TextArea { .. }) |
-        NodeKind::DataBarStack { .. }
+        NodeKind::Input(InputKind::TextArea { .. })
     );
 
     let mut style = ComputedStyle::default();
@@ -460,27 +508,16 @@ fn add_node_recursive(
             style.display = Display::Flex;
             style.flex_direction = FlexDirection::Row;
         }
-        // data-bind is a void (leaf) element — its own display doesn't affect
-        // children, but we still mark it InlineBlock for semantic correctness.
-        // Only data-binds with class "val" get flex_grow (they fill remaining
-        // row space so text-align: right can push text to the far edge).
-        // Other data-binds (e.g. clock digits) stay at intrinsic width.
+        // data-bind is treated as inline-block for layout purposes.
+        // JS (sentinel.js) manages its text content.
         "data-bind" => {
             style.display = Display::InlineBlock;
             if parsed.classes.iter().any(|c| c == "val") {
                 style.flex_grow = 1.0;
             }
         }
-        // data-bar is a void progress bar element — block-level, height from CSS.
-        "data-bar" => {
-            style.display = Display::Block;
-        }
-        // data-bar-stack is a container bar — children are data-bar-segment void elements.
-        "data-bar-stack" => {
-            style.display = Display::Block;
-        }
-        // data-bar-segment is a void element inside data-bar-stack (not rendered individually).
-        "data-bar-segment" => {
+        // canvas element — block-level, sized by width/height attributes.
+        "canvas" => {
             style.display = Display::Block;
         }
         _ => {} // default Block
@@ -501,7 +538,9 @@ fn add_node_recursive(
     let mut node = CxrdNode {
         id: 0, // Will be set by add_node
         tag: Some(parsed.tag.clone()),
+        html_id: parsed.id.clone(),
         classes: parsed.classes.clone(),
+        attributes: parsed.attributes.clone(),
         kind,
         style,
         children: Vec::new(),
@@ -510,8 +549,7 @@ fn add_node_recursive(
         layout: Default::default(),
     };
 
-    // Store HTML id in classes list (prefixed) for later lookup,
-    // but keep the raw id for selector matching.
+    // Keep the raw id for selector matching.
     let html_id = parsed.id.clone();
 
     // Apply CSS rules in order with ancestor-aware matching.
@@ -647,69 +685,18 @@ fn determine_node_kind(parsed: &ParsedNode, variables: &HashMap<String, String>)
             }
         }
         "data-bind" => {
-            let binding = parsed.attributes.get("data-binding")
-                .or_else(|| parsed.attributes.get("binding"))
-                .cloned()
-                .unwrap_or_default();
-            let format = parsed.attributes.get("format").cloned();
-            NodeKind::DataBound { binding, format }
+            // data-bind is now treated as a regular container element.
+            // JS (sentinel.js) handles updating its text content via DOM APIs.
+            NodeKind::Container
         }
-        "data-bar" => {
-            let binding = parsed.attributes.get("data-binding")
-                .or_else(|| parsed.attributes.get("binding"))
-                .cloned()
-                .unwrap_or_default();
-            let max: f32 = parsed.attributes.get("max")
+        "canvas" => {
+            let width: u32 = parsed.attributes.get("width")
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(100.0);
-            NodeKind::DataBar { binding, max, value: 0.0 }
-        }
-        "data-bar-stack" => {
-            // The stack-level max comes from a data binding (e.g. "storage.total_bytes").
-            let max_binding = parsed.attributes.get("max-binding")
-                .cloned()
-                .unwrap_or_default();
-            let max: f32 = parsed.attributes.get("max")
+                .unwrap_or(300);
+            let height: u32 = parsed.attributes.get("height")
                 .and_then(|v| v.parse().ok())
-                .unwrap_or(100.0);
-
-            // Collect segments from children (<data-bar-segment> void elements).
-            let mut segments = Vec::new();
-            for child in &parsed.children {
-                if child.tag == "data-bar-segment" {
-                    let binding = child.attributes.get("data-binding")
-                        .or_else(|| child.attributes.get("binding"))
-                        .cloned()
-                        .unwrap_or_default();
-                    // Parse color from inline style `color: ...`
-                    let color = child.inline_style.split(';')
-                        .find_map(|decl| {
-                            let decl = decl.trim();
-                            if let Some((prop, val)) = decl.split_once(':') {
-                                if prop.trim() == "color" {
-                                    let resolved = resolve_var_pub(val.trim(), variables);
-                                    return parse_color(&resolved).map(|c| c.to_array());
-                                }
-                            }
-                            None
-                        })
-                        .unwrap_or([1.0, 1.0, 1.0, 0.8]);
-                    segments.push(BarSegment { binding, value: 0.0, color });
-                }
-            }
-            NodeKind::DataBarStack { max_binding, max, segments }
-        }
-        "data-bar-segment" => {
-            // Segments are consumed by their parent data-bar-stack.
-            // If encountered standalone, treat as a single-segment bar.
-            let binding = parsed.attributes.get("data-binding")
-                .or_else(|| parsed.attributes.get("binding"))
-                .cloned()
-                .unwrap_or_default();
-            let max: f32 = parsed.attributes.get("max")
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(100.0);
-            NodeKind::DataBar { binding, max, value: 0.0 }
+                .unwrap_or(150);
+            NodeKind::Canvas { width, height }
         }
         "path" => {
             let d = parsed.attributes.get("d").cloned().unwrap_or_default();
@@ -819,7 +806,7 @@ fn determine_node_kind(parsed: &ParsedNode, variables: &HashMap<String, String>)
 }
 
 /// Apply matching CSS rules to a node with ancestor context for descendant matching.
-fn apply_rules_to_node_with_ancestors(
+pub fn apply_rules_to_node_with_ancestors(
     node: &mut CxrdNode,
     html_id: &Option<String>,
     rules: &[CssRule],
@@ -849,7 +836,7 @@ fn apply_rules_to_node(
 ///
 /// The last compound selector must match the node itself.
 /// Earlier compound selectors must match ancestors (in order, not necessarily consecutive).
-fn compound_selector_matches(
+pub fn compound_selector_matches(
     selectors: &[CompoundSelector],
     node: &CxrdNode,
     html_id: &Option<String>,
@@ -891,4 +878,141 @@ fn compound_selector_matches(
 
     // All ancestor selectors must have been matched.
     sel_idx < 0
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Post-JS CSS restyle pass
+// ═══════════════════════════════════════════════════════════════════════════
+
+/// Re-apply CSS rules to every node in the document using the full
+/// compile-time pipeline (tag defaults → parent inherit → compound-selector
+/// matching → inline styles).  Call this after JS has finished mutating the
+/// DOM so that dynamically-created nodes receive proper styling.
+pub fn restyle_document(
+    doc: &mut CxrdDocument,
+    rules: &[CssRule],
+    variables: &std::collections::HashMap<String, String>,
+) {
+    let root = doc.root;
+    restyle_recursive(doc, root, rules, variables, &[], None);
+}
+
+fn restyle_recursive(
+    doc: &mut CxrdDocument,
+    node_id: NodeId,
+    rules: &[CssRule],
+    variables: &std::collections::HashMap<String, String>,
+    ancestors: &[AncestorInfo],
+    parent_style: Option<&ComputedStyle>,
+) {
+    // ── 1. Read node metadata (immutable borrow) ──────────────────────
+    let (tag, classes, html_id, inline_style, children) = {
+        let node = match doc.get_node(node_id) {
+            Some(n) => n,
+            None => return,
+        };
+        (
+            node.tag.clone(),
+            node.classes.clone(),
+            node.html_id.clone(),
+            // Reconstruct inline style from the node's `style` attribute if present.
+            node.attributes.get("style").cloned().unwrap_or_default(),
+            node.children.clone(),
+        )
+    };
+
+    // ── 2. Build fresh style: defaults → tag defaults → inherit → CSS rules → inline ─
+    let mut style = ComputedStyle::default();
+
+    // Tag-specific display defaults (mirrors add_node_recursive).
+    if let Some(ref t) = tag {
+        match t.as_str() {
+            "span" | "a" | "label" | "strong" | "em" | "b" | "i" | "code" | "small" => {
+                style.display = Display::Flex;
+                style.flex_direction = FlexDirection::Row;
+            }
+            "data-bind" => {
+                style.display = crate::cxrd::style::Display::InlineBlock;
+                if classes.iter().any(|c| c == "val") {
+                    style.flex_grow = 1.0;
+                }
+            }
+            "canvas" => {
+                style.display = Display::Block;
+            }
+            _ => {} // default Block
+        }
+    }
+
+    // Inherit from parent.
+    if let Some(ps) = parent_style {
+        style.color = ps.color;
+        style.font_size = ps.font_size;
+        style.font_family = ps.font_family.clone();
+        style.font_weight = ps.font_weight;
+        style.letter_spacing = ps.letter_spacing;
+        style.line_height = ps.line_height;
+        style.text_align = ps.text_align;
+        style.text_transform = ps.text_transform;
+    }
+
+    // Apply CSS rules with full ancestor-aware matching.
+    {
+        let node_ref = doc.get_node(node_id).unwrap();
+        // Build a temporary CxrdNode-like view for matching.
+        for rule in rules {
+            if compound_selector_matches(
+                &rule.compound_selectors,
+                node_ref,
+                &html_id,
+                ancestors,
+            ) {
+                // We can't mutate yet — collect declarations to apply.
+                // But apply_property needs &mut style, so we match rule, store index.
+                for (prop, val) in &rule.declarations {
+                    apply_property(&mut style, prop, val, variables);
+                }
+            }
+        }
+    }
+
+    // Inline styles (highest specificity).
+    if !inline_style.is_empty() {
+        for decl in inline_style.split(';') {
+            let decl = decl.trim();
+            if let Some((prop, val)) = decl.split_once(':') {
+                apply_property(&mut style, prop.trim(), val.trim(), variables);
+            }
+        }
+    }
+
+    // ── 2b. Contain position:fixed inside stacking-context ancestors ──
+    // Per CSS spec, an ancestor with `transform` establishes a containing
+    // block for fixed-positioned descendants. In practice this means
+    // position:fixed elements that are NOT direct children of <body> are
+    // almost always contained by a transformed ancestor (e.g. .hud).
+    // Our layout engine doesn't track containing blocks, so we approximate
+    // this by downgrading position:fixed to position:absolute when the
+    // element is deeper than a direct child of body (ancestors > 2 levels).
+    if matches!(style.position, crate::cxrd::style::Position::Fixed) && ancestors.len() > 2 {
+        style.position = crate::cxrd::style::Position::Absolute;
+    }
+
+    // ── 3. Write the new style back to the node ──────────────────────
+    let finalized_style = style.clone();
+    if let Some(node) = doc.get_node_mut(node_id) {
+        node.style = style;
+    }
+
+    // ── 4. Build ancestor info and recurse into children ─────────────
+    let mut child_ancestors = ancestors.to_vec();
+    child_ancestors.push(AncestorInfo {
+        tag: tag.clone(),
+        classes: classes.clone(),
+        html_id,
+    });
+
+    for cid in children {
+        restyle_recursive(doc, cid, rules, variables, &child_ancestors, Some(&finalized_style));
+    }
 }

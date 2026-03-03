@@ -39,6 +39,10 @@ pub struct CxrdDocument {
     /// Root node ID (usually 0).
     pub root: NodeId,
 
+    /// Free node IDs available for reuse (prevents unbounded growth from innerHTML).
+    #[serde(skip)]
+    pub free_list: Vec<NodeId>,
+
     /// Animation definitions referenced by nodes.
     pub animations: Vec<AnimationDef>,
 
@@ -107,6 +111,7 @@ impl CxrdDocument {
             },
             nodes: vec![root],
             root: 0,
+            free_list: Vec::new(),
             animations: Vec::new(),
             assets: AssetBundle::new(),
             variables: Vec::new(),
@@ -117,11 +122,18 @@ impl CxrdDocument {
     }
 
     /// Add a node to the document and return its ID.
+    /// Reuses freed node slots when available to prevent unbounded growth.
     pub fn add_node(&mut self, mut node: CxrdNode) -> NodeId {
-        let id = self.nodes.len() as NodeId;
-        node.id = id;
-        self.nodes.push(node);
-        id
+        if let Some(id) = self.free_list.pop() {
+            node.id = id;
+            self.nodes[id as usize] = node;
+            id
+        } else {
+            let id = self.nodes.len() as NodeId;
+            node.id = id;
+            self.nodes.push(node);
+            id
+        }
     }
 
     /// Add a child to a parent node.
@@ -139,6 +151,23 @@ impl CxrdDocument {
     /// Get a mutable node by ID.
     pub fn get_node_mut(&mut self, id: NodeId) -> Option<&mut CxrdNode> {
         self.nodes.get_mut(id as usize)
+    }
+
+    /// Remove a child from a parent node.
+    pub fn remove_child(&mut self, parent: NodeId, child: NodeId) {
+        if let Some(p) = self.nodes.get_mut(parent as usize) {
+            p.children.retain(|&c| c != child);
+        }
+    }
+
+    /// Find the parent of a node (linear scan).
+    pub fn find_parent(&self, child: NodeId) -> Option<NodeId> {
+        for (i, node) in self.nodes.iter().enumerate() {
+            if node.children.contains(&child) {
+                return Some(i as NodeId);
+            }
+        }
+        None
     }
 
     /// Serialize to binary for disk caching (.cxrd format).

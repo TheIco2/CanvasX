@@ -23,8 +23,8 @@ pub struct GpuTexture {
 
 impl TextureManager {
     pub fn new(device: &wgpu::Device, queue: &wgpu::Queue) -> Self {
-        // Create a 1x1 white default texture.
-        let default_texture = Self::create_texture(device, queue, 1, 1, &[255, 255, 255, 255]);
+        // Create a 1x1 transparent default texture.
+        let default_texture = Self::create_texture(device, queue, 1, 1, &[0, 0, 0, 0]);
         Self {
             textures: HashMap::new(),
             default_texture,
@@ -60,6 +60,46 @@ impl TextureManager {
         let tex = Self::create_texture(device, queue, w, h, &rgba);
         self.textures.insert(asset_index, tex);
         Ok(self.textures.get(&asset_index).unwrap())
+    }
+
+    /// Update an existing texture with new pixel data (or create if missing).
+    /// Used for streaming canvas pixel data each frame.
+    pub fn update_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        asset_index: u32,
+        width: u32,
+        height: u32,
+        rgba_data: &[u8],
+    ) -> bool {
+        // If existing texture has the same size, just write new data.
+        if let Some(tex) = self.textures.get(&asset_index) {
+            if tex.size == (width, height) {
+                let size = wgpu::Extent3d { width, height, depth_or_array_layers: 1 };
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &tex.texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d::ZERO,
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    rgba_data,
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(4 * width),
+                        rows_per_image: Some(height),
+                    },
+                    size,
+                );
+                return false; // no new texture created, bind group still valid
+            }
+        }
+
+        // Size changed or texture missing — create new.
+        let tex = Self::create_texture(device, queue, width, height, rgba_data);
+        self.textures.insert(asset_index, tex);
+        true // new texture created, bind group needs refresh
     }
 
     /// Get a loaded texture (or default).

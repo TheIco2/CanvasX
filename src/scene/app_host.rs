@@ -366,7 +366,7 @@ impl AppHost {
 
             PageSource::Inline(html) => {
                 match compile_html(html, "", &route.id, SceneType::ConfigPanel, None) {
-                    Ok(d) => d,
+                    Ok((d, _, _)) => d,
                     Err(e) => {
                         log::error!("AppHost: failed to compile inline '{}': {}", route.id, e);
                         CxrdDocument::new(&route.id, SceneType::ConfigPanel)
@@ -437,6 +437,7 @@ fn load_html_document(path: &Path, name: &str) -> Result<CxrdDocument, String> {
     };
 
     compile_html(&html, &css, name, SceneType::ConfigPanel, path.parent())
+        .map(|(doc, _, _)| doc)
         .map_err(|e| e.to_string())
 }
 

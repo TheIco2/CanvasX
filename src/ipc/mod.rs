@@ -4,7 +4,8 @@
 // The protocol is JSON-based: {ns, cmd, args} → {ok, data, error}.
 // The pipe name and polling behaviour are fully configurable.
 //
-// The `sentinel` sub-module provides a high-level Sentinel-specific bridge.
+// IPC is generic — CanvasX passes through whatever JSON the JS runtime sends.
+// Sentinel-specific logic (data demands, heartbeats) lives in sentinel.js.
 
 pub mod client;
 pub mod protocol;

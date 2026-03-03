@@ -25,6 +25,9 @@ pub struct Renderer {
     instance_buffer: wgpu::Buffer,
     instance_capacity: usize,
 
+    /// Per-texture bind groups for canvas / image textures.
+    texture_bind_groups: std::collections::HashMap<u32, wgpu::BindGroup>,
+
     // Text renderer
     pub text_renderer: glyphon::TextRenderer,
     pub font_system: glyphon::FontSystem,
@@ -129,6 +132,7 @@ impl Renderer {
             default_texture_bg,
             instance_buffer,
             instance_capacity: initial_capacity,
+            texture_bind_groups: std::collections::HashMap::new(),
             text_renderer,
             font_system,
             swash_cache,
@@ -232,11 +236,33 @@ impl Renderer {
             if !instances.is_empty() {
                 pass.set_pipeline(&self.pipelines.box_pipeline);
                 pass.set_bind_group(0, &self.globals_bg, &[]);
-                pass.set_bind_group(1, &self.default_texture_bg, &[]);
                 pass.set_vertex_buffer(0, self.quad_vbo.slice(..));
                 pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
                 pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
-                pass.draw_indexed(0..6, 0, 0..instances.len() as u32);
+
+                // Draw in batches grouped by texture_index.
+                // Instances with texture_index < 0 use the default texture.
+                let mut batch_start: u32 = 0;
+                let mut current_tex_idx = instances[0].texture_index;
+
+                for i in 0..=instances.len() {
+                    let tex_idx = if i < instances.len() { instances[i].texture_index } else { i32::MIN };
+
+                    if tex_idx != current_tex_idx || i == instances.len() {
+                        // Flush batch
+                        let batch_end = i as u32;
+                        let bg = if current_tex_idx >= 0 {
+                            self.texture_bind_groups.get(&(current_tex_idx as u32))
+                                .unwrap_or(&self.default_texture_bg)
+                        } else {
+                            &self.default_texture_bg
+                        };
+                        pass.set_bind_group(1, bg, &[]);
+                        pass.draw_indexed(0..6, 0, batch_start..batch_end);
+                        batch_start = batch_end;
+                        current_tex_idx = tex_idx;
+                    }
+                }
             }
 
             // Draw text on top
@@ -282,6 +308,40 @@ impl Renderer {
         // Load bundled fonts into the font system.
         for font in &assets.fonts {
             self.font_system.db_mut().load_font_data(font.data.clone());
+        }
+    }
+
+    /// Upload canvas pixel data and create/update the texture bind group.
+    /// `asset_index` is the texture slot (use high indices like 10000+ for canvases).
+    pub fn upload_canvas_texture(
+        &mut self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        asset_index: u32,
+        width: u32,
+        height: u32,
+        rgba_data: &[u8],
+    ) {
+        let recreated = self.texture_manager.update_texture(device, queue, asset_index, width, height, rgba_data);
+
+        // Create or refresh bind group if texture was (re-)created.
+        if recreated || !self.texture_bind_groups.contains_key(&asset_index) {
+            let view = self.texture_manager.get_view(asset_index);
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: Some("canvas_texture_bg"),
+                layout: &self.pipelines.texture_bgl,
+                entries: &[
+                    wgpu::BindGroupEntry {
+                        binding: 0,
+                        resource: wgpu::BindingResource::TextureView(view),
+                    },
+                    wgpu::BindGroupEntry {
+                        binding: 1,
+                        resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    },
+                ],
+            });
+            self.texture_bind_groups.insert(asset_index, bg);
         }
     }
 }

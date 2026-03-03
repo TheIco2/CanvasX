@@ -3,6 +3,7 @@
 // Scene graph node types for the CXRD format.
 // Each node is a renderable element in the UI tree.
 
+use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use crate::cxrd::style::ComputedStyle;
 use crate::cxrd::input::InputKind;
@@ -39,29 +40,12 @@ pub enum NodeKind {
         stroke_width: f32,
     },
 
-    /// Data-bound text: content comes from IPC system data at runtime.
-    /// The `binding` string is a dotted path like "cpu.usage" or "ram.used".
-    DataBound {
-        binding: String,
-        format: Option<String>,
-    },
-
-    /// Data-bound progress bar: fill width is proportional to `value / max`.
-    /// The `value` is updated at runtime from IPC data.
-    DataBar {
-        binding: String,
-        max: f32,
-        value: f32,
-    },
-
-    /// Stacked data bar: multiple segments share a single track.
-    /// Each segment's fill width is `value / max * bar_width`.
-    /// Segments are drawn end-to-end. `max` is resolved at runtime
-    /// from the `max_binding` data value.
-    DataBarStack {
-        max_binding: String,
-        max: f32,
-        segments: Vec<BarSegment>,
+    /// HTML <canvas> element — pixels rendered by the JS runtime.
+    /// The Canvas 2D context writes into a tiny-skia Pixmap which is
+    /// uploaded to a GPU texture each frame.
+    Canvas {
+        width: u32,
+        height: u32,
     },
 
     /// Scroll container.
@@ -73,15 +57,6 @@ pub enum NodeKind {
     /// Interactive input widget (button, text field, slider, etc.).
     /// These make CanvasX documents usable as full application windows.
     Input(InputKind),
-}
-
-/// A single segment inside a DataBarStack.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct BarSegment {
-    pub binding: String,
-    pub value: f32,
-    /// Fill color for this segment (RGBA).
-    pub color: [f32; 4],
 }
 
 /// Image fit mode (analogous to CSS object-fit).
@@ -109,8 +84,14 @@ pub struct CxrdNode {
     /// Optional string tag (for debugging / data-attribute mapping).
     pub tag: Option<String>,
 
+    /// HTML id attribute (for getElementById lookups from JS).
+    pub html_id: Option<String>,
+
     /// CSS class names (for state-based style switching).
     pub classes: Vec<String>,
+
+    /// HTML attributes (data-*, aria-*, custom attributes, etc.).
+    pub attributes: HashMap<String, String>,
 
     /// The type of content this node holds.
     pub kind: NodeKind,
@@ -183,7 +164,9 @@ impl CxrdNode {
         Self {
             id,
             tag: None,
+            html_id: None,
             classes: Vec::new(),
+            attributes: HashMap::new(),
             kind: NodeKind::Container,
             style: ComputedStyle::default(),
             children: Vec::new(),
@@ -198,26 +181,10 @@ impl CxrdNode {
         Self {
             id,
             tag: None,
+            html_id: None,
             classes: Vec::new(),
+            attributes: HashMap::new(),
             kind: NodeKind::Text { content: content.into() },
-            style: ComputedStyle::default(),
-            children: Vec::new(),
-            events: Vec::new(),
-            animations: Vec::new(),
-            layout: LayoutResult::default(),
-        }
-    }
-
-    /// Create a data-bound text node.
-    pub fn data_bound(id: NodeId, binding: impl Into<String>) -> Self {
-        Self {
-            id,
-            tag: None,
-            classes: Vec::new(),
-            kind: NodeKind::DataBound {
-                binding: binding.into(),
-                format: None,
-            },
             style: ComputedStyle::default(),
             children: Vec::new(),
             events: Vec::new(),

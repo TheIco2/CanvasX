@@ -24,6 +24,8 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
 use canvasx_runtime::compiler::html::compile_html;
+use canvasx_runtime::compiler::css::CssRule;
+use canvasx_runtime::compiler::html::ScriptBlock;
 use canvasx_runtime::gpu::context::GpuContext;
 use canvasx_runtime::gpu::renderer::Renderer;
 use canvasx_runtime::ipc::client::IpcClient;
@@ -33,6 +35,8 @@ use canvasx_runtime::scene::input_handler::{
     InputHandler, RawInputEvent, KeyCode, Modifiers, MouseButton as CxMouseButton,
 };
 use canvasx_runtime::cxrd::document::{SceneType, CxrdDocument};
+use canvasx_runtime::cxrd::node::NodeId;
+use canvasx_runtime::scripting::JsRuntime;
 
 // ---------------------------------------------------------------------------
 // CLI arguments
@@ -124,6 +128,17 @@ struct App {
     scene: Option<SceneGraph>,
     input_handler: InputHandler,
     ipc_client: Option<IpcClient>,
+    js_runtime: Option<JsRuntime>,
+    /// Scripts collected during HTML compilation (executed once on init).
+    pending_scripts: Vec<ScriptBlock>,
+    /// CSS rules from compilation (passed to JS runtime).
+    compiled_css_rules: Vec<CssRule>,
+    /// Map from canvas CanvasId → GPU texture asset index (high range).
+    canvas_texture_slots: std::collections::HashMap<u32, u32>,
+    /// Map from NodeId → CanvasId (mirrors JS runtime's node_canvas_map).
+    node_canvas_map: std::collections::HashMap<NodeId, u32>,
+    /// Next available GPU texture slot for canvas textures.
+    next_canvas_slot: u32,
     last_frame: Instant,
     frame_count: u64,
     fps_timer: Instant,
@@ -141,6 +156,12 @@ impl App {
             scene: None,
             input_handler: InputHandler::new(),
             ipc_client: None,
+            js_runtime: None,
+            pending_scripts: Vec::new(),
+            compiled_css_rules: Vec::new(),
+            canvas_texture_slots: std::collections::HashMap::new(),
+            node_canvas_map: std::collections::HashMap::new(),
+            next_canvas_slot: 10000, // high range to avoid colliding with asset textures
             last_frame: Instant::now(),
             frame_count: 0,
             fps_timer: Instant::now(),
@@ -149,13 +170,15 @@ impl App {
     }
 
     /// Load the scene document (compile from HTML/CSS or load cached CXRD).
-    fn load_scene(&self) -> Result<CxrdDocument> {
+    /// Returns (document, scripts, css_rules).
+    fn load_scene(&self) -> Result<(CxrdDocument, Vec<ScriptBlock>, Vec<CssRule>)> {
         let source = &self.args.source;
 
         if source.extension().map_or(false, |e| e == "cxrd") {
             // Load pre-compiled CXRD.
             let data = std::fs::read(source)?;
-            CxrdDocument::from_binary(&data).map_err(|e| anyhow::anyhow!(e))
+            let doc = CxrdDocument::from_binary(&data).map_err(|e| anyhow::anyhow!(e))?;
+            Ok((doc, Vec::new(), Vec::new()))
         } else {
             // Compile from HTML + CSS.
             let html = std::fs::read_to_string(source)?;
@@ -186,8 +209,8 @@ impl App {
                 .and_then(|s| s.to_str())
                 .unwrap_or("scene");
 
-            let doc = compile_html(&html, &css, name, self.args.scene_type, source.parent())?;
-            Ok(doc)
+            let (doc, scripts, css_rules) = compile_html(&html, &css, name, self.args.scene_type, source.parent())?;
+            Ok((doc, scripts, css_rules))
         }
     }
 
@@ -310,19 +333,23 @@ impl ApplicationHandler for App {
         };
 
         // Load scene document.
-        let doc = match self.load_scene() {
-            Ok(d) => d,
+        let (doc, scripts, css_rules) = match self.load_scene() {
+            Ok(result) => result,
             Err(e) => {
                 log::error!("Failed to load scene: {}", e);
                 // Create an empty document so we at least get a window.
-                CxrdDocument::new("error", SceneType::ConfigPanel)
+                (CxrdDocument::new("error", SceneType::ConfigPanel), Vec::new(), Vec::new())
             }
         };
 
-        let scene = SceneGraph::new(doc);
+        let scene = SceneGraph::new(doc.clone());
 
         // Start IPC client.
         let ipc_client = IpcClient::start();
+
+        // Store CSS rules and scripts for JS runtime initialization.
+        self.pending_scripts = scripts;
+        self.compiled_css_rules = css_rules;
 
         self.window = Some(window.clone());
         self.gpu_ctx = Some(gpu_ctx);
@@ -331,6 +358,37 @@ impl ApplicationHandler for App {
         self.ipc_client = Some(ipc_client);
         self.last_frame = Instant::now();
         self.fps_timer = Instant::now();
+
+        // Initialize JS runtime with the compiled document.
+        let css_variables: std::collections::HashMap<String, String> = doc.variables.iter().cloned().collect();
+        let css_rules_for_js = self.compiled_css_rules.clone();
+        let mut js_rt = JsRuntime::new(doc, css_rules_for_js, css_variables);
+
+        // Initialize canvas elements.
+        let vw = window.inner_size().width;
+        let vh = window.inner_size().height;
+        js_rt.init_canvases(vw, vh);
+
+        // Execute collected scripts.
+        let source_dir = self.args.source.parent().map(|p| p.to_path_buf());
+        let scripts = std::mem::take(&mut self.pending_scripts);
+        for script in &scripts {
+            if let Some(ref src) = script.src {
+                // External script — resolve relative to source directory.
+                let script_path = if let Some(ref dir) = source_dir {
+                    dir.join(src)
+                } else {
+                    PathBuf::from(src)
+                };
+                log::info!("Loading script: {}", script_path.display());
+                js_rt.execute_file(&script_path);
+            } else if !script.content.is_empty() {
+                log::info!("Executing inline script ({} bytes)", script.content.len());
+                js_rt.execute(&script.content, "<inline>");
+            }
+        }
+
+        self.js_runtime = Some(js_rt);
 
         // Request first frame.
         window.request_redraw();
@@ -507,6 +565,19 @@ impl App {
         // Sync IPC data.
         self.sync_ipc_data();
 
+        // Tick JS runtime (requestAnimationFrame, timers, etc.).
+        if let Some(ref mut js_rt) = self.js_runtime {
+            let _js_dirty = js_rt.tick(dt);
+
+            // If JS modified the DOM, sync document back to scene.
+            if js_rt.take_layout_dirty() {
+                if let Some(ref mut scene) = self.scene {
+                    let new_doc = js_rt.document();
+                    scene.load_document(new_doc.clone());
+                }
+            }
+        }
+
         let (ctx, renderer, scene) = match (
             self.gpu_ctx.as_ref(),
             self.renderer.as_mut(),
@@ -515,6 +586,29 @@ impl App {
             (Some(c), Some(r), Some(s)) => (c, r, s),
             _ => return,
         };
+
+        // Upload dirty canvas textures to GPU.
+        if let Some(ref mut js_rt) = self.js_runtime {
+            let dirty = js_rt.dirty_canvases();
+            for (canvas_id, _node_id, w, h, pixels) in dirty {
+                // Get or assign a GPU texture slot for this canvas.
+                let slot = *self.canvas_texture_slots.entry(canvas_id).or_insert_with(|| {
+                    let s = self.next_canvas_slot;
+                    self.next_canvas_slot += 1;
+                    s
+                });
+                renderer.upload_canvas_texture(&ctx.device, &ctx.queue, slot, w, h, &pixels);
+            }
+
+            // Update node→canvas→slot mapping.
+            let state = js_rt.state.borrow();
+            self.node_canvas_map.clear();
+            for (&node_id, &canvas_id) in &state.node_canvas_map {
+                if let Some(&slot) = self.canvas_texture_slots.get(&canvas_id) {
+                    self.node_canvas_map.insert(node_id, slot);
+                }
+            }
+        }
 
         let scale = self
             .window
@@ -526,7 +620,31 @@ impl App {
 
         // Tick the scene graph: layout → animate → paint.
         let (instances, clear_color) = scene.tick(vw, vh, dt, &mut renderer.font_system);
-        let instances = instances.to_vec();
+        let mut instances = instances.to_vec();
+
+        // Patch canvas instances with their actual GPU texture slot.
+        for inst in &mut instances {
+            if inst.texture_index == -1 && (inst.flags & canvasx_runtime::gpu::vertex::UiInstance::FLAG_HAS_TEXTURE) != 0 {
+                // Find which node this instance belongs to by matching rect position.
+                for (&node_id, &slot) in &self.node_canvas_map {
+                    if let Some(node) = scene.document.get_node(node_id) {
+                        let r = &node.layout.rect;
+                        if (inst.rect[0] - r.x).abs() < 0.5
+                            && (inst.rect[1] - r.y).abs() < 0.5
+                            && (inst.rect[2] - r.width).abs() < 0.5
+                            && (inst.rect[3] - r.height).abs() < 0.5
+                        {
+                            inst.texture_index = slot as i32;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Sort instances by texture_index for batched rendering.
+        instances.sort_by_key(|inst| inst.texture_index);
+
         let text_areas = scene.text_areas();
 
         // Begin frame → render → present.

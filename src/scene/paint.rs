@@ -5,7 +5,7 @@
 // and stacking context.
 
 use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::node::{NodeId, NodeKind, CxrdNode, BarSegment};
+use crate::cxrd::node::{NodeId, NodeKind, CxrdNode};
 use crate::cxrd::input::{InputKind, ButtonVariant, CheckboxStyle};
 use crate::cxrd::style::{Display, Background};
 use crate::gpu::vertex::UiInstance;
@@ -38,14 +38,27 @@ fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>) {
         paint_input_widget(node, input, out);
     }
 
-    // For DataBar nodes, emit a fill rect proportional to value/max.
-    if let NodeKind::DataBar { max, value, .. } = &node.kind {
-        paint_data_bar(node, *value, *max, out);
-    }
-
-    // For DataBarStack nodes, emit stacked fill rects for each segment.
-    if let NodeKind::DataBarStack { max, ref segments, .. } = node.kind {
-        paint_data_bar_stack(node, max, segments, out);
+    // For Canvas nodes, emit a textured quad (texture upload handled by main loop).
+    if let NodeKind::Canvas { .. } = &node.kind {
+        // Emit a full-rect textured quad. The texture_index will be patched by
+        // the main loop after uploading the canvas pixmap from the JS runtime.
+        // We use texture_index = -1 as a placeholder; main.rs replaces it with
+        // the actual GPU texture slot once the canvas pixmap is uploaded.
+        let r = &node.layout.rect;
+        if r.width > 0.0 && r.height > 0.0 {
+            out.push(UiInstance {
+                rect: [r.x, r.y, r.width, r.height],
+                bg_color: [0.0, 0.0, 0.0, 0.0],
+                border_color: [0.0; 4],
+                border_width: [0.0; 4],
+                border_radius: [0.0; 4],
+                clip_rect: [0.0, 0.0, 99999.0, 99999.0],
+                texture_index: -1, // patched by main loop
+                opacity: node.style.opacity,
+                flags: UiInstance::FLAG_HAS_BACKGROUND | UiInstance::FLAG_HAS_TEXTURE,
+                _pad: 0,
+            });
+        }
     }
 
     // Paint children (sorted by z-index for correct stacking).
@@ -90,62 +103,6 @@ fn should_paint(node: &CxrdNode) -> bool {
 // ---------------------------------------------------------------------------
 // Widget-specific quad painting
 // ---------------------------------------------------------------------------
-
-/// Paint the fill portion of a data-bar.
-///
-/// The node's background (track) is already emitted by the normal paint path.
-/// This adds the fill rect on top, sized proportionally to `value / max`.
-fn paint_data_bar(node: &CxrdNode, value: f32, max: f32, out: &mut Vec<UiInstance>) {
-    if max <= 0.0 { return; }
-    let pct = (value / max).clamp(0.0, 1.0);
-    if pct <= 0.0 { return; }
-
-    let r = &node.layout.content_rect;
-    let fill_w = r.width * pct;
-
-    // Use the node's text color as fill color (set via CSS `color` property).
-    let c = &node.style.color;
-    let fill_color = [c.r, c.g, c.b, c.a];
-
-    // Inherit border-radius from the node.
-    let br = &node.style.border_radius;
-    let radius = [br.top_left, br.top_right, br.bottom_right, br.bottom_left];
-
-    let clip = node.layout.clip
-        .map(|c| c.to_array())
-        .unwrap_or([0.0, 0.0, 99999.0, 99999.0]);
-
-    out.push(filled_rect(r.x, r.y, fill_w, r.height, fill_color, radius, clip, node.style.opacity));
-}
-
-/// Paint stacked bar segments end-to-end within the node's content rect.
-///
-/// All segments share the same `max` (resolved from the stack's `max_binding`).
-/// Each segment fills `value / max` of the total bar width, placed immediately
-/// after the previous segment's fill.
-fn paint_data_bar_stack(node: &CxrdNode, max: f32, segments: &[BarSegment], out: &mut Vec<UiInstance>) {
-    let r = &node.layout.content_rect;
-    if r.width <= 0.0 || r.height <= 0.0 || max <= 0.0 { return; }
-
-    let br = &node.style.border_radius;
-    let radius = [br.top_left, br.top_right, br.bottom_right, br.bottom_left];
-    let clip = node.layout.clip
-        .map(|c| c.to_array())
-        .unwrap_or([0.0, 0.0, 99999.0, 99999.0]);
-
-    let mut x_offset = r.x;
-
-    for seg in segments {
-        let fill_w = (seg.value / max).clamp(0.0, 1.0) * r.width;
-        if fill_w > 0.0 {
-            out.push(filled_rect(
-                x_offset, r.y, fill_w, r.height,
-                seg.color, radius, clip, node.style.opacity,
-            ));
-            x_offset += fill_w;
-        }
-    }
-}
 
 /// Helper: create a simple filled rect instance.
 fn filled_rect(

@@ -710,8 +710,7 @@ fn point_in_rect(x: f32, y: f32, rect: &Rect) -> bool {
 
 fn is_interactive(kind: &NodeKind) -> bool {
     matches!(kind,
-        NodeKind::Input(_) |
-        NodeKind::DataBound { .. }  // For clickable data displays
+        NodeKind::Input(_)
     )
 }
 

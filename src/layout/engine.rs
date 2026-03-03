@@ -514,11 +514,11 @@ fn estimate_content_width(doc: &CxrdDocument, node_id: NodeId, constraints: &Lay
     if node.children.is_empty() {
         // Leaf node: estimate text width from content.
         let font_size = cs.font_size.max(12.0);
-        // Average character width ~0.55 × font-size for a proportional sans-serif.
-        let char_width = font_size * 0.55;
+        // Average character width ~0.65 × font-size for a proportional sans-serif.
+        // 0.55 was too narrow and caused labels with wide glyphs (M, W, N) to clip.
+        let char_width = font_size * 0.65;
         let text_chars = match &node.kind {
             NodeKind::Text { content } => content.len(),
-            NodeKind::DataBound { .. } => 2, // tight estimate; "val" data-binds grow via flex_grow
             _ => 0,
         };
         return padding_h + border_h + margin_h + (text_chars as f32 * char_width);
