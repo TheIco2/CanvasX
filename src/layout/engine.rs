@@ -523,6 +523,8 @@ fn estimate_content_height(doc: &CxrdDocument, node_id: NodeId, constraints: &La
     let gap = cs.gap;
     let is_flex_row = matches!(cs.display, Display::Flex)
         && matches!(cs.flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
+    let is_wrap_row = is_flex_row && !matches!(cs.flex_wrap, crate::cxrd::style::FlexWrap::NoWrap);
+    let is_paragraph_like = node.tag.as_deref() == Some("p");
     let mut total_h: f32 = 0.0;
     let mut max_h: f32 = 0.0;
     let mut count = 0;
@@ -537,11 +539,11 @@ fn estimate_content_height(doc: &CxrdDocument, node_id: NodeId, constraints: &La
         if ch > max_h { max_h = ch; }
         count += 1;
     }
-    if count > 1 && !is_flex_row {
+    if count > 1 && (!is_flex_row || (is_wrap_row && is_paragraph_like)) {
         total_h += gap * (count - 1) as f32;
     }
 
-    let children_h = if is_flex_row { max_h } else { total_h };
+    let children_h = if is_flex_row && !(is_wrap_row && is_paragraph_like) { max_h } else { total_h };
     padding_v + border_v + margin_v + children_h
 }
 

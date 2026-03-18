@@ -292,19 +292,19 @@ impl CanvasBuffer {
     }
 
     pub fn translate(&mut self, x: f32, y: f32) {
-        self.transform = self.transform.post_translate(x, y);
+        self.transform = self.transform.pre_translate(x, y);
     }
 
     pub fn rotate(&mut self, angle: f32) {
         // tiny-skia rotate takes degrees
         let degrees = angle * 180.0 / std::f32::consts::PI;
-        self.transform = self.transform.post_concat(
+        self.transform = self.transform.pre_concat(
             tiny_skia::Transform::from_rotate(degrees)
         );
     }
 
     pub fn scale(&mut self, sx: f32, sy: f32) {
-        self.transform = self.transform.post_scale(sx, sy);
+        self.transform = self.transform.pre_scale(sx, sy);
     }
 
     pub fn set_transform(&mut self, a: f32, b: f32, c: f32, d: f32, e: f32, f: f32) {
