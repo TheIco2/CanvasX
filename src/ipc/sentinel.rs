@@ -19,7 +19,7 @@ use std::thread;
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
-use crate::ipc::client::{send_ipc_request_to, send_ipc_request_with_timeout, flatten_json_to_map};
+use crate::ipc::client::{send_ipc_request_to, flatten_json_to_map};
 use crate::ipc::protocol::{IpcRequest, IpcResponse};
 
 /// The Sentinel pipe name.

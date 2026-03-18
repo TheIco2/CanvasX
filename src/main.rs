@@ -37,6 +37,7 @@ use canvasx_runtime::scene::input_handler::{
 use canvasx_runtime::cxrd::document::{SceneType, CxrdDocument};
 use canvasx_runtime::cxrd::node::NodeId;
 use canvasx_runtime::scripting::JsRuntime;
+use canvasx_runtime::gpu::vertex::UiInstance;
 
 // ---------------------------------------------------------------------------
 // CLI arguments
@@ -215,10 +216,15 @@ impl App {
     }
 
     /// Synchronise IPC data into the scene graph.
+    /// Uses try_lock to avoid blocking the render thread.
     fn sync_ipc_data(&mut self) {
         if let (Some(ref ipc), Some(ref mut scene)) = (&self.ipc_client, &mut self.scene) {
-            if let Ok(data) = ipc.data.lock() {
-                scene.update_data_batch(data.clone());
+            if let Ok(mut data) = ipc.data.try_lock() {
+                if !data.is_empty() {
+                    // Swap out the data to avoid clone
+                    let taken = std::mem::take(&mut *data);
+                    scene.update_data_batch(taken);
+                }
             }
         }
     }
@@ -388,6 +394,7 @@ impl ApplicationHandler for App {
             }
         }
 
+        js_rt.cache_raf_tick_fn();
         self.js_runtime = Some(js_rt);
 
         // Request first frame.
@@ -553,13 +560,16 @@ impl App {
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
 
-        // FPS counter.
+        // FPS counter (lightweight — only check every 128 frames).
         self.frame_count += 1;
-        if self.fps_timer.elapsed().as_secs_f32() >= 2.0 {
-            let fps = self.frame_count as f64 / self.fps_timer.elapsed().as_secs_f64();
-            log::debug!("FPS: {:.1}", fps);
-            self.frame_count = 0;
-            self.fps_timer = Instant::now();
+        if self.frame_count & 0x7F == 0 {
+            let elapsed = self.fps_timer.elapsed().as_secs_f64();
+            if elapsed >= 2.0 {
+                let fps = self.frame_count as f64 / elapsed;
+                log::debug!("FPS: {:.1}", fps);
+                self.frame_count = 0;
+                self.fps_timer = Instant::now();
+            }
         }
 
         // Sync IPC data.
@@ -567,13 +577,17 @@ impl App {
 
         // Tick JS runtime (requestAnimationFrame, timers, etc.).
         if let Some(ref mut js_rt) = self.js_runtime {
+            // Prevent unbounded per-frame gradient allocations from JS canvas code.
+            js_rt.gc_gradients();
             let _js_dirty = js_rt.tick(dt);
 
             // If JS modified the DOM, sync document back to scene.
             if js_rt.take_layout_dirty() {
                 if let Some(ref mut scene) = self.scene {
+                    // Borrow document directly instead of clone to avoid allocation.
                     let new_doc = js_rt.document();
                     scene.load_document(new_doc.clone());
+                    drop(new_doc);
                 }
             }
         }
@@ -600,12 +614,17 @@ impl App {
                 renderer.upload_canvas_texture(&ctx.device, &ctx.queue, slot, w, h, &pixels);
             }
 
-            // Update node→canvas→slot mapping.
+            // Mark uploaded canvases clean so we only re-upload on real changes.
+            js_rt.clear_dirty_flags();
+
+            // Update node→canvas→slot mapping only when canvas set changed.
             let state = js_rt.state.borrow();
-            self.node_canvas_map.clear();
-            for (&node_id, &canvas_id) in &state.node_canvas_map {
-                if let Some(&slot) = self.canvas_texture_slots.get(&canvas_id) {
-                    self.node_canvas_map.insert(node_id, slot);
+            if state.node_canvas_map.len() != self.node_canvas_map.len() {
+                self.node_canvas_map.clear();
+                for (&node_id, &canvas_id) in &state.node_canvas_map {
+                    if let Some(&slot) = self.canvas_texture_slots.get(&canvas_id) {
+                        self.node_canvas_map.insert(node_id, slot);
+                    }
                 }
             }
         }
@@ -619,42 +638,53 @@ impl App {
         let (vw, vh) = (ctx.size.0 as f32 / scale, ctx.size.1 as f32 / scale);
 
         // Tick the scene graph: layout → animate → paint.
-        let (instances, clear_color) = scene.tick(vw, vh, dt, &mut renderer.font_system);
-        let mut instances = instances.to_vec();
+        // Split into two phases to avoid borrow conflicts:
+        // 1. Run tick (mutates scene, updates cached_instances and gradient_textures)
+        scene.tick(vw, vh, dt, &mut renderer.font_system);
 
-        // Upload gradient textures produced by the paint pass.
-        for grad in &scene.cached_gradient_textures {
-            renderer.upload_canvas_texture(&ctx.device, &ctx.queue, grad.slot, grad.width, grad.height, &grad.rgba);
-        }
-
-        // Patch canvas instances with their actual GPU texture slot.
-        for inst in &mut instances {
-            if inst.texture_index == -1 && (inst.flags & canvasx_runtime::gpu::vertex::UiInstance::FLAG_HAS_TEXTURE) != 0 {
-                // Find which node this instance belongs to by matching rect position.
-                for (&node_id, &slot) in &self.node_canvas_map {
-                    if let Some(node) = scene.document.get_node(node_id) {
-                        let r = &node.layout.rect;
-                        if (inst.rect[0] - r.x).abs() < 0.5
-                            && (inst.rect[1] - r.y).abs() < 0.5
-                            && (inst.rect[2] - r.width).abs() < 0.5
-                            && (inst.rect[3] - r.height).abs() < 0.5
-                        {
-                            inst.texture_index = slot as i32;
-                            break;
-                        }
-                    }
-                }
+        // 2. Upload gradient textures (before borrowing cached_instances)
+        if scene.take_gradient_textures_dirty() {
+            for grad in &scene.cached_gradient_textures {
+                renderer.upload_canvas_texture(&ctx.device, &ctx.queue, grad.slot, grad.width, grad.height, &grad.rgba);
             }
         }
 
-        // Sort instances by texture_index for batched rendering.
-        instances.sort_by_key(|inst| inst.texture_index);
+        // 3. Now borrow instances and clear color immutably
+        let instances = scene.cached_instances.as_slice();
+        let clear_color = scene.document.background;
+
+        // Patch canvas instances with their actual GPU texture slot.
+        // Build patched list only if canvas textures exist (avoid copy when not needed).
+        let has_canvas_patches = instances.iter().any(|inst| {
+            inst.texture_index <= -2
+                && (inst.flags & canvasx_runtime::gpu::vertex::UiInstance::FLAG_HAS_TEXTURE) != 0
+        });
+
+        let patched_instances;
+        let final_instances: &[UiInstance] = if has_canvas_patches {
+            patched_instances = instances.iter().map(|inst| {
+                if inst.texture_index <= -2
+                    && (inst.flags & canvasx_runtime::gpu::vertex::UiInstance::FLAG_HAS_TEXTURE) != 0
+                {
+                    let node_id = (-inst.texture_index - 2) as u32;
+                    if let Some(&slot) = self.node_canvas_map.get(&node_id) {
+                        let mut patched = *inst;
+                        patched.texture_index = slot as i32;
+                        return patched;
+                    }
+                }
+                *inst
+            }).collect::<Vec<_>>();
+            &patched_instances
+        } else {
+            instances
+        };
 
         let text_areas = scene.text_areas();
 
         // Begin frame → render → present.
         renderer.begin_frame(ctx, dt, scale);
-        match renderer.render(ctx, &instances, text_areas, clear_color) {
+        match renderer.render(ctx, final_instances, text_areas, clear_color) {
             Ok(()) => {}
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 // Reconfigure surface on loss.

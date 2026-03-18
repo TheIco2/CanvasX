@@ -238,6 +238,7 @@ fn parse_compound_selector(selector: &str) -> Vec<CompoundSelector> {
 }
 
 /// Parse a CSS selector into parts (legacy, kept for backward compat).
+#[allow(dead_code)]
 fn parse_selector(selector: &str) -> Vec<SelectorPart> {
     let mut parts = Vec::new();
     for token in selector.split_whitespace() {
@@ -311,15 +312,21 @@ pub fn apply_property(style: &mut ComputedStyle, property: &str, value: &str, va
         }
         "overflow-x" | "overflow-y" => {
             // Map overflow-x/overflow-y to our single overflow property.
-            // For a simple engine, we use the most restrictive setting.
+            // Scroll beats Hidden: if one axis requests scrolling, honour it.
             let ov = match value {
                 "visible" => Overflow::Visible,
                 "hidden" => Overflow::Hidden,
                 "scroll" | "auto" => Overflow::Scroll,
                 _ => style.overflow,
             };
-            if ov != Overflow::Visible {
-                style.overflow = ov;
+            match ov {
+                Overflow::Scroll => style.overflow = Overflow::Scroll,
+                Overflow::Hidden => {
+                    if !matches!(style.overflow, Overflow::Scroll) {
+                        style.overflow = Overflow::Hidden;
+                    }
+                }
+                Overflow::Visible => {}
             }
         }
 
@@ -909,8 +916,11 @@ fn parse_backdrop_blur(value: &str) -> Option<f32> {
     let v = value.trim();
     let start = v.find("blur(")?;
     let inner = &v[start + 5..];
-    let end = inner.find(')')?;
-    parse_px(inner[..end].trim())
+
+    // Use the last ')' so nested functions like blur(calc(...)) work.
+    let end = inner.rfind(')')?;
+    let expr = inner[..end].trim();
+    parse_px(expr)
 }
 
 /// Parse transform scale from values like `scale(1.2)`.
@@ -1153,7 +1163,69 @@ pub fn parse_color(value: &str) -> Option<Color> {
         }
     }
 
+    // hsl() / hsla()
+    if let Some(args) = value.strip_prefix("hsla(").and_then(|s| s.strip_suffix(')')) {
+        let parts: Vec<&str> = args.split(',').map(str::trim).collect();
+        if parts.len() >= 4 {
+            let h = parse_hue_degrees(parts[0])?;
+            let s = parse_percentage_unit(parts[1])?;
+            let l = parse_percentage_unit(parts[2])?;
+            let a = parse_color_component(parts[3])?.clamp(0.0, 1.0);
+            let (r, g, b) = hsl_to_rgb(h, s, l);
+            return Some(Color::new(r, g, b, a));
+        }
+    }
+
+    if let Some(args) = value.strip_prefix("hsl(").and_then(|s| s.strip_suffix(')')) {
+        let parts: Vec<&str> = args.split(',').map(str::trim).collect();
+        if parts.len() >= 3 {
+            let h = parse_hue_degrees(parts[0])?;
+            let s = parse_percentage_unit(parts[1])?;
+            let l = parse_percentage_unit(parts[2])?;
+            let (r, g, b) = hsl_to_rgb(h, s, l);
+            return Some(Color::new(r, g, b, 1.0));
+        }
+    }
+
     None
+}
+
+fn parse_hue_degrees(raw: &str) -> Option<f32> {
+    let s = raw.trim().trim_end_matches("deg").trim();
+    s.parse::<f32>().ok()
+}
+
+fn parse_percentage_unit(raw: &str) -> Option<f32> {
+    let s = raw.trim();
+    if let Some(v) = s.strip_suffix('%') {
+        return v.trim().parse::<f32>().ok().map(|n| (n / 100.0).clamp(0.0, 1.0));
+    }
+    s.parse::<f32>().ok().map(|n| n.clamp(0.0, 1.0))
+}
+
+fn hsl_to_rgb(h_deg: f32, s: f32, l: f32) -> (f32, f32, f32) {
+    let h = h_deg.rem_euclid(360.0) / 360.0;
+    if s <= f32::EPSILON {
+        return (l, l, l);
+    }
+
+    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let p = 2.0 * l - q;
+
+    fn hue_to_channel(p: f32, q: f32, mut t: f32) -> f32 {
+        if t < 0.0 { t += 1.0; }
+        if t > 1.0 { t -= 1.0; }
+        if t < 1.0 / 6.0 { return p + (q - p) * 6.0 * t; }
+        if t < 1.0 / 2.0 { return q; }
+        if t < 2.0 / 3.0 { return p + (q - p) * (2.0 / 3.0 - t) * 6.0; }
+        p
+    }
+
+    (
+        hue_to_channel(p, q, h + 1.0 / 3.0),
+        hue_to_channel(p, q, h),
+        hue_to_channel(p, q, h - 1.0 / 3.0),
+    )
 }
 
 /// Parse a single color component which may be a plain number, percentage,
@@ -1215,28 +1287,70 @@ fn resolve_var(value: &str, variables: &HashMap<String, String>) -> String {
 /// Public version of resolve_var for use by the HTML compiler.
 pub fn resolve_var_pub(value: &str, variables: &HashMap<String, String>) -> String {
     let mut result = value.to_string();
-    // Simple var() resolution (non-nested).
     while let Some(start) = result.find("var(") {
-        if let Some(end) = result[start..].find(')') {
-            let inner = &result[start + 4..start + end].trim();
-            // Handle default value: var(--name, default)
-            let (var_name, default) = if let Some((name, def)) = inner.split_once(',') {
-                (name.trim(), Some(def.trim().to_string()))
-            } else {
-                (*inner, None)
-            };
-
-            let replacement = variables.get(var_name)
-                .cloned()
-                .or(default)
-                .unwrap_or_default();
-
-            result = format!("{}{}{}", &result[..start], replacement, &result[start + end + 1..]);
-        } else {
+        let open = start + 3;
+        let Some(close) = find_matching_paren(&result, open) else {
             break;
-        }
+        };
+
+        let inner = result[open + 1..close].trim();
+        let (var_name, default) = split_top_level_comma(inner)
+            .map(|(name, def)| (name.trim(), Some(def.trim().to_string())))
+            .unwrap_or((inner, None));
+
+        let replacement = variables
+            .get(var_name)
+            .cloned()
+            .or(default)
+            .unwrap_or_default();
+
+        result = format!("{}{}{}", &result[..start], replacement, &result[close + 1..]);
     }
     result
+}
+
+fn find_matching_paren(s: &str, open_idx: usize) -> Option<usize> {
+    let bytes = s.as_bytes();
+    if open_idx >= bytes.len() || bytes[open_idx] != b'(' {
+        return None;
+    }
+
+    let mut depth = 0usize;
+    for (i, b) in bytes.iter().enumerate().skip(open_idx) {
+        match *b {
+            b'(' => depth += 1,
+            b')' => {
+                if depth == 0 {
+                    return None;
+                }
+                depth -= 1;
+                if depth == 0 {
+                    return Some(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+fn split_top_level_comma(s: &str) -> Option<(&str, &str)> {
+    let mut depth = 0usize;
+    for (i, b) in s.as_bytes().iter().enumerate() {
+        match *b {
+            b'(' => depth += 1,
+            b')' => {
+                if depth > 0 {
+                    depth -= 1;
+                }
+            }
+            b',' if depth == 0 => {
+                return Some((&s[..i], &s[i + 1..]));
+            }
+            _ => {}
+        }
+    }
+    None
 }
 
 /// Parse a `grid-template-columns` or `grid-template-rows` value into track sizes.

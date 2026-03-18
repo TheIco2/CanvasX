@@ -66,26 +66,35 @@ impl GpuContext {
         let queue = Arc::new(queue);
 
         // Pick surface format.
-        // Use a non-sRGB format so that premultiplied-alpha blending produces
-        // results consistent with CSS/browser compositing.  An sRGB format
-        // applies a linear→sRGB transfer *after* blending, which inflates
-        // low-alpha RGB values dramatically (the steep 12.92× segment).
+        // Prefer sRGB format for correct color space handling. Hardware automatically
+        // converts sRGB→linear on read and linear→sRGB on write, eliminating the need
+        // for manual gamma conversions in the shader. This matches browser rendering.
+        // Note: sRGB format works correctly with premultiplied alpha blending.
         let caps = surface.get_capabilities(&adapter);
         let surface_format = caps
             .formats
             .iter()
-            .find(|f| !f.is_srgb())
+            .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(caps.formats[0]);
+
+        let present_mode = wgpu::PresentMode::Fifo;
+        // if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+        //     wgpu::PresentMode::Mailbox
+        // } else if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+        //     wgpu::PresentMode::Immediate
+        // } else {
+        //     wgpu::PresentMode::Fifo
+        // };
 
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width,
             height,
-            present_mode: wgpu::PresentMode::Fifo, // VSync; can switch to Mailbox for unlocked
+            present_mode,
             alpha_mode: caps.alpha_modes[0],
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: 3,
             view_formats: vec![],
         };
         surface.configure(&device, &surface_config);
@@ -172,21 +181,30 @@ impl GpuContext {
         let queue = Arc::new(queue);
 
         let caps = surface.get_capabilities(&adapter);
+        // Prefer sRGB format for correct color space handling (see comment in new() method).
         let surface_format = caps
             .formats
             .iter()
-            .find(|f| !f.is_srgb())
+            .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(caps.formats[0]);
+
+        let present_mode = if caps.present_modes.contains(&wgpu::PresentMode::Mailbox) {
+            wgpu::PresentMode::Mailbox
+        } else if caps.present_modes.contains(&wgpu::PresentMode::Immediate) {
+            wgpu::PresentMode::Immediate
+        } else {
+            wgpu::PresentMode::Fifo
+        };
 
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format: surface_format,
             width,
             height,
-            present_mode: wgpu::PresentMode::Fifo,
+            present_mode,
             alpha_mode: caps.alpha_modes[0],
-            desired_maximum_frame_latency: 2,
+            desired_maximum_frame_latency: 1,
             view_formats: vec![],
         };
         surface.configure(&device, &surface_config);

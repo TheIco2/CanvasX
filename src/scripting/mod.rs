@@ -2,17 +2,19 @@
 //
 // JavaScript runtime integration for CanvasX.
 //
-// Uses boa_engine (pure-Rust JS engine) to execute user scripts.
+// Uses V8 (via the `v8` crate) for high-performance JS execution.
 // Provides DOM-like API, Canvas 2D rendering via tiny-skia,
 // and generic IPC bridge for host application communication.
 //
 // Architecture:
 //   HTML <script> tags → collected during compilation
-//   JsRuntime::new()  → creates boa Context with DOM/Canvas/IPC globals
+//   JsRuntime::new()  → creates V8 isolate with DOM/Canvas/IPC globals
 //   JsRuntime::tick()  → runs requestAnimationFrame callbacks
 //   Canvas pixmaps     → uploaded to wgpu textures each frame
 
-pub mod runtime;
+pub mod v8_runtime;
 pub mod canvas2d;
+pub mod js_worker;
 
-pub use runtime::JsRuntime;
+pub use v8_runtime::JsRuntime;
+pub use js_worker::{JsWorkerHandle, JsWorkerInit, JsCommand, JsResult, DirtyCanvas};

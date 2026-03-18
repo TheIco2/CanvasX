@@ -5,6 +5,7 @@
 
 use crate::cxrd::document::CxrdDocument;
 use crate::cxrd::node::{NodeId, NodeKind};
+use crate::cxrd::input::InputKind;
 use crate::cxrd::style::{Display, TextAlign, TextTransform};
 use glyphon::{Attrs, Buffer, Color as GlyphonColor, Family, Metrics, Shaping, TextArea, TextBounds, Weight};
 use glyphon::cosmic_text::Align;
@@ -14,25 +15,34 @@ use std::collections::HashMap;
 pub struct TextPainter {
     /// Prepared text buffers keyed by node ID.
     pub buffers: HashMap<u32, Buffer>,
+    /// Cache of (content_hash, font_size, font_family, font_weight, text_align, container_width)
+    /// per node, to detect when a buffer needs recreation.
+    buffer_keys: HashMap<u32, u64>,
 }
 
 impl TextPainter {
     pub fn new() -> Self {
         Self {
             buffers: HashMap::new(),
+            buffer_keys: HashMap::new(),
         }
     }
 
     /// Prepare text buffers for all text nodes in the document.
     /// Call this after layout and before rendering.
+    /// Only recreates buffers when text content or style has changed.
     pub fn prepare(
         &mut self,
         doc: &CxrdDocument,
         font_system: &mut glyphon::FontSystem,
         data_values: &HashMap<String, String>,
     ) {
-        self.buffers.clear();
-        self.prepare_node(doc, doc.root, font_system, data_values);
+        // Collect live node IDs so we can prune stale buffers
+        let mut live_ids = Vec::new();
+        self.prepare_node(doc, doc.root, font_system, data_values, &mut live_ids);
+        // Remove buffers for nodes that no longer exist
+        self.buffers.retain(|k, _| live_ids.contains(k));
+        self.buffer_keys.retain(|k, _| live_ids.contains(k));
     }
 
     fn prepare_node(
@@ -41,6 +51,7 @@ impl TextPainter {
         node_id: NodeId,
         font_system: &mut glyphon::FontSystem,
         data_values: &HashMap<String, String>,
+        live_ids: &mut Vec<u32>,
     ) {
         let node = match doc.get_node(node_id) {
             Some(n) => n,
@@ -83,6 +94,36 @@ impl TextPainter {
             let rect = &node.layout.content_rect;
 
             if rect.width > 0.0 && !content.is_empty() {
+                live_ids.push(node.id);
+
+                // Compute a cache key from content + style + layout dimensions.
+                // Use a simple hash to avoid recomputing expensive text shaping.
+                let cache_key = {
+                    use std::hash::{Hash, Hasher};
+                    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                    content.hash(&mut hasher);
+                    style.font_size.to_bits().hash(&mut hasher);
+                    style.font_family.hash(&mut hasher);
+                    style.font_weight.0.hash(&mut hasher);
+                    (rect.width as u32).hash(&mut hasher);
+                    (rect.height as u32).hash(&mut hasher);
+                    std::mem::discriminant(&style.text_align).hash(&mut hasher);
+                    style.line_height.to_bits().hash(&mut hasher);
+                    style.letter_spacing.to_bits().hash(&mut hasher);
+                    hasher.finish()
+                };
+
+                // Skip recreation if buffer already exists with same key.
+                if let Some(&existing_key) = self.buffer_keys.get(&node.id) {
+                    if existing_key == cache_key && self.buffers.contains_key(&node.id) {
+                        // Buffer is still valid
+                        for &child_id in &node.children {
+                            self.prepare_node(doc, child_id, font_system, data_values, live_ids);
+                        }
+                        return;
+                    }
+                }
+
                 let font_size = style.font_size;
                 let line_height = style.line_height * font_size;
                 let metrics = Metrics::new(font_size, line_height);
@@ -97,9 +138,14 @@ impl TextPainter {
 
                 let weight = Weight(style.font_weight.0);
 
-                let attrs = Attrs::new()
+                let mut attrs = Attrs::new()
                     .family(family)
                     .weight(weight);
+
+                // Apply letter-spacing (stored in px, cosmic-text expects EM)
+                if style.letter_spacing.abs() > 0.001 && font_size > 0.0 {
+                    attrs = attrs.letter_spacing(style.letter_spacing / font_size);
+                }
 
                 let alignment = match style.text_align {
                     TextAlign::Right => Some(Align::Right),
@@ -107,16 +153,109 @@ impl TextPainter {
                     TextAlign::Left => None, // Left is the default
                 };
 
-                buffer.set_size(font_system, Some(rect.width), Some(rect.height));
+                buffer.set_size(font_system, Some(rect.width), None);
                 buffer.set_text(font_system, &content, &attrs, Shaping::Advanced, alignment);
                 buffer.shape_until_scroll(font_system, false);
 
                 self.buffers.insert(node.id, buffer);
+                self.buffer_keys.insert(node.id, cache_key);
+            }
+        }
+
+        // Render text labels for input widgets (button labels, dropdown values, etc.)
+        // Input widgets use skip_children=true in the HTML compiler, so their labels
+        // are NOT child text nodes – they live in the InputKind enum fields instead.
+        if let NodeKind::Input(input_kind) = &node.kind {
+            let rect = &node.layout.content_rect;
+            if rect.width > 0.0 {
+                let (label_text, center_align) = match input_kind {
+                    InputKind::Button { label, .. } => (label.clone(), true),
+                    InputKind::Link { label, .. } => (label.clone(), false),
+                    InputKind::Dropdown { selected, options, placeholder, .. } => {
+                        let resolved = if let Some(sel) = selected {
+                            options.iter()
+                                .find(|o| &o.0 == sel)
+                                .map(|o| o.1.clone())
+                                .unwrap_or_else(|| sel.clone())
+                        } else {
+                            placeholder.clone()
+                        };
+                        (resolved, false)
+                    }
+                    InputKind::TextInput { value, placeholder, .. } => {
+                        let txt: String = if value.is_empty() {
+                            placeholder.clone()
+                        } else {
+                            value.clone()
+                        };
+                        (txt, false)
+                    }
+                    InputKind::TextArea { value, placeholder, .. } => {
+                        let txt: String = if value.is_empty() {
+                            placeholder.clone()
+                        } else {
+                            value.clone()
+                        };
+                        (txt, false)
+                    }
+                    _ => (String::new(), false),
+                };
+
+                if !label_text.is_empty() {
+                    live_ids.push(node.id);
+
+                    let style = &node.style;
+                    let cache_key = {
+                        use std::hash::{Hash, Hasher};
+                        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+                        label_text.hash(&mut hasher);
+                        style.font_size.to_bits().hash(&mut hasher);
+                        style.font_family.hash(&mut hasher);
+                        style.font_weight.0.hash(&mut hasher);
+                        (rect.width as u32).hash(&mut hasher);
+                        center_align.hash(&mut hasher);
+                        hasher.finish()
+                    };
+
+                    if let Some(&existing_key) = self.buffer_keys.get(&node.id) {
+                        if existing_key == cache_key && self.buffers.contains_key(&node.id) {
+                            for &child_id in &node.children {
+                                self.prepare_node(doc, child_id, font_system, data_values, live_ids);
+                            }
+                            return;
+                        }
+                    }
+
+                    let font_size = style.font_size;
+                    let line_height = style.line_height * font_size;
+                    let metrics = glyphon::Metrics::new(font_size, line_height);
+                    let mut buffer = glyphon::Buffer::new(font_system, metrics);
+
+                    let family = if style.font_family.is_empty() {
+                        glyphon::Family::SansSerif
+                    } else {
+                        glyphon::Family::Name(&style.font_family)
+                    };
+                    let weight = glyphon::Weight(style.font_weight.0);
+                    let attrs = glyphon::Attrs::new().family(family).weight(weight);
+                    let alignment = if center_align {
+                        Some(glyphon::cosmic_text::Align::Center)
+                    } else {
+                        None
+                    };
+
+                    buffer.set_size(font_system, Some(rect.width), None);
+                    buffer.set_text(font_system, &label_text, &attrs, glyphon::Shaping::Advanced, alignment);
+                    buffer.shape_until_scroll(font_system, false);
+
+                    self.buffers.insert(node.id, buffer);
+                    self.buffer_keys.insert(node.id, cache_key);
+                }
             }
         }
 
         for &child_id in &node.children {
-            self.prepare_node(doc, child_id, font_system, data_values);
+            self.prepare_node(doc, child_id, font_system, data_values, live_ids);
         }
     }
 
@@ -134,16 +273,36 @@ impl TextPainter {
             let rect = &node.layout.content_rect;
             let color = &node.style.color;
 
+            // Start with the node's own content rect as bounds.
+            let mut left = rect.x as i32;
+            // Adjust top by baseline offset: glyphon's baseline differs from CSS/browser by ~1-2px.
+            // Add small vertical offset to better match browser rendering (empirically determined).
+            let baseline_offset = 1.0; // Small positive offset moves text down slightly
+            let mut top = (rect.y + baseline_offset) as i32;
+            let mut right = (rect.x + rect.width) as i32;
+            let mut bottom = (rect.y + rect.height) as i32;
+
+            // Intersect with the overflow clip rect from the nearest overflow:hidden ancestor.
+            if let Some(clip) = &node.layout.clip {
+                left = left.max(clip.x as i32);
+                top = top.max(clip.y as i32);
+                right = right.min((clip.x + clip.width) as i32);
+                bottom = bottom.min((clip.y + clip.height) as i32);
+                if right <= left || bottom <= top {
+                    continue; // Fully clipped
+                }
+            }
+
             areas.push(TextArea {
                 buffer,
                 left: rect.x,
-                top: rect.y,
+                top: rect.y + baseline_offset, // Apply same baseline adjustment to text area position
                 scale: 1.0,
                 bounds: TextBounds {
-                    left: rect.x as i32,
-                    top: rect.y as i32,
-                    right: (rect.x + rect.width) as i32,
-                    bottom: (rect.y + rect.height) as i32,
+                    left,
+                    top,
+                    right,
+                    bottom,
                 },
                 default_color: GlyphonColor::rgba(
                     (color.r * 255.0) as u8,
@@ -173,6 +332,7 @@ impl TextPainter {
 /// position (e.g. `"{}%"` → `"47.5%"`).
 ///
 /// If no format string is provided the raw value is returned as-is.
+#[allow(dead_code)]
 fn format_data_value(raw: &str, format: Option<&str>) -> String {
     let fmt = match format {
         Some(f) => f,
@@ -226,6 +386,7 @@ fn format_data_value(raw: &str, format: Option<&str>) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn format_bytes(raw: &str) -> String {
     let v: f64 = match raw.parse() {
         Ok(v) => v,
@@ -244,6 +405,7 @@ fn format_bytes(raw: &str) -> String {
     }
 }
 
+#[allow(dead_code)]
 fn format_uptime(raw: &str) -> String {
     let sec: u64 = match raw.parse::<f64>() {
         Ok(v) => v as u64,

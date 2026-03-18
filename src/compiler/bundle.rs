@@ -8,7 +8,6 @@ use image::GenericImageView;
 use std::fs;
 use anyhow::Result;
 use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::asset::AssetBundle;
 
 /// Supported image extensions.
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "svg"];

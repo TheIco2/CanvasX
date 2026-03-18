@@ -3,6 +3,8 @@
 // The main renderer — takes a scene graph's paint output (list of UiInstance)
 // and submits draw calls to the GPU. Also manages text rendering via glyphon.
 
+use std::time::Instant;
+
 use anyhow::Result;
 use crate::gpu::context::GpuContext;
 use crate::gpu::pipeline::{UiPipelines, GlobalUniforms};
@@ -39,6 +41,7 @@ pub struct Renderer {
     // State
     frame_time: f32,
     scale_factor: f32,
+    frame_count: u32,
 }
 
 impl Renderer {
@@ -113,7 +116,7 @@ impl Renderer {
         let swash_cache = glyphon::SwashCache::new();
         let text_cache = glyphon::Cache::new(device);
         let text_viewport = glyphon::Viewport::new(device, &text_cache);
-        let mut text_atlas = glyphon::TextAtlas::new(device, queue, &text_cache, ctx.surface_format);
+        let mut text_atlas = glyphon::TextAtlas::with_color_mode(device, queue, &text_cache, ctx.surface_format, glyphon::ColorMode::Web);
         let text_renderer = glyphon::TextRenderer::new(
             &mut text_atlas,
             device,
@@ -141,6 +144,7 @@ impl Renderer {
             text_viewport,
             frame_time: 0.0,
             scale_factor: 1.0,
+            frame_count: 0,
         })
     }
 
@@ -178,7 +182,12 @@ impl Renderer {
         text_areas: Vec<glyphon::TextArea<'_>>,
         clear_color: Color,
     ) -> Result<(), wgpu::SurfaceError> {
+        let acq_start = Instant::now();
         let output = ctx.current_texture()?;
+        let acq_ms = acq_start.elapsed().as_secs_f64() * 1000.0;
+        if acq_ms > 5.0 {
+            log::debug!("[GPU] get_current_texture blocked for {:.2}ms", acq_ms);
+        }
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
         // Upload instances
@@ -272,7 +281,11 @@ impl Renderer {
         ctx.queue.submit(std::iter::once(encoder.finish()));
         output.present();
 
-        self.text_atlas.trim();
+        // Trim text atlas every 64 frames instead of every frame
+        self.frame_count = self.frame_count.wrapping_add(1);
+        if self.frame_count & 0x3F == 0 {
+            self.text_atlas.trim();
+        }
 
         Ok(())
     }

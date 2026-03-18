@@ -4,6 +4,7 @@
 // computes layout positions for each node using block flow or flexbox.
 
 use crate::cxrd::document::CxrdDocument;
+use crate::cxrd::input::InputKind;
 use crate::cxrd::node::{NodeId, NodeKind};
 use crate::cxrd::style::{Display, FlexDirection, Position, GridTrackSize};
 use crate::cxrd::value::{Dimension, Rect, EdgeInsets};
@@ -83,6 +84,7 @@ fn layout_node_recursive(
     }
 
     // Handle absolute-positioned children.
+    let mut abs_shrink: Vec<(NodeId, bool, bool)> = Vec::new();
     for &child_id in &children {
         if let Some(child) = doc.nodes.get(child_id as usize) {
             if matches!(child.style.position, Position::Absolute | Position::Fixed) {
@@ -92,7 +94,10 @@ fn layout_node_recursive(
                 } else {
                     container_rect
                 };
-                layout_absolute_child(doc, child_id, containing, constraints);
+                let (sw, sh) = layout_absolute_child(doc, child_id, containing, constraints);
+                if sw || sh {
+                    abs_shrink.push((child_id, sw, sh));
+                }
             }
         }
 
@@ -105,6 +110,12 @@ fn layout_node_recursive(
     // Recurse into children.
     for &child_id in &children {
         layout_node_recursive(doc, child_id, constraints, child_clip);
+    }
+
+    // After recursive layout, shrink absolute/fixed elements that had
+    // auto dimensions without opposing insets.
+    for (child_id, sw, sh) in abs_shrink {
+        shrink_absolute_to_content(doc, child_id, sw, sh, constraints);
     }
 
     // Apply simple transform scale() (top-left origin) to this subtree.
@@ -490,8 +501,20 @@ fn estimate_content_height(doc: &CxrdDocument, node_id: NodeId, constraints: &La
     let margin_v = resolve(cs.margin.top, 0.0) + resolve(cs.margin.bottom, 0.0);
 
     if node.children.is_empty() {
-        // Leaf node: text height estimate.
-        let font_size = cs.font_size.max(12.0);
+        // Leaf node: estimate intrinsic height.
+        if let NodeKind::Input(input) = &node.kind {
+            let intrinsic = match input {
+                InputKind::TextArea { rows, .. } => (cs.font_size * cs.line_height * (*rows).max(1) as f32).max(30.0),
+                InputKind::TabBar { .. } => 30.0,
+                InputKind::Checkbox { .. } => 22.0,
+                InputKind::Slider { .. } => 22.0,
+                _ => 30.0,
+            };
+            return padding_v + border_v + margin_v + intrinsic;
+        }
+
+        // Text leaf fallback.
+        let font_size = cs.font_size.max(1.0);
         let line_h = cs.line_height * font_size;
         return padding_v + border_v + margin_v + line_h;
     }
@@ -547,8 +570,42 @@ fn estimate_content_width(doc: &CxrdDocument, node_id: NodeId, constraints: &Lay
     let margin_h = resolve(cs.margin.left, 0.0) + resolve(cs.margin.right, 0.0);
 
     if node.children.is_empty() {
-        // Leaf node: estimate text width from content.
-        let font_size = cs.font_size.max(12.0);
+        // Leaf node: estimate intrinsic width from control type/content.
+        if let NodeKind::Input(input) = &node.kind {
+            let font_size = cs.font_size.max(1.0);
+            let char_width = font_size * 0.62;
+            let intrinsic = match input {
+                InputKind::Button { label, .. } => (label.len() as f32 * char_width) + 20.0,
+                InputKind::TextInput { value, placeholder, .. } => {
+                    let txt = if value.is_empty() { placeholder } else { value };
+                    (txt.len().max(8) as f32 * char_width) + 24.0
+                }
+                InputKind::Dropdown { selected, options, placeholder, .. } => {
+                    let txt_len = if let Some(sel) = selected {
+                        options
+                            .iter()
+                            .find(|o| &o.0 == sel)
+                            .map(|o| o.1.len())
+                            .unwrap_or(sel.len())
+                    } else {
+                        placeholder.len().max(6)
+                    };
+                    (txt_len as f32 * char_width) + 34.0
+                }
+                InputKind::Checkbox { label, .. } => (label.len() as f32 * char_width) + 28.0,
+                InputKind::Slider { .. } => 120.0,
+                InputKind::ColorPicker { .. } => 46.0,
+                InputKind::TextArea { value, placeholder, .. } => {
+                    let txt = if value.is_empty() { placeholder } else { value };
+                    (txt.len().max(12) as f32 * char_width) + 24.0
+                }
+                _ => 80.0,
+            };
+            return padding_h + border_h + margin_h + intrinsic;
+        }
+
+        // Text leaf fallback.
+        let font_size = cs.font_size.max(1.0);
         // Average character width ~0.65 × font-size for a proportional sans-serif.
         // 0.55 was too narrow and caused labels with wide glyphs (M, W, N) to clip.
         let char_width = font_size * 0.65;
@@ -636,6 +693,8 @@ fn layout_flex_children(
     struct ItemData {
         base_main: f32,
         base_cross: f32,
+        min_main: f32,
+        max_main: f32,
         flex_grow: f32,
         flex_shrink: f32,
         m_start: f32,
@@ -709,9 +768,22 @@ fn layout_flex_children(
             parent_style.align_items
         };
 
+        let min_main = if is_row {
+            if cs.min_width.is_auto() { 0.0 } else { resolve(cs.min_width, container_rect.width) }
+        } else {
+            if cs.min_height.is_auto() { 0.0 } else { resolve(cs.min_height, container_rect.height) }
+        };
+        let max_main = if is_row {
+            if cs.max_width.is_auto() { f32::INFINITY } else { resolve(cs.max_width, container_rect.width) }
+        } else {
+            if cs.max_height.is_auto() { f32::INFINITY } else { resolve(cs.max_height, container_rect.height) }
+        };
+
         items.push(ItemData {
             base_main: basis,
             base_cross: cross,
+            min_main,
+            max_main,
             flex_grow: cs.flex_grow,
             flex_shrink: cs.flex_shrink,
             m_start, m_end, c_start, c_end,
@@ -719,93 +791,134 @@ fn layout_flex_children(
         });
     }
 
-    // Flex distribution
-    let num_gaps = if items.len() > 1 { (items.len() - 1) as f32 } else { 0.0 };
-    let total_gap = gap * num_gaps;
-    let total_base: f32 = items.iter().map(|i| i.base_main + i.m_start + i.m_end).sum();
-    let free = main_size - total_base - total_gap;
-    let total_grow: f32 = items.iter().map(|i| i.flex_grow).sum();
-    let total_shrink: f32 = items.iter().map(|i| i.flex_shrink * i.base_main).sum();
-    let pure_base: f32 = items.iter().map(|i| i.base_main).sum();
-
-    let finals: Vec<f32> = items.iter().map(|item| {
-        let mut sz = item.base_main;
-        if free > 0.0 && total_grow > 0.0 {
-            sz += free * (item.flex_grow / total_grow);
-        } else if free < 0.0 && total_shrink > 0.0 {
-            sz += free * (item.flex_shrink * item.base_main / total_shrink);
-        } else if free > 0.0 && total_grow == 0.0 && pure_base == 0.0 && !items.is_empty() {
-            // All items have 0 content-basis and nobody claims flex-grow.
-            // This typically happens with a grid→flex fallback or when
-            // intrinsic sizing isn't computed.  Distribute remaining space
-            // equally so items are actually visible instead of collapsing.
-            sz = free / items.len() as f32;
+    // ── Wrap: group items into lines ──────────────────────────────────
+    let wrap = parent_style.flex_wrap;
+    let lines: Vec<Vec<usize>> = if matches!(wrap, crate::cxrd::style::FlexWrap::NoWrap) {
+        // Single line containing all items.
+        vec![(0..items.len()).collect()]
+    } else {
+        let mut lines: Vec<Vec<usize>> = Vec::new();
+        let mut cur: Vec<usize> = Vec::new();
+        let mut used = 0.0f32;
+        for i in 0..items.len() {
+            let item_main = items[i].base_main + items[i].m_start + items[i].m_end;
+            let gap_before = if cur.is_empty() { 0.0 } else { gap };
+            if !cur.is_empty() && used + gap_before + item_main > main_size {
+                lines.push(std::mem::take(&mut cur));
+                used = item_main;
+                cur.push(i);
+            } else {
+                used += gap_before + item_main;
+                cur.push(i);
+            }
         }
-        sz.max(0.0)
-    }).collect();
-
-    // Justify-content
-    let used: f32 = finals.iter().sum::<f32>()
-        + items.iter().map(|i| i.m_start + i.m_end).sum::<f32>()
-        + total_gap;
-    let remaining = (main_size - used).max(0.0);
-
-    let (mut offset, extra_gap) = match parent_style.justify_content {
-        crate::cxrd::style::JustifyContent::FlexStart => (0.0, 0.0),
-        crate::cxrd::style::JustifyContent::FlexEnd => (remaining, 0.0),
-        crate::cxrd::style::JustifyContent::Center => (remaining / 2.0, 0.0),
-        crate::cxrd::style::JustifyContent::SpaceBetween => {
-            if items.len() > 1 { (0.0, remaining / (items.len() - 1) as f32) } else { (0.0, 0.0) }
+        if !cur.is_empty() { lines.push(cur); }
+        if matches!(wrap, crate::cxrd::style::FlexWrap::WrapReverse) {
+            lines.reverse();
         }
-        crate::cxrd::style::JustifyContent::SpaceAround => {
-            let sp = remaining / items.len() as f32;
-            (sp / 2.0, sp)
-        }
-        crate::cxrd::style::JustifyContent::SpaceEvenly => {
-            let sp = remaining / (items.len() + 1) as f32;
-            (sp, sp)
-        }
+        lines
     };
 
-    // Position each child
-    for (i, &cid) in flex_children.iter().enumerate() {
-        let item = &items[i];
-        let m = finals[i];
+    let num_lines = lines.len().max(1);
+    let line_cross = cross_size / num_lines as f32;
+    let mut cross_pos = 0.0f32;
 
-        let c = if item.base_cross > 0.0 {
-            item.base_cross
-        } else if matches!(item.align, crate::cxrd::style::AlignItems::Stretch) {
-            cross_size - item.c_start - item.c_end
-        } else {
-            cross_size - item.c_start - item.c_end
+    for line in &lines {
+        if line.is_empty() { continue; }
+
+        // Flex distribution for this line
+        let num_gaps_l = if line.len() > 1 { (line.len() - 1) as f32 } else { 0.0 };
+        let total_gap_l = gap * num_gaps_l;
+        let total_base_l: f32 = line.iter().map(|&i| items[i].base_main + items[i].m_start + items[i].m_end).sum();
+        let free_l = main_size - total_base_l - total_gap_l;
+        let total_grow_l: f32 = line.iter().map(|&i| items[i].flex_grow).sum();
+        let total_shrink_l: f32 = line.iter().map(|&i| items[i].flex_shrink * items[i].base_main).sum();
+        let pure_base_l: f32 = line.iter().map(|&i| items[i].base_main).sum();
+
+        let finals_l: Vec<f32> = line.iter().map(|&idx| {
+            let item = &items[idx];
+            let mut sz = item.base_main;
+            if free_l > 0.0 && total_grow_l > 0.0 {
+                sz += free_l * (item.flex_grow / total_grow_l);
+            } else if free_l < 0.0 && total_shrink_l > 0.0 {
+                sz += free_l * (item.flex_shrink * item.base_main / total_shrink_l);
+            } else if free_l > 0.0 && total_grow_l == 0.0 && pure_base_l == 0.0 && !line.is_empty() {
+                sz = free_l / line.len() as f32;
+            }
+            sz.max(item.min_main).min(item.max_main).max(0.0)
+        }).collect();
+
+        // Justify-content for this line
+        let used_l: f32 = finals_l.iter().sum::<f32>()
+            + line.iter().map(|&i| items[i].m_start + items[i].m_end).sum::<f32>()
+            + total_gap_l;
+        let remaining_l = (main_size - used_l).max(0.0);
+
+        let (mut offset, extra_gap) = match parent_style.justify_content {
+            crate::cxrd::style::JustifyContent::FlexStart => (0.0, 0.0),
+            crate::cxrd::style::JustifyContent::FlexEnd => (remaining_l, 0.0),
+            crate::cxrd::style::JustifyContent::Center => (remaining_l / 2.0, 0.0),
+            crate::cxrd::style::JustifyContent::SpaceBetween => {
+                if line.len() > 1 { (0.0, remaining_l / (line.len() - 1) as f32) } else { (0.0, 0.0) }
+            }
+            crate::cxrd::style::JustifyContent::SpaceAround => {
+                let sp = remaining_l / line.len() as f32;
+                (sp / 2.0, sp)
+            }
+            crate::cxrd::style::JustifyContent::SpaceEvenly => {
+                let sp = remaining_l / (line.len() + 1) as f32;
+                (sp, sp)
+            }
         };
 
-        let cross_offset = match item.align {
-            crate::cxrd::style::AlignItems::FlexStart => item.c_start,
-            crate::cxrd::style::AlignItems::FlexEnd => cross_size - c - item.c_end,
-            crate::cxrd::style::AlignItems::Center => (cross_size - c) / 2.0,
-            _ => item.c_start,
-        };
+        // Position each child in this line
+        for (li, &idx) in line.iter().enumerate() {
+            let item = &items[idx];
+            let m = finals_l[li];
+            let cid = flex_children[idx];
 
-        offset += item.m_start;
+            let c = if item.base_cross > 0.0 {
+                item.base_cross
+            } else if matches!(item.align, crate::cxrd::style::AlignItems::Stretch) {
+                line_cross - item.c_start - item.c_end
+            } else {
+                let intrinsic = if is_row {
+                    estimate_content_height(doc, cid, constraints)
+                } else {
+                    estimate_content_width(doc, cid, constraints)
+                };
+                intrinsic.min(line_cross - item.c_start - item.c_end)
+            };
 
-        let (x, y, w, h) = if is_row {
-            (container_rect.x + offset, container_rect.y + cross_offset, m, c)
-        } else {
-            (container_rect.x + cross_offset, container_rect.y + offset, c, m)
-        };
+            let item_cross_offset = match item.align {
+                crate::cxrd::style::AlignItems::FlexStart => item.c_start,
+                crate::cxrd::style::AlignItems::FlexEnd => line_cross - c - item.c_end,
+                crate::cxrd::style::AlignItems::Center => (line_cross - c) / 2.0,
+                _ => item.c_start,
+            };
 
-        let node = &mut doc.nodes[cid as usize];
-        node.layout.rect = Rect { x, y, width: w, height: h };
-        node.layout.content_rect = Rect {
-            x: x + item.padding.left + item.border.left,
-            y: y + item.padding.top + item.border.top,
-            width: (w - item.padding.horizontal() - item.border.horizontal()).max(0.0),
-            height: (h - item.padding.vertical() - item.border.vertical()).max(0.0),
-        };
-        node.layout.padding = item.padding;
+            offset += item.m_start;
 
-        offset += m + item.m_end + gap + extra_gap;
+            let (x, y, w, h) = if is_row {
+                (container_rect.x + offset, container_rect.y + cross_pos + item_cross_offset, m, c)
+            } else {
+                (container_rect.x + cross_pos + item_cross_offset, container_rect.y + offset, c, m)
+            };
+
+            let node = &mut doc.nodes[cid as usize];
+            node.layout.rect = Rect { x, y, width: w, height: h };
+            node.layout.content_rect = Rect {
+                x: x + item.padding.left + item.border.left,
+                y: y + item.padding.top + item.border.top,
+                width: (w - item.padding.horizontal() - item.border.horizontal()).max(0.0),
+                height: (h - item.padding.vertical() - item.border.vertical()).max(0.0),
+            };
+            node.layout.padding = item.padding;
+
+            offset += m + item.m_end + gap + extra_gap;
+        }
+
+        cross_pos += line_cross;
     }
 }
 
@@ -880,12 +993,15 @@ fn layout_block_children(
 }
 
 /// Layout an absolutely-positioned child within its containing block.
+/// Returns `(shrink_w, shrink_h)` — whether each dimension should be
+/// shrunk to content after recursive layout (true when the dimension is
+/// `auto` and NOT constrained by opposing insets).
 fn layout_absolute_child(
     doc: &mut CxrdDocument,
     child_id: NodeId,
     containing: Rect,
     constraints: &LayoutConstraints,
-) {
+) -> (bool, bool) {
     let cs = doc.nodes[child_id as usize].style.clone();
 
     let resolve = |d: Dimension, parent: f32| -> f32 {
@@ -900,21 +1016,36 @@ fn layout_absolute_child(
     };
     let border = cs.border_width;
 
-    let w = if !cs.width.is_auto() {
-        resolve(cs.width, containing.width)
+    // Width: explicit > opposing insets > right-anchor intrinsic > shrink-to-fit
+    let (w, shrink_w) = if !cs.width.is_auto() {
+        (resolve(cs.width, containing.width), false)
+    } else if !cs.left.is_auto() && !cs.right.is_auto() {
+        let l = resolve(cs.left, containing.width);
+        let r = resolve(cs.right, containing.width);
+        ((containing.width - l - r).max(0.0), false)
+    } else if cs.left.is_auto() && !cs.right.is_auto() {
+        // Only 'right' is set: compute intrinsic width now so x is correct from the start.
+        let intrinsic = estimate_content_width(doc, child_id, constraints);
+        (intrinsic.max(0.0), false)
     } else {
-        // Compute from left/right
-        let l = if !cs.left.is_auto() { resolve(cs.left, containing.width) } else { 0.0 };
-        let r = if !cs.right.is_auto() { resolve(cs.right, containing.width) } else { 0.0 };
-        (containing.width - l - r).max(0.0)
+        // Shrink-to-fit: use containing width as max constraint for now;
+        // we will shrink after recursive layout.
+        (containing.width, true)
     };
 
-    let h = if !cs.height.is_auto() {
-        resolve(cs.height, containing.height)
+    // Height: explicit > opposing insets > bottom-anchor intrinsic > shrink-to-fit
+    let (h, shrink_h) = if !cs.height.is_auto() {
+        (resolve(cs.height, containing.height), false)
+    } else if !cs.top.is_auto() && !cs.bottom.is_auto() {
+        let t = resolve(cs.top, containing.height);
+        let b = resolve(cs.bottom, containing.height);
+        ((containing.height - t - b).max(0.0), false)
+    } else if cs.top.is_auto() && !cs.bottom.is_auto() {
+        // Only 'bottom' is set: compute intrinsic height now so y is correct from the start.
+        let intrinsic = estimate_content_height(doc, child_id, constraints);
+        (intrinsic.max(0.0), false)
     } else {
-        let t = if !cs.top.is_auto() { resolve(cs.top, containing.height) } else { 0.0 };
-        let b = if !cs.bottom.is_auto() { resolve(cs.bottom, containing.height) } else { 0.0 };
-        (containing.height - t - b).max(0.0)
+        (containing.height, true)
     };
 
     let x = if !cs.left.is_auto() {
@@ -942,4 +1073,83 @@ fn layout_absolute_child(
         height: (h - padding.vertical() - border.vertical()).max(0.0),
     };
     node.layout.padding = padding;
+
+    (shrink_w, shrink_h)
+}
+
+/// After recursive layout, shrink an absolute/fixed element's rect to
+/// fit its children when the dimension was auto-sized without opposing insets.
+fn shrink_absolute_to_content(
+    doc: &mut CxrdDocument,
+    node_id: NodeId,
+    shrink_w: bool,
+    shrink_h: bool,
+    constraints: &LayoutConstraints,
+) {
+    if !shrink_w && !shrink_h {
+        return;
+    }
+
+    let node = &doc.nodes[node_id as usize];
+    let rect = node.layout.rect;
+
+    // Use intrinsic content estimates instead of laid-out children bounds.
+    // Block-flow children expand to fill the initially-large absolute
+    // container, making their laid-out rects useless for shrink-to-fit.
+    // The estimate functions compute intrinsic sizes from text content
+    // and explicit dimensions, which is what shrink-to-fit needs.
+    let mut max_child_w: f32 = 0.0;
+    let mut total_child_h: f32 = 0.0;
+    let mut child_count: usize = 0;
+
+    for &child_id in &node.children {
+        if let Some(child) = doc.nodes.get(child_id as usize) {
+            if matches!(child.style.display, Display::None) {
+                continue;
+            }
+        }
+        if shrink_w {
+            let cw = estimate_content_width(doc, child_id, constraints);
+            if cw > max_child_w { max_child_w = cw; }
+        }
+        if shrink_h {
+            total_child_h += estimate_content_height(doc, child_id, constraints);
+            child_count += 1;
+        }
+    }
+
+    let gap = doc.nodes[node_id as usize].style.gap;
+    if child_count > 1 {
+        total_child_h += gap * (child_count - 1) as f32;
+    }
+
+    let node = &mut doc.nodes[node_id as usize];
+    let pad_h = node.layout.padding.horizontal() + node.style.border_width.horizontal();
+    let pad_v = node.layout.padding.vertical() + node.style.border_width.vertical();
+
+    if shrink_w {
+        let new_w = max_child_w + pad_h;
+        node.layout.rect.width = new_w;
+        node.layout.content_rect.width = (new_w - pad_h).max(0.0);
+
+        // Re-anchor x if positioned from the right.
+        if node.style.left.is_auto() && !node.style.right.is_auto() {
+            let old_x = node.layout.rect.x;
+            let shift = rect.width - new_w;
+            node.layout.rect.x = old_x + shift;
+            node.layout.content_rect.x += shift;
+        }
+    }
+    if shrink_h {
+        let new_h = total_child_h + pad_v;
+        node.layout.rect.height = new_h;
+        node.layout.content_rect.height = (new_h - pad_v).max(0.0);
+
+        if node.style.top.is_auto() && !node.style.bottom.is_auto() {
+            let old_y = node.layout.rect.y;
+            let shift = rect.height - new_h;
+            node.layout.rect.y = old_y + shift;
+            node.layout.content_rect.y += shift;
+        }
+    }
 }

@@ -73,8 +73,8 @@ pub struct CanvasBuffer {
     blend_mode: tiny_skia::BlendMode,
     font_size: f32,
     font_family: String,
-    text_align: String,
-    text_baseline: String,
+    pub text_align: String,
+    pub text_baseline: String,
     clip_path: Option<tiny_skia::Path>,
 
     // Path building
@@ -315,6 +315,14 @@ impl CanvasBuffer {
         self.transform = tiny_skia::Transform::identity();
     }
 
+    pub fn clip_current_path(&mut self) {
+        if let Some(ref pb) = self.path_builder {
+            if let Some(path) = pb.clone().finish() {
+                self.clip_path = Some(path);
+            }
+        }
+    }
+
     // ─── Style setters ──────────────────────────────────────────────
     /// Returns true if the current fill style uses a gradient or pattern.
     pub fn uses_gradient_fill(&self) -> bool {
@@ -449,12 +457,153 @@ impl CanvasBuffer {
         self.dirty = true;
     }
 
-    // ─── fillText (basic) ───────────────────────────────────────────
+    // ─── fillText ────────────────────────────────────────────────
 
-    pub fn fill_text(&mut self, _text: &str, _x: f32, _y: f32) {
-        // TODO: Implement text rendering via cosmic-text → tiny-skia.
-        // For now, this is a no-op. Text rendering in Canvas 2D is complex
-        // and not critical for the wallpaper background (decorative only).
+    /// Rasterize text onto this canvas pixmap using cosmic-text.
+    /// `font_system` and `swash_cache` are borrowed from `CanvasManager`.
+    pub fn fill_text(
+        &mut self,
+        text: &str,
+        x: f32,
+        y: f32,
+        font_system: &mut glyphon::FontSystem,
+        swash_cache: &mut glyphon::cosmic_text::SwashCache,
+    ) {
+        use glyphon::cosmic_text::{Attrs as CAttrs, Buffer as CBuffer, Metrics as CMetrics, Shaping as CShaping, SwashContent};
+
+        if text.is_empty() { return; }
+
+        let font_size = self.font_size;
+        let line_height = font_size * 1.2;
+        let metrics = CMetrics::new(font_size, line_height);
+
+        let mut buffer = CBuffer::new(font_system, metrics);
+
+        let family_str = self.font_family.clone();
+        let family = if family_str.is_empty() || family_str == "sans-serif" {
+            glyphon::cosmic_text::Family::SansSerif
+        } else {
+            glyphon::cosmic_text::Family::Name(&family_str)
+        };
+        let attrs = CAttrs::new().family(family);
+
+        // Set a wide bound so text doesn't wrap
+        buffer.set_size(font_system, Some(self.width as f32 * 4.0), Some(line_height * 2.0));
+        buffer.set_text(font_system, text, &attrs, CShaping::Advanced, None);
+        buffer.shape_until_scroll(font_system, false);
+
+        // Determine fill color
+        let (fr, fg, fb, fa) = match &self.fill_style {
+            PaintStyle::Color(c) => (c.red(), c.green(), c.blue(), c.alpha() * self.global_alpha),
+            _ => (0.0, 0.0, 0.0, self.global_alpha),
+        };
+
+        // Compute text width for alignment (measured from layout runs)
+        let text_width: f32 = buffer.layout_runs().map(|run| {
+            run.glyphs.last().map_or(0.0, |g| g.x + g.w)
+        }).fold(0.0_f32, f32::max);
+
+        let align_offset = match self.text_align.as_str() {
+            "center" => -text_width / 2.0,
+            "right" | "end" => -text_width,
+            _ => 0.0,
+        };
+
+        // Canvas 2D baseline: y is the alphabetic baseline.
+        // cosmic-text line_y is from the top of the line.
+        // Approximate ascent as ~80% of font_size for Latin fonts.
+        let baseline_offset = -font_size * 0.8;
+        let offset_y = match self.text_baseline.as_str() {
+            "top" | "hanging" => 0.0,
+            "middle" => -font_size * 0.4,
+            "bottom" | "ideographic" => -font_size,
+            _ => baseline_offset, // "alphabetic" (default)
+        };
+
+        let ox = x + align_offset;
+        let oy = y + offset_y;
+
+        let w = self.width;
+        let h = self.height;
+        // Use the transform to map glyph positions
+        let tf = self.transform;
+
+        for run in buffer.layout_runs() {
+            for glyph in run.glyphs.iter() {
+                let physical = glyph.physical((ox, oy), 1.0);
+                if let Some(image) = swash_cache.get_image(font_system, physical.cache_key) {
+                    let gx = physical.x + image.placement.left;
+                    let gy = physical.y - image.placement.top + run.line_y as i32;
+                    let gw = image.placement.width as i32;
+                    let gh = image.placement.height as i32;
+
+                    match image.content {
+                        SwashContent::Mask => {
+                            for py in 0..gh {
+                                for px in 0..gw {
+                                    // Apply transform to the glyph pixel position
+                                    let sx = (gx + px) as f32 + 0.5;
+                                    let sy = (gy + py) as f32 + 0.5;
+                                    let dx = (tf.sx * sx + tf.kx * sy + tf.tx) as i32;
+                                    let dy = (tf.ky * sx + tf.sy * sy + tf.ty) as i32;
+                                    if dx < 0 || dy < 0 || dx >= w as i32 || dy >= h as i32 { continue; }
+                                    let alpha = image.data[(py * gw + px) as usize] as f32 / 255.0 * fa;
+                                    if alpha < 1.0 / 255.0 { continue; }
+                                    let idx = ((dy as u32 * w + dx as u32) * 4) as usize;
+                                    let pixels = self.pixmap.data_mut();
+                                    if idx + 3 >= pixels.len() { continue; }
+                                    // Premultiplied alpha compositing (src over dst)
+                                    let dst_r = pixels[idx] as f32 / 255.0;
+                                    let dst_g = pixels[idx + 1] as f32 / 255.0;
+                                    let dst_b = pixels[idx + 2] as f32 / 255.0;
+                                    let dst_a = pixels[idx + 3] as f32 / 255.0;
+                                    let out_a = alpha + dst_a * (1.0 - alpha);
+                                    if out_a > 0.001 {
+                                        pixels[idx]     = ((fr * alpha + dst_r * dst_a * (1.0 - alpha)) / out_a * 255.0).min(255.0) as u8;
+                                        pixels[idx + 1] = ((fg * alpha + dst_g * dst_a * (1.0 - alpha)) / out_a * 255.0).min(255.0) as u8;
+                                        pixels[idx + 2] = ((fb * alpha + dst_b * dst_a * (1.0 - alpha)) / out_a * 255.0).min(255.0) as u8;
+                                        pixels[idx + 3] = (out_a * 255.0).min(255.0) as u8;
+                                    }
+                                }
+                            }
+                        }
+                        SwashContent::Color => {
+                            for py in 0..gh {
+                                for px in 0..gw {
+                                    let sx = (gx + px) as f32 + 0.5;
+                                    let sy = (gy + py) as f32 + 0.5;
+                                    let dx = (tf.sx * sx + tf.kx * sy + tf.tx) as i32;
+                                    let dy = (tf.ky * sx + tf.sy * sy + tf.ty) as i32;
+                                    if dx < 0 || dy < 0 || dx >= w as i32 || dy >= h as i32 { continue; }
+                                    let si = ((py * gw + px) * 4) as usize;
+                                    if si + 3 >= image.data.len() { continue; }
+                                    let sr = image.data[si] as f32 / 255.0;
+                                    let sg = image.data[si + 1] as f32 / 255.0;
+                                    let sb = image.data[si + 2] as f32 / 255.0;
+                                    let sa = image.data[si + 3] as f32 / 255.0 * fa;
+                                    if sa < 1.0 / 255.0 { continue; }
+                                    let idx = ((dy as u32 * w + dx as u32) * 4) as usize;
+                                    let pixels = self.pixmap.data_mut();
+                                    if idx + 3 >= pixels.len() { continue; }
+                                    let dst_r = pixels[idx] as f32 / 255.0;
+                                    let dst_g = pixels[idx + 1] as f32 / 255.0;
+                                    let dst_b = pixels[idx + 2] as f32 / 255.0;
+                                    let dst_a = pixels[idx + 3] as f32 / 255.0;
+                                    let out_a = sa + dst_a * (1.0 - sa);
+                                    if out_a > 0.001 {
+                                        pixels[idx]     = ((sr * sa + dst_r * dst_a * (1.0 - sa)) / out_a * 255.0).min(255.0) as u8;
+                                        pixels[idx + 1] = ((sg * sa + dst_g * dst_a * (1.0 - sa)) / out_a * 255.0).min(255.0) as u8;
+                                        pixels[idx + 2] = ((sb * sa + dst_b * dst_a * (1.0 - sa)) / out_a * 255.0).min(255.0) as u8;
+                                        pixels[idx + 3] = (out_a * 255.0).min(255.0) as u8;
+                                    }
+                                }
+                            }
+                        }
+                        _ => {} // SubpixelMask — skip
+                    }
+                }
+            }
+        }
         self.dirty = true;
     }
 
@@ -524,6 +673,12 @@ pub struct CanvasManager {
     pub gradients: HashMap<GradientId, GradientDef>,
     next_canvas_id: CanvasId,
     next_gradient_id: GradientId,
+    /// Number of currently dirty canvas buffers (avoids O(n) scan).
+    pub dirty_count: u32,
+    /// Font system for Canvas 2D text rendering (shared across all canvases).
+    pub font_system: glyphon::FontSystem,
+    /// Glyph rasterization cache for Canvas 2D text.
+    pub swash_cache: glyphon::cosmic_text::SwashCache,
 }
 
 impl CanvasManager {
@@ -533,6 +688,9 @@ impl CanvasManager {
             gradients: HashMap::new(),
             next_canvas_id: 1000, // Start high to avoid conflict with node IDs
             next_gradient_id: 1,
+            dirty_count: 0,
+            font_system: glyphon::FontSystem::new(),
+            swash_cache: glyphon::cosmic_text::SwashCache::new(),
         }
     }
 
@@ -550,6 +708,76 @@ impl CanvasManager {
         self.next_gradient_id += 1;
         self.gradients.insert(id, def);
         id
+    }
+
+    pub fn get_image_data(&self, canvas_id: CanvasId, x: i32, y: i32, w: i32, h: i32) -> Option<(u32, u32, Vec<u8>)> {
+        let canvas = self.buffers.get(&canvas_id)?;
+        let width = w.max(0) as u32;
+        let height = h.max(0) as u32;
+        if width == 0 || height == 0 {
+            return Some((0, 0, Vec::new()));
+        }
+
+        let mut out = vec![0u8; (width * height * 4) as usize];
+        let src = canvas.pixels();
+        let cw = canvas.width as i32;
+        let ch = canvas.height as i32;
+
+        for ry in 0..height as i32 {
+            for rx in 0..width as i32 {
+                let sx = x + rx;
+                let sy = y + ry;
+                let dst_idx = ((ry as u32 * width + rx as u32) * 4) as usize;
+                if sx < 0 || sy < 0 || sx >= cw || sy >= ch {
+                    continue;
+                }
+                let src_idx = ((sy as u32 * canvas.width + sx as u32) * 4) as usize;
+                if src_idx + 3 < src.len() {
+                    out[dst_idx..dst_idx + 4].copy_from_slice(&src[src_idx..src_idx + 4]);
+                }
+            }
+        }
+
+        Some((width, height, out))
+    }
+
+    pub fn put_image_data(&mut self, canvas_id: CanvasId, x: i32, y: i32, w: i32, h: i32, data: &[u8]) {
+        let Some(canvas) = self.buffers.get_mut(&canvas_id) else { return; };
+        let width = w.max(0) as u32;
+        let height = h.max(0) as u32;
+        if width == 0 || height == 0 {
+            return;
+        }
+
+        let expected = (width * height * 4) as usize;
+        if data.len() < expected {
+            return;
+        }
+
+        let cw = canvas.width as i32;
+        let ch = canvas.height as i32;
+        let dst = canvas.pixmap.data_mut();
+        for ry in 0..height as i32 {
+            for rx in 0..width as i32 {
+                let dx = x + rx;
+                let dy = y + ry;
+                if dx < 0 || dy < 0 || dx >= cw || dy >= ch {
+                    continue;
+                }
+                let src_idx = ((ry as u32 * width + rx as u32) * 4) as usize;
+                let dst_idx = ((dy as u32 * canvas.width + dx as u32) * 4) as usize;
+                if dst_idx + 3 < dst.len() {
+                    dst[dst_idx..dst_idx + 4].copy_from_slice(&data[src_idx..src_idx + 4]);
+                }
+            }
+        }
+        canvas.dirty = true;
+    }
+
+    pub fn clip_current_path(&mut self, canvas_id: CanvasId) {
+        if let Some(canvas) = self.buffers.get_mut(&canvas_id) {
+            canvas.clip_current_path();
+        }
     }
 
     /// Clear all gradient definitions and reset the ID counter.
@@ -857,8 +1085,9 @@ fn make_radial_gradient_free(
     }).collect();
     tiny_skia::RadialGradient::new(
         tiny_skia::Point::from_xy(fx, fy),
-        tiny_skia::Point::from_xy(cx, cy),
         r,
+        tiny_skia::Point::from_xy(cx, cy),
+        0.0,
         ts_stops,
         tiny_skia::SpreadMode::Pad,
         tiny_skia::Transform::identity(),
@@ -913,6 +1142,31 @@ fn resolve_non_pattern_paint(
 /// Parse a CSS color string like "rgba(255,0,0,0.5)" or "#ff0000" or "red".
 pub fn parse_css_color(s: &str) -> Option<tiny_skia::Color> {
     let s = s.trim();
+
+    // hsla(h, s%, l%, a) or hsl(h, s%, l%)
+    if s.starts_with("hsla(") && s.ends_with(')') {
+        let inner = &s[5..s.len()-1];
+        let parts: Vec<&str> = inner.split(',').collect();
+        if parts.len() == 4 {
+            let h = parts[0].trim().parse::<f32>().ok()?;
+            let sp = parts[1].trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
+            let l = parts[2].trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
+            let a = parts[3].trim().parse::<f32>().ok()?;
+            let (r, g, b) = hsl_to_rgb(h, sp, l);
+            return tiny_skia::Color::from_rgba(r, g, b, a);
+        }
+    }
+    if s.starts_with("hsl(") && s.ends_with(')') {
+        let inner = &s[4..s.len()-1];
+        let parts: Vec<&str> = inner.split(',').collect();
+        if parts.len() == 3 {
+            let h = parts[0].trim().parse::<f32>().ok()?;
+            let sp = parts[1].trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
+            let l = parts[2].trim().trim_end_matches('%').parse::<f32>().ok()? / 100.0;
+            let (r, g, b) = hsl_to_rgb(h, sp, l);
+            return tiny_skia::Color::from_rgba(r, g, b, 1.0);
+        }
+    }
 
     // rgba(r, g, b, a)
     if s.starts_with("rgba(") && s.ends_with(')') {
@@ -976,4 +1230,26 @@ pub fn parse_css_color(s: &str) -> Option<tiny_skia::Color> {
         "transparent" => tiny_skia::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
         _ => None,
     }
+}
+
+/// Convert HSL to RGB. H is in degrees [0, 360), S and L are [0, 1].
+fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
+    let h = ((h % 360.0) + 360.0) % 360.0;
+    let c = (1.0 - (2.0 * l - 1.0).abs()) * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = l - c / 2.0;
+    let (r1, g1, b1) = if h < 60.0 {
+        (c, x, 0.0)
+    } else if h < 120.0 {
+        (x, c, 0.0)
+    } else if h < 180.0 {
+        (0.0, c, x)
+    } else if h < 240.0 {
+        (0.0, x, c)
+    } else if h < 300.0 {
+        (x, 0.0, c)
+    } else {
+        (c, 0.0, x)
+    };
+    ((r1 + m).clamp(0.0, 1.0), (g1 + m).clamp(0.0, 1.0), (b1 + m).clamp(0.0, 1.0))
 }

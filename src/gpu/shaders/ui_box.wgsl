@@ -1,4 +1,4 @@
-// sentinel-runtime/src/gpu/shaders/ui_box.wgsl
+// canvasx-runtime/src/gpu/shaders/ui_box.wgsl
 //
 // SDF-based UI box renderer.
 // Renders rounded rectangles with borders, backgrounds, and optional textures.
@@ -82,6 +82,14 @@ fn vs_main(vert: VertexInput, inst: InstanceInput) -> VertexOutput {
     return out;
 }
 
+// ─── Color space note ───
+// With sRGB surface format, the GPU automatically converts sRGB→linear on read
+// and linear→sRGB on write. We now work directly with sRGB colors without
+// manual conversions, improving precision and performance. The functions below
+// are kept for reference but are no longer needed.
+// fn srgb_channel_to_linear(c: f32) -> f32 { ... }
+// fn linear_channel_to_srgb(c: f32) -> f32 { ... }
+
 // ─── SDF: Rounded rectangle ───
 // Returns the signed distance from point `p` to a rounded rectangle
 // centered at origin with half-extents `b` and per-corner radii `r`.
@@ -153,13 +161,14 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
         // Sample texture if available
         if (in.flags & FLAG_HAS_TEXTURE) != 0u {
-            let tex_sample = textureSample(t_diffuse, s_diffuse, in.uv);
-            // tiny-skia canvas data is already premultiplied alpha,
-            // so use it directly without re-premultiplying.
+            var tex_sample = textureSample(t_diffuse, s_diffuse, in.uv);
+            // Hardware now handles sRGB conversions, so no manual conversion needed.
+            // tiny-skia canvas data is premultiplied alpha in sRGB, which the GPU
+            // automatically converts to linear on read.
             color = tex_sample * inner_alpha;
         } else {
-            // Non-texture background: convert straight-alpha bg to premultiplied,
-            // then apply SDF mask.
+            // Non-texture background: sRGB colors are automatically converted by hardware.
+            // Just apply the color directly with premultiplication and SDF mask.
             let premul_bg = vec4<f32>(bg.rgb * bg.a, bg.a);
             color = premul_bg * inner_alpha;
         }
@@ -168,6 +177,7 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
     // Border — fills the ring between outer and inner rects
     if (in.flags & FLAG_HAS_BORDER) != 0u && bw > 0.0 {
         let border_alpha = max(outer_alpha - inner_alpha, 0.0);
+        // Hardware handles sRGB conversion automatically.
         let premul_border = vec4<f32>(
             in.border_color.rgb * in.border_color.a,
             in.border_color.a
@@ -177,6 +187,9 @@ fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Apply opacity (premultiplied: scale all channels uniformly)
     color = color * in.opacity;
+
+    // Hardware sRGB format handles linear→sRGB conversion on output automatically.
+    // No manual conversion needed anymore.
 
     return color;
 }

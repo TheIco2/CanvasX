@@ -13,7 +13,8 @@ use crate::cxrd::document::{CxrdDocument, SceneType};
 use crate::cxrd::node::{CxrdNode, NodeKind, ImageFit, NodeId, EventBinding, EventAction};
 use crate::cxrd::input::{InputKind, TextInputType, ButtonVariant, CheckboxStyle};
 use crate::cxrd::style::{ComputedStyle, Display, FlexDirection, FontWeight, TextAlign};
-use crate::compiler::css::{parse_css, apply_property, parse_color, resolve_var_pub, CssRule, CompoundSelector};
+use crate::cxrd::value::Dimension;
+use crate::compiler::css::{parse_css, apply_property, parse_color, CssRule, CompoundSelector};
 use std::collections::HashMap;
 use std::path::Path;
 
@@ -255,6 +256,7 @@ enum HtmlToken {
         self_closing: bool,
     },
     CloseTag {
+        #[allow(dead_code)]
         tag: String,
     },
     Text(String),
@@ -397,14 +399,26 @@ fn tokenize_html(source: &str) -> Vec<HtmlToken> {
 
             tokens.push(HtmlToken::OpenTag { tag, attributes, self_closing });
         } else {
-            // Text content
+            // Text content — collapse whitespace runs to a single space
+            // but preserve boundary spaces for inline element spacing.
             let text_start = pos;
             while pos < bytes.len() && bytes[pos] != b'<' {
                 pos += 1;
             }
-            let text = source[text_start..pos].trim();
-            if !text.is_empty() {
-                tokens.push(HtmlToken::Text(text.to_string()));
+            let raw = &source[text_start..pos];
+            // Collapse internal whitespace runs to single spaces (CSS white-space: normal).
+            let collapsed: String = raw.split_whitespace().collect::<Vec<_>>().join(" ");
+            if !collapsed.is_empty() {
+                // Preserve a leading space if the raw text started with whitespace
+                // and a trailing space if the raw text ended with whitespace.
+                // This is essential for inline element spacing (e.g. "text <strong>bold</strong>").
+                let leading = raw.starts_with(char::is_whitespace) && !collapsed.is_empty();
+                let trailing = raw.ends_with(char::is_whitespace) && !collapsed.is_empty();
+                let mut text = String::with_capacity(collapsed.len() + 2);
+                if leading { text.push(' '); }
+                text.push_str(&collapsed);
+                if trailing { text.push(' '); }
+                tokens.push(HtmlToken::Text(text));
             }
         }
     }
@@ -504,21 +518,91 @@ fn add_node_recursive(
     // Inline-level tags default to flex-row so their children flow horizontally,
     // which is the closest equivalent to inline-flow in our block/flex engine.
     match parsed.tag.as_str() {
-        "span" | "a" | "label" | "strong" | "em" | "b" | "i" | "code" | "small" => {
+        "span" | "a" | "label" | "code" | "small" => {
             style.display = Display::Flex;
             style.flex_direction = FlexDirection::Row;
         }
-        // data-bind is treated as inline-block for layout purposes.
-        // JS (sentinel.js) manages its text content.
+        // Inline + bold
+        "strong" | "b" => {
+            style.display = Display::Flex;
+            style.flex_direction = FlexDirection::Row;
+            style.font_weight = FontWeight(700);
+        }
+        // Inline + italic (note: we store italic as weight 0 sentinel; see text painter)
+        "em" | "i" => {
+            style.display = Display::Flex;
+            style.flex_direction = FlexDirection::Row;
+            // Italic handled via tag check in text painter; no weight change.
+        }
+        // Heading defaults — browser UA sizes relative to 16px base.
+        "h1" => {
+            style.font_size = 32.0;
+            style.font_weight = FontWeight(700);
+            style.margin.top = Dimension::Em(0.67);
+            style.margin.bottom = Dimension::Em(0.67);
+        }
+        "h2" => {
+            style.font_size = 24.0;
+            style.font_weight = FontWeight(700);
+            style.margin.top = Dimension::Em(0.83);
+            style.margin.bottom = Dimension::Em(0.83);
+        }
+        "h3" => {
+            style.font_size = 18.72;
+            style.font_weight = FontWeight(700);
+            style.margin.top = Dimension::Em(1.0);
+            style.margin.bottom = Dimension::Em(1.0);
+        }
+        "h4" => {
+            style.font_size = 16.0;
+            style.font_weight = FontWeight(700);
+            style.margin.top = Dimension::Em(1.33);
+            style.margin.bottom = Dimension::Em(1.33);
+        }
+        "h5" => {
+            style.font_size = 13.28;
+            style.font_weight = FontWeight(700);
+            style.margin.top = Dimension::Em(1.67);
+            style.margin.bottom = Dimension::Em(1.67);
+        }
+        "h6" => {
+            style.font_size = 10.72;
+            style.font_weight = FontWeight(700);
+            style.margin.top = Dimension::Em(2.33);
+            style.margin.bottom = Dimension::Em(2.33);
+        }
+        // <p> uses flex-row-wrap so inline children (text, <strong>, <em>, etc.)
+        // flow horizontally, approximating CSS inline formatting context.
+        "p" => {
+            style.display = Display::Flex;
+            style.flex_direction = FlexDirection::Row;
+            style.flex_wrap = crate::cxrd::style::FlexWrap::Wrap;
+            style.margin.top = Dimension::Em(1.0);
+            style.margin.bottom = Dimension::Em(1.0);
+        }
+        // data-bind custom tag default.
         "data-bind" => {
             style.display = Display::InlineBlock;
             if parsed.classes.iter().any(|c| c == "val") {
                 style.flex_grow = 1.0;
             }
         }
+        // data-bar custom tag default.
+        "data-bar" => {
+            style.display = Display::Block;
+        }
         // canvas element — block-level, sized by width/height attributes.
         "canvas" => {
             style.display = Display::Block;
+            // Use HTML width/height attributes as intrinsic CSS dimensions,
+            // matching browser behavior where canvas elements have
+            // intrinsic size from their attributes (default 300×150).
+            if let Some(w) = parsed.attributes.get("width").and_then(|v| v.parse::<f32>().ok()) {
+                style.width = Dimension::Px(w);
+            }
+            if let Some(h) = parsed.attributes.get("height").and_then(|v| v.parse::<f32>().ok()) {
+                style.height = Dimension::Px(h);
+            }
         }
         _ => {} // default Block
     }
@@ -671,7 +755,7 @@ fn extract_event_bindings(parsed: &ParsedNode) -> Vec<EventBinding> {
 }
 
 /// Determine the NodeKind from the HTML element.
-fn determine_node_kind(parsed: &ParsedNode, variables: &HashMap<String, String>) -> NodeKind {
+fn determine_node_kind(parsed: &ParsedNode, _variables: &HashMap<String, String>) -> NodeKind {
     match parsed.tag.as_str() {
         "#text" => {
             NodeKind::Text {
@@ -684,11 +768,7 @@ fn determine_node_kind(parsed: &ParsedNode, variables: &HashMap<String, String>)
                 fit: ImageFit::Cover,
             }
         }
-        "data-bind" => {
-            // data-bind is now treated as a regular container element.
-            // JS (sentinel.js) handles updating its text content via DOM APIs.
-            NodeKind::Container
-        }
+        "data-bind" | "data-bar" => NodeKind::Container,
         "canvas" => {
             let width: u32 = parsed.attributes.get("width")
                 .and_then(|v| v.parse().ok())
@@ -906,10 +986,15 @@ fn restyle_recursive(
     parent_style: Option<&ComputedStyle>,
 ) {
     // ── 1. Read node metadata (immutable borrow) ──────────────────────
-    let (tag, classes, html_id, inline_style, children) = {
+    let (tag, classes, html_id, inline_style, children, canvas_dims) = {
         let node = match doc.get_node(node_id) {
             Some(n) => n,
             None => return,
+        };
+        let cdims = if let crate::cxrd::node::NodeKind::Canvas { width, height } = &node.kind {
+            Some((*width, *height))
+        } else {
+            None
         };
         (
             node.tag.clone(),
@@ -918,6 +1003,7 @@ fn restyle_recursive(
             // Reconstruct inline style from the node's `style` attribute if present.
             node.attributes.get("style").cloned().unwrap_or_default(),
             node.children.clone(),
+            cdims,
         )
     };
 
@@ -927,9 +1013,29 @@ fn restyle_recursive(
     // Tag-specific display defaults (mirrors add_node_recursive).
     if let Some(ref t) = tag {
         match t.as_str() {
-            "span" | "a" | "label" | "strong" | "em" | "b" | "i" | "code" | "small" => {
+            "span" | "a" | "label" | "code" | "small" => {
                 style.display = Display::Flex;
                 style.flex_direction = FlexDirection::Row;
+            }
+            "strong" | "b" => {
+                style.display = Display::Flex;
+                style.flex_direction = FlexDirection::Row;
+                style.font_weight = FontWeight(700);
+            }
+            "em" | "i" => {
+                style.display = Display::Flex;
+                style.flex_direction = FlexDirection::Row;
+            }
+            "h1" => { style.font_size = 32.0; style.font_weight = FontWeight(700); }
+            "h2" => { style.font_size = 24.0; style.font_weight = FontWeight(700); }
+            "h3" => { style.font_size = 18.72; style.font_weight = FontWeight(700); }
+            "h4" => { style.font_size = 16.0; style.font_weight = FontWeight(700); }
+            "h5" => { style.font_size = 13.28; style.font_weight = FontWeight(700); }
+            "h6" => { style.font_size = 10.72; style.font_weight = FontWeight(700); }
+            "p" => {
+                style.display = Display::Flex;
+                style.flex_direction = FlexDirection::Row;
+                style.flex_wrap = crate::cxrd::style::FlexWrap::Wrap;
             }
             "data-bind" => {
                 style.display = crate::cxrd::style::Display::InlineBlock;
@@ -937,8 +1043,17 @@ fn restyle_recursive(
                     style.flex_grow = 1.0;
                 }
             }
+            "data-bar" => {
+                style.display = crate::cxrd::style::Display::Block;
+            }
             "canvas" => {
                 style.display = Display::Block;
+                // Use canvas buffer dimensions as intrinsic CSS size,
+                // matching browser behavior.
+                if let Some((w, h)) = canvas_dims {
+                    style.width = Dimension::Px(w as f32);
+                    style.height = Dimension::Px(h as f32);
+                }
             }
             _ => {} // default Block
         }

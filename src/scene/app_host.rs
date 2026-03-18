@@ -91,6 +91,7 @@ struct PageInstance {
     /// Input handler for this page.
     input_handler: InputHandler,
     /// Optional editables.
+    #[allow(dead_code)]
     editables: Option<EditableContext>,
     /// Whether the page needs re-layout.
     dirty: bool,
@@ -112,6 +113,7 @@ pub struct AppHost {
     /// Protocol handlers for custom URI schemes.
     protocol_handlers: Vec<Box<dyn ProtocolHandler>>,
     /// App-level input handler (for sidebar, title bar, etc.).
+    #[allow(dead_code)]
     chrome_input_handler: InputHandler,
     /// Sidebar width in pixels.
     pub sidebar_width: f32,

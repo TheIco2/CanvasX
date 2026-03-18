@@ -3,7 +3,6 @@
 // Property interpolation for animated values.
 
 use crate::cxrd::animation::AnimatableProperty;
-use crate::cxrd::value::Color;
 
 /// Linearly interpolate between two animatable property values.
 /// Returns the interpolated property at factor `t` (0.0–1.0).

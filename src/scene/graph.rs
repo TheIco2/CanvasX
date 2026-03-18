@@ -6,10 +6,11 @@
 
 use std::collections::HashMap;
 use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::value::Color;
+use crate::cxrd::node::NodeKind;
+use crate::cxrd::value::Dimension;
 use crate::gpu::vertex::UiInstance;
 use crate::layout::engine::compute_layout;
-use crate::scene::paint::{paint_document, GradientTexture};
+use crate::scene::paint::{paint_document, GradientTexture, GradientCacheKey};
 use crate::scene::text::TextPainter;
 use crate::animate::timeline::AnimationTimeline;
 
@@ -31,10 +32,29 @@ pub struct SceneGraph {
     layout_dirty: bool,
 
     /// Cached paint output.
-    cached_instances: Vec<UiInstance>,
+    pub cached_instances: Vec<UiInstance>,
 
     /// Gradient textures from the last paint pass (to be uploaded each frame).
     pub cached_gradient_textures: Vec<GradientTexture>,
+
+    /// Whether gradient textures were regenerated and need GPU upload.
+    gradient_textures_dirty: bool,
+
+    /// Whether paint output needs regeneration.
+    paint_dirty: bool,
+
+    /// Cached gradient textures (keyed by gradient parameters + size).
+    /// Avoids re-rasterizing identical gradients every frame.
+    gradient_cache: HashMap<GradientCacheKey, GradientTexture>,
+
+    /// Whether gradient cache was used this frame (avoid re-uploading unchanged gradients).
+    gradient_cache_dirty: bool,
+
+    /// Cached list of nodes with data-bind attributes.
+    data_bound_nodes: Vec<u32>,
+
+    /// Whether the data-bound nodes list needs rebuilding.
+    data_bound_dirty: bool,
 }
 
 impl SceneGraph {
@@ -48,6 +68,12 @@ impl SceneGraph {
             layout_dirty: true,
             cached_instances: Vec::new(),
             cached_gradient_textures: Vec::new(),
+            gradient_textures_dirty: true,
+            paint_dirty: true,
+            data_bound_nodes: Vec::new(),
+            data_bound_dirty: true,
+            gradient_cache: HashMap::new(),
+            gradient_cache_dirty: true,
         }
     }
 
@@ -58,57 +84,231 @@ impl SceneGraph {
         self.cached_instances.clear();
         self.cached_gradient_textures.clear();
         self.timeline = AnimationTimeline::new();
+        self.paint_dirty = true;
+        self.gradient_textures_dirty = true;
+        self.data_bound_dirty = true;
+        // Keep gradient_cache for reuse across document changes
+        // (safe because cache keys include size)
+        self.gradient_cache_dirty = true;
     }
 
     /// Update live data from IPC.
     pub fn update_data(&mut self, key: String, value: String) {
         self.data_values.insert(key, value);
-        // Data changes don't require re-layout (text content changes don't
-        // affect box sizes in our simplified model — they just reflow within
-        // their container).
+        self.apply_custom_data_tags();
     }
 
-    /// Bulk update data values.
+    /// Bulk update data values. Takes ownership to avoid clone.
     pub fn update_data_batch(&mut self, values: HashMap<String, String>) {
+        if values.is_empty() {
+            return;
+        }
         self.data_values.extend(values);
+        self.apply_custom_data_tags();
     }
 
     /// Mark layout as dirty (e.g. on resize, document change).
     pub fn invalidate_layout(&mut self) {
         self.layout_dirty = true;
+        self.paint_dirty = true;
     }
 
     /// Run a frame tick: layout → animate → paint.
-    /// Returns the instance list and clear color.
+    /// Updates cached_instances and cached_gradient_textures.
+    /// Access results via cached_instances, document.background, and text_areas() after calling.
     pub fn tick(
         &mut self,
         viewport_width: f32,
         viewport_height: f32,
         dt: f32,
         font_system: &mut glyphon::FontSystem,
-    ) -> (&[UiInstance], Color) {
+    ) {
         // 1. Re-layout if dirty.
         if self.layout_dirty {
             compute_layout(&mut self.document, viewport_width, viewport_height);
             self.layout_dirty = false;
+            self.paint_dirty = true;
         }
 
         // 2. Advance animations.
-        self.timeline.advance(&mut self.document, dt);
+        if self.timeline.has_active() {
+            self.timeline.advance(&mut self.document, dt);
+            self.paint_dirty = true;
+        }
 
         // 3. Prepare text.
         self.text_painter.prepare(&self.document, font_system, &self.data_values);
 
-        // 4. Paint.
-        let paint_output = paint_document(&self.document);
-        self.cached_instances = paint_output.instances;
-        self.cached_gradient_textures = paint_output.gradient_textures;
+        // 4. Paint only when necessary.
+        if self.paint_dirty {
+            let paint_output = paint_document(&self.document, &mut self.gradient_cache);
+            self.cached_instances = paint_output.instances;
+            self.cached_gradient_textures = paint_output.gradient_textures;
+            self.gradient_textures_dirty = true;
+            self.paint_dirty = false;
+        }
+    }
 
-        (&self.cached_instances, self.document.background)
+    /// Returns whether gradient textures were regenerated since last check.
+    pub fn take_gradient_textures_dirty(&mut self) -> bool {
+        let dirty = self.gradient_textures_dirty;
+        self.gradient_textures_dirty = false;
+        dirty
     }
 
     /// Get text areas for the current frame (call after tick).
     pub fn text_areas(&self) -> Vec<glyphon::TextArea<'_>> {
         self.text_painter.text_areas(&self.document)
     }
+
+    fn apply_custom_data_tags(&mut self) {
+        // Rebuild cached list of data-bound nodes if needed.
+        if self.data_bound_dirty {
+            self.data_bound_nodes.clear();
+            for idx in 0..self.document.nodes.len() {
+                let node = &self.document.nodes[idx];
+                let has_binding = node.attributes.contains_key("binding")
+                    || node.attributes.contains_key("data-binding")
+                    || node.attributes.contains_key("data-bind");
+                if has_binding {
+                    self.data_bound_nodes.push(idx as u32);
+                }
+            }
+            self.data_bound_dirty = false;
+        }
+
+        let mut any_layout_changed = false;
+        // Clone the list since we'll mutate document
+        let bound_nodes = self.data_bound_nodes.clone();
+
+        for &node_id in &bound_nodes {
+            let (tag, attrs, children) = match self.document.get_node(node_id) {
+                Some(node) => (
+                    node.tag.clone().unwrap_or_default(),
+                    node.attributes.clone(),
+                    node.children.clone(),
+                ),
+                None => continue,
+            };
+
+            let binding_raw = attrs
+                .get("binding")
+                .or_else(|| attrs.get("data-binding"))
+                .or_else(|| attrs.get("data-bind"))
+                .cloned();
+            let Some(binding_raw) = binding_raw else { continue; };
+
+            let keys = parse_binding_keys(&binding_raw);
+            if keys.is_empty() {
+                continue;
+            }
+
+            let meta = attrs.get("meta").cloned().unwrap_or_default().to_ascii_lowercase();
+            let stack = meta.split_whitespace().any(|m| m == "stack") || meta.contains("stack");
+
+            if tag == "data-bind" {
+                let values: Vec<String> = keys
+                    .iter()
+                    .filter_map(|k| self.data_values.get(k).cloned())
+                    .collect();
+                let text = if stack { values.join("\n") } else { values.join(" ") };
+
+                let mut text_child = children.iter().find_map(|cid| {
+                    self.document.get_node(*cid).and_then(|n| {
+                        if matches!(n.kind, NodeKind::Text { .. }) { Some(*cid) } else { None }
+                    })
+                });
+
+                if text_child.is_none() {
+                    let mut new_text = crate::cxrd::node::CxrdNode::text(0, "");
+                    if let Some(parent) = self.document.get_node(node_id) {
+                        new_text.style.color = parent.style.color;
+                        new_text.style.font_size = parent.style.font_size;
+                        new_text.style.font_family = parent.style.font_family.clone();
+                        new_text.style.font_weight = parent.style.font_weight;
+                        new_text.style.letter_spacing = parent.style.letter_spacing;
+                        new_text.style.line_height = parent.style.line_height;
+                        new_text.style.text_align = parent.style.text_align;
+                        new_text.style.text_transform = parent.style.text_transform;
+                    }
+                    let tid = self.document.add_node(new_text);
+                    self.document.add_child(node_id, tid);
+                    text_child = Some(tid);
+                }
+
+                if let Some(tid) = text_child {
+                    if let Some(node) = self.document.get_node_mut(tid) {
+                        if let NodeKind::Text { content } = &mut node.kind {
+                            if *content != text {
+                                *content = text;
+                            }
+                        }
+                    }
+                }
+            } else if tag == "data-bar" {
+                let max = attrs
+                    .get("max")
+                    .and_then(|s| s.parse::<f32>().ok())
+                    .filter(|v| *v > 0.0)
+                    .unwrap_or(100.0);
+
+                let nums: Vec<f32> = keys
+                    .iter()
+                    .filter_map(|k| self.data_values.get(k))
+                    .filter_map(|v| parse_numeric_value(v))
+                    .collect();
+                if nums.is_empty() {
+                    continue;
+                }
+
+                let pct = if stack && nums.len() > 1 {
+                    let sum: f32 = nums.iter().copied().sum();
+                    ((sum / (max * nums.len() as f32)) * 100.0).clamp(0.0, 100.0)
+                } else {
+                    ((nums[0] / max) * 100.0).clamp(0.0, 100.0)
+                };
+
+                if let Some(node) = self.document.get_node_mut(node_id) {
+                    match node.style.width {
+                        Dimension::Percent(old) if (old - pct).abs() < 0.1 => {}
+                        _ => {
+                            node.style.width = Dimension::Percent(pct);
+                            any_layout_changed = true;
+                        }
+                    }
+                }
+            }
+        }
+
+        if any_layout_changed {
+            self.layout_dirty = true;
+            self.paint_dirty = true;
+        }
+    }
+}
+
+fn parse_binding_keys(raw: &str) -> Vec<String> {
+    raw.split(|c: char| c == ',' || c == '|' || c == ';' || c == '\n')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string())
+        .collect()
+}
+
+fn parse_numeric_value(value: &str) -> Option<f32> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let cleaned = trimmed
+        .trim_end_matches('%')
+        .replace(',', "")
+        .replace("MB/s", "")
+        .replace("GB/s", "")
+        .replace("KB/s", "")
+        .replace("B/s", "")
+        .replace('W', "")
+        .trim()
+        .to_string();
+    cleaned.parse::<f32>().ok()
 }
