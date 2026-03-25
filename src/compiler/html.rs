@@ -32,6 +32,104 @@ std::thread_local! {
     static COLLECTED_SCRIPTS: std::cell::RefCell<Vec<ScriptBlock>> = std::cell::RefCell::new(Vec::new());
 }
 
+/// Preprocess `<include src="path">` or `<include src="path" />` tags.
+///
+/// Recursively resolves include directives by reading the referenced file and
+/// inlining its contents. Paths are resolved relative to `base_dir`. A depth
+/// limit of 16 prevents infinite recursion.
+fn preprocess_includes(html: &str, base_dir: Option<&Path>, depth: u32) -> String {
+    if depth > 16 {
+        log::warn!("include depth limit reached (>16), stopping recursion");
+        return html.to_string();
+    }
+
+    let mut result = String::with_capacity(html.len());
+    let lower = html.to_lowercase();
+    let bytes = html.as_bytes();
+    let mut pos = 0;
+
+    while pos < bytes.len() {
+        if let Some(idx) = lower[pos..].find("<include") {
+            let abs = pos + idx;
+            // Copy everything before this tag.
+            result.push_str(&html[pos..abs]);
+
+            // Find the end of the tag: either /> or >
+            let after_tag = abs + "<include".len();
+            let tag_end = if let Some(sc) = html[after_tag..].find("/>") {
+                after_tag + sc + 2
+            } else if let Some(gt) = html[after_tag..].find('>') {
+                // Look for </include>
+                let content_start = after_tag + gt + 1;
+                if let Some(close) = lower[content_start..].find("</include>") {
+                    content_start + close + "</include>".len()
+                } else {
+                    after_tag + gt + 1
+                }
+            } else {
+                // Malformed, just output as-is.
+                result.push_str(&html[abs..abs + "<include".len()]);
+                pos = after_tag;
+                continue;
+            };
+
+            // Extract src attribute from the tag.
+            let tag_text = &html[abs..tag_end];
+            let src = extract_attribute(tag_text, "src");
+
+            if let Some(src_path) = src {
+                let resolved = if let Some(base) = base_dir {
+                    base.join(&src_path)
+                } else {
+                    Path::new(&src_path).to_path_buf()
+                };
+                match std::fs::read_to_string(&resolved) {
+                    Ok(contents) => {
+                        let child_dir = resolved.parent().or(base_dir);
+                        let expanded = preprocess_includes(&contents, child_dir, depth + 1);
+                        result.push_str(&expanded);
+                    }
+                    Err(e) => {
+                        log::error!("include: failed to read '{}': {}", resolved.display(), e);
+                        result.push_str(&format!("<!-- include error: {} -->", e));
+                    }
+                }
+            } else {
+                log::warn!("include tag without src attribute: {}", tag_text);
+            }
+
+            pos = tag_end;
+        } else {
+            result.push_str(&html[pos..]);
+            break;
+        }
+    }
+
+    result
+}
+
+/// Extract a named attribute value from a tag string.
+fn extract_attribute(tag: &str, attr_name: &str) -> Option<String> {
+    let lower = tag.to_lowercase();
+    let needle = format!("{}=", attr_name);
+    if let Some(idx) = lower.find(&needle) {
+        let after_eq = idx + needle.len();
+        let rest = tag[after_eq..].trim_start();
+        if rest.starts_with('"') {
+            let inner = &rest[1..];
+            if let Some(end) = inner.find('"') {
+                return Some(inner[..end].to_string());
+            }
+        } else if rest.starts_with('\'') {
+            let inner = &rest[1..];
+            if let Some(end) = inner.find('\'') {
+                return Some(inner[..end].to_string());
+            }
+        }
+    }
+    None
+}
+
 /// Compile an HTML file + CSS into a CXRD document.
 ///
 /// `html_source` — the HTML content.
@@ -43,9 +141,13 @@ pub fn compile_html(
     css_source: &str,
     name: &str,
     scene_type: SceneType,
-    _asset_dir: Option<&Path>,
+    asset_dir: Option<&Path>,
 ) -> anyhow::Result<(CxrdDocument, Vec<ScriptBlock>, Vec<CssRule>)> {
     let mut doc = CxrdDocument::new(name, scene_type);
+
+    // 0. Preprocess <include> tags.
+    let html_source = preprocess_includes(html_source, asset_dir, 0);
+    let html_source = html_source.as_str();
 
     // 1. Extract inline <style> blocks from the HTML and merge with external CSS.
     //    This ensures CSS from both <head><style> and <body><style> blocks is captured,

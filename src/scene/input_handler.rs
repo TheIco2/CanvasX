@@ -156,15 +156,19 @@ impl InputHandler {
                 self.handle_mouse_move(doc, x, y);
             }
             RawInputEvent::MouseDown { x, y, button } => {
-                self.mouse_pos = (x, y);
+                // Use tracked position when coordinates are zero (common for
+                // AppHost consumers that don't have direct InputHandler access).
+                let (mx, my) = if x == 0.0 && y == 0.0 { self.mouse_pos } else { (x, y) };
+                self.mouse_pos = (mx, my);
                 if button == MouseButton::Left {
-                    self.handle_mouse_down(doc, x, y);
+                    self.handle_mouse_down(doc, mx, my);
                 }
             }
             RawInputEvent::MouseUp { x, y, button } => {
-                self.mouse_pos = (x, y);
+                let (mx, my) = if x == 0.0 && y == 0.0 { self.mouse_pos } else { (x, y) };
+                self.mouse_pos = (mx, my);
                 if button == MouseButton::Left {
-                    self.handle_mouse_up(doc, x, y);
+                    self.handle_mouse_up(doc, mx, my);
                 }
             }
             RawInputEvent::MouseWheel { x, y, delta_x, delta_y } => {
@@ -210,8 +214,15 @@ impl InputHandler {
             }
         }
 
-        // If this node is interactive, return it.
+        // If this node is interactive or has event bindings, return it.
         if is_interactive(&node.kind) || !node.events.is_empty() {
+            return Some(node_id);
+        }
+
+        // For non-interactive leaf/container nodes, still return them so
+        // click events can bubble up to a parent with event handlers.
+        // Only skip truly transparent nodes (root container with no content).
+        if node_id != doc.root {
             return Some(node_id);
         }
 
@@ -361,9 +372,13 @@ impl InputHandler {
             None => return,
         };
 
+        // Track whether event bindings were found on the clicked node.
+        let mut found_bindings = false;
+
         // Dispatch compiled event bindings.
         for binding in &node.events {
             if binding.event == "click" {
+                found_bindings = true;
                 match &binding.action {
                     EventAction::IpcCommand { ns, cmd, args } => {
                         self.pending_events.push(UiEvent::IpcCommand {
@@ -384,12 +399,69 @@ impl InputHandler {
             }
         }
 
+        // Event bubbling: if the clicked node had no click bindings,
+        // walk up the parent chain to find an ancestor with handlers.
+        if !found_bindings {
+            self.bubble_click_to_parent(doc, node_id);
+        }
+
         // Handle built-in interactive node types.
-        // We need to re-retrieve the node as mutable for modifications.
         self.handle_interactive_click(doc, node_id);
 
         // Always emit a generic click event.
         self.pending_events.push(UiEvent::Click { node_id });
+    }
+
+    /// Walk up from `child_id` through parent nodes, dispatching click event
+    /// bindings on the first ancestor that has them (event bubbling).
+    fn bubble_click_to_parent(&mut self, doc: &CxrdDocument, child_id: NodeId) {
+        // Find parent that contains child_id.
+        let mut current = child_id;
+        while let Some(parent_id) = self.find_parent(doc, doc.root, current) {
+            if let Some(parent) = doc.get_node(parent_id) {
+                let mut found = false;
+                for binding in &parent.events {
+                    if binding.event == "click" {
+                        found = true;
+                        match &binding.action {
+                            EventAction::IpcCommand { ns, cmd, args } => {
+                                self.pending_events.push(UiEvent::IpcCommand {
+                                    ns: ns.clone(),
+                                    cmd: cmd.clone(),
+                                    args: args.clone(),
+                                });
+                            }
+                            EventAction::Navigate { scene_id } => {
+                                self.pending_events.push(UiEvent::NavigateRequest {
+                                    scene_id: scene_id.clone(),
+                                });
+                            }
+                            other => {
+                                self.pending_events.push(UiEvent::Action(other.clone()));
+                            }
+                        }
+                    }
+                }
+                if found {
+                    return; // Stop bubbling once we find a handler.
+                }
+            }
+            current = parent_id;
+        }
+    }
+
+    /// Find the parent of `target` by searching from `node_id` downward.
+    fn find_parent(&self, doc: &CxrdDocument, node_id: NodeId, target: NodeId) -> Option<NodeId> {
+        let node = doc.get_node(node_id)?;
+        for &child_id in &node.children {
+            if child_id == target {
+                return Some(node_id);
+            }
+            if let Some(found) = self.find_parent(doc, child_id, target) {
+                return Some(found);
+            }
+        }
+        None
     }
 
     fn handle_interactive_click(&mut self, doc: &mut CxrdDocument, node_id: NodeId) {

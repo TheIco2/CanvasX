@@ -67,6 +67,16 @@ impl Capability for DeviceAccess {
     fn description(&self) -> &'static str { "Allows communication with connected peripherals and devices." }
 }
 
+/// System tray access capability.
+/// When declared, the application can show a system tray icon
+/// with configurable menu items and minimize-to-tray behaviour.
+pub struct TrayAccess;
+
+impl Capability for TrayAccess {
+    fn name(&self) -> &'static str { "Tray" }
+    fn description(&self) -> &'static str { "Allows the application to display a system tray icon and menu." }
+}
+
 /// A set of declared capabilities for a CanvasX application.
 pub struct CapabilitySet {
     capabilities: Vec<Box<dyn Capability>>,
@@ -96,6 +106,11 @@ impl CapabilitySet {
     /// Check if network access is declared (convenience method).
     pub fn has_network(&self) -> bool {
         self.capabilities.iter().any(|c| c.name() == "Network")
+    }
+
+    /// Check if tray access is declared (convenience method).
+    pub fn has_tray(&self) -> bool {
+        self.capabilities.iter().any(|c| c.name() == "Tray")
     }
 
     /// Get all declared capability names.

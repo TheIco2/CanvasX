@@ -35,5 +35,5 @@ pub use scene::input_handler::{InputHandler, RawInputEvent, UiEvent};
 pub use scene::app_host::{AppHost, AppEvent, SentinelAppBuilder};
 pub use compiler::editable::EditableContext;
 pub use devtools::DevTools;
-pub use capabilities::{CapabilitySet, NetworkAccess, StorageAccess, IpcAccess, SystemInfo, FileSystemAccess, DeviceAccess};
+pub use capabilities::{CapabilitySet, NetworkAccess, StorageAccess, IpcAccess, SystemInfo, FileSystemAccess, DeviceAccess, TrayAccess};
 pub use tray::{SystemTray, TrayConfig, TrayMenu, TrayMenuEntry, TrayMenuItem, TrayItemStack, TrayMenuAction, TrayEvent};
