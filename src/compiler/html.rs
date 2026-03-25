@@ -25,6 +25,8 @@ pub struct ScriptBlock {
     pub content: String,
     /// External script src path (relative to HTML file).
     pub src: Option<String>,
+    /// Whether this script should run after all other scripts (deferred loading).
+    pub deferred: bool,
 }
 
 // Thread-local storage for collecting scripts during tokenization.
@@ -32,18 +34,38 @@ std::thread_local! {
     static COLLECTED_SCRIPTS: std::cell::RefCell<Vec<ScriptBlock>> = std::cell::RefCell::new(Vec::new());
 }
 
-/// Preprocess `<include src="path">` or `<include src="path" />` tags.
+/// Preprocess `<include>` tags with optional `type` and `immediate` attributes.
 ///
-/// Recursively resolves include directives by reading the referenced file and
-/// inlining its contents. Paths are resolved relative to `base_dir`. A depth
-/// limit of 16 prevents infinite recursion.
+/// Supported forms:
+///   `<include src="path" />`                     — resolve relative to `base_dir` (legacy)
+///   `<include type="component" src="name" />`    — resolve from `base_dir/components/`
+///   `<include type="asset" src="path" />`        — resolve from `base_dir/assets/`
+///
+/// Asset includes handle file extensions:
+///   `.css` → wrapped in `<style>…</style>`
+///   `.js`  → wrapped in `<script>…</script>` (deferred by default, `immediate` to inline)
+///   other  → inlined as HTML
+///
+/// Recursion depth is capped at 16 to prevent infinite loops.
 fn preprocess_includes(html: &str, base_dir: Option<&Path>, depth: u32) -> String {
+    let (mut result, deferred) = preprocess_includes_inner(html, base_dir, depth);
+    // Append deferred scripts at the very end of the document.
+    for script in &deferred {
+        result.push_str("\n<script data-deferred=\"true\">\n");
+        result.push_str(script);
+        result.push_str("\n</script>");
+    }
+    result
+}
+
+fn preprocess_includes_inner(html: &str, base_dir: Option<&Path>, depth: u32) -> (String, Vec<String>) {
     if depth > 16 {
         log::warn!("include depth limit reached (>16), stopping recursion");
-        return html.to_string();
+        return (html.to_string(), Vec::new());
     }
 
     let mut result = String::with_capacity(html.len());
+    let mut deferred_scripts: Vec<String> = Vec::new();
     let lower = html.to_lowercase();
     let bytes = html.as_bytes();
     let mut pos = 0;
@@ -73,21 +95,60 @@ fn preprocess_includes(html: &str, base_dir: Option<&Path>, depth: u32) -> Strin
                 continue;
             };
 
-            // Extract src attribute from the tag.
+            // Extract attributes from the tag.
             let tag_text = &html[abs..tag_end];
             let src = extract_attribute(tag_text, "src");
+            let include_type = extract_attribute(tag_text, "type");
+            let immediate = has_attribute(tag_text, "immediate");
 
             if let Some(src_path) = src {
-                let resolved = if let Some(base) = base_dir {
+                // Resolve base directory based on type.
+                let resolve_base = match include_type.as_deref() {
+                    Some("component") => base_dir.map(|b| b.join("components")),
+                    Some("asset") => base_dir.map(|b| b.join("assets")),
+                    _ => base_dir.map(|b| b.to_path_buf()),
+                };
+
+                let resolved = if let Some(ref base) = resolve_base {
                     base.join(&src_path)
                 } else {
                     Path::new(&src_path).to_path_buf()
                 };
+
                 match std::fs::read_to_string(&resolved) {
                     Ok(contents) => {
-                        let child_dir = resolved.parent().or(base_dir);
-                        let expanded = preprocess_includes(&contents, child_dir, depth + 1);
-                        result.push_str(&expanded);
+                        let ext = resolved.extension()
+                            .and_then(|e| e.to_str())
+                            .unwrap_or("")
+                            .to_lowercase();
+                        match ext.as_str() {
+                            "css" => {
+                                // CSS assets are wrapped in <style> tags so the
+                                // existing inline CSS extraction picks them up.
+                                result.push_str("<style>\n");
+                                result.push_str(&contents);
+                                result.push_str("\n</style>");
+                            }
+                            "js" => {
+                                if immediate {
+                                    // Immediate: inline as a regular <script>.
+                                    result.push_str("<script>\n");
+                                    result.push_str(&contents);
+                                    result.push_str("\n</script>");
+                                } else {
+                                    // Deferred: collect and append after all other content.
+                                    deferred_scripts.push(contents);
+                                }
+                            }
+                            _ => {
+                                // HTML content — recurse for nested includes.
+                                let child_dir = resolved.parent().or(base_dir);
+                                let (expanded, child_deferred) =
+                                    preprocess_includes_inner(&contents, child_dir, depth + 1);
+                                result.push_str(&expanded);
+                                deferred_scripts.extend(child_deferred);
+                            }
+                        }
                     }
                     Err(e) => {
                         log::error!("include: failed to read '{}': {}", resolved.display(), e);
@@ -105,7 +166,96 @@ fn preprocess_includes(html: &str, base_dir: Option<&Path>, depth: u32) -> Strin
         }
     }
 
+    (result, deferred_scripts)
+}
+
+/// Preprocess `<page-content>` tags by inlining the default page fragment.
+///
+/// `<page-content default="devices" />` becomes:
+/// `<page-content data-default="devices" data-active-content="devices">[devices.html content]</page-content>`
+fn preprocess_page_content(html: &str, base_dir: Option<&Path>) -> String {
+    let mut result = String::with_capacity(html.len());
+    let lower = html.to_lowercase();
+    let bytes = html.as_bytes();
+    let mut pos = 0;
+
+    while pos < bytes.len() {
+        if let Some(idx) = lower[pos..].find("<page-content") {
+            let abs = pos + idx;
+            result.push_str(&html[pos..abs]);
+
+            let after_tag = abs + "<page-content".len();
+            let tag_end = if let Some(sc) = html[after_tag..].find("/>") {
+                after_tag + sc + 2
+            } else if let Some(gt) = html[after_tag..].find('>') {
+                let content_start = after_tag + gt + 1;
+                if let Some(close) = lower[content_start..].find("</page-content>") {
+                    content_start + close + "</page-content>".len()
+                } else {
+                    after_tag + gt + 1
+                }
+            } else {
+                result.push_str(&html[abs..abs + "<page-content".len()]);
+                pos = after_tag;
+                continue;
+            };
+
+            let tag_text = &html[abs..tag_end];
+            let default_page = extract_attribute(tag_text, "default");
+
+            if let Some(ref default_id) = default_page {
+                // Load the default content fragment.
+                let content = base_dir
+                    .map(|b| b.join(format!("{}.html", default_id)))
+                    .and_then(|p| std::fs::read_to_string(&p).ok())
+                    .unwrap_or_default();
+                result.push_str(&format!(
+                    "<page-content data-default=\"{}\" data-active-content=\"{}\">\n{}\n</page-content>",
+                    default_id, default_id, content
+                ));
+            } else {
+                result.push_str("<page-content></page-content>");
+            }
+
+            pos = tag_end;
+        } else {
+            result.push_str(&html[pos..]);
+            break;
+        }
+    }
+
     result
+}
+
+/// Check whether a tag string contains a boolean attribute (no `=value`).
+fn has_attribute(tag: &str, attr_name: &str) -> bool {
+    let lower = tag.to_lowercase();
+    let name = attr_name.to_lowercase();
+    lower.split_whitespace().any(|word| {
+        let word = word.trim_end_matches('/').trim_end_matches('>');
+        word == name
+    })
+}
+
+/// Extract the value of `<meta name="redirect" content="...">` if present.
+fn extract_redirect(html: &str) -> Option<String> {
+    let lower = html.to_lowercase();
+    let mut search_pos = 0;
+    while let Some(idx) = lower[search_pos..].find("<meta") {
+        let abs = search_pos + idx;
+        let after = abs + 5;
+        let tag_end = if let Some(gt) = lower[after..].find('>') {
+            after + gt + 1
+        } else {
+            break;
+        };
+        let tag_text = &html[abs..tag_end];
+        if extract_attribute(tag_text, "name").as_deref() == Some("redirect") {
+            return extract_attribute(tag_text, "content");
+        }
+        search_pos = tag_end;
+    }
+    None
 }
 
 /// Extract a named attribute value from a tag string.
@@ -145,8 +295,12 @@ pub fn compile_html(
 ) -> anyhow::Result<(CxrdDocument, Vec<ScriptBlock>, Vec<CssRule>)> {
     let mut doc = CxrdDocument::new(name, scene_type);
 
-    // 0. Preprocess <include> tags.
+    // 0. Preprocess <include> tags (with type/immediate support).
     let html_source = preprocess_includes(html_source, asset_dir, 0);
+    // 0b. Preprocess <page-content> tags (inline default fragment).
+    let html_source = preprocess_page_content(&html_source, asset_dir);
+    // 0c. Extract redirect meta before tokenizer strips <meta> tags.
+    doc.redirect = extract_redirect(&html_source);
     let html_source = html_source.as_str();
 
     // 1. Extract inline <style> blocks from the HTML and merge with external CSS.
@@ -521,6 +675,7 @@ fn tokenize_html(source: &str) -> Vec<HtmlToken> {
 
             // Collect <script> tags as ScriptBlock entries.
             if tag == "script" {
+                let is_deferred = attributes.contains_key("data-deferred");
                 if !self_closing {
                     let close = "</script>";
                     if let Some(end) = source[pos..].to_lowercase().find(close) {
@@ -531,6 +686,7 @@ fn tokenize_html(source: &str) -> Vec<HtmlToken> {
                             s.borrow_mut().push(ScriptBlock {
                                 content: script_content.trim().to_string(),
                                 src,
+                                deferred: is_deferred,
                             });
                         });
                         pos += end + close.len();
@@ -540,6 +696,7 @@ fn tokenize_html(source: &str) -> Vec<HtmlToken> {
                         s.borrow_mut().push(ScriptBlock {
                             content: String::new(),
                             src: Some(src.clone()),
+                            deferred: is_deferred,
                         });
                     });
                 }
@@ -753,7 +910,7 @@ fn add_node_recursive(
         }
         // Semantic block-level elements (HTML5) — treated as block containers
         // by browser UA stylesheets, need explicit listing here.
-        "nav" | "section" | "header" | "footer" | "article" | "main" | "aside" | "figure" | "figcaption" | "ul" | "ol" | "li" => {
+        "nav" | "section" | "header" | "footer" | "article" | "main" | "aside" | "figure" | "figcaption" | "ul" | "ol" | "li" | "page-content" => {
             style.display = Display::Block;
         }
         _ => {} // default Block
@@ -921,6 +1078,7 @@ fn determine_node_kind(parsed: &ParsedNode, _variables: &HashMap<String, String>
             }
         }
         "data-bind" | "data-bar" => NodeKind::Container,
+        "page-content" => NodeKind::PageContent,
         "canvas" => {
             let width: u32 = parsed.attributes.get("width")
                 .and_then(|v| v.parse().ok())

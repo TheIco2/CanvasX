@@ -58,6 +58,10 @@ pub struct CxrdDocument {
     /// Viewport hint (the design resolution).
     pub viewport_width: f32,
     pub viewport_height: f32,
+
+    /// Optional redirect target (from `<meta name="redirect" content="...">`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub redirect: Option<String>,
 }
 
 /// Document metadata.
@@ -118,6 +122,7 @@ impl CxrdDocument {
             background: Color::BLACK,
             viewport_width: 1920.0,
             viewport_height: 1080.0,
+            redirect: None,
         }
     }
 
@@ -168,6 +173,57 @@ impl CxrdDocument {
             }
         }
         None
+    }
+
+    /// Find the first node with `NodeKind::PageContent`.
+    pub fn find_page_content_node(&self) -> Option<NodeId> {
+        use crate::cxrd::node::NodeKind;
+        for (i, node) in self.nodes.iter().enumerate() {
+            if matches!(node.kind, NodeKind::PageContent) {
+                return Some(i as NodeId);
+            }
+        }
+        None
+    }
+
+    /// Remove all children of a node recursively, adding freed IDs to the free list.
+    pub fn free_subtree(&mut self, node_id: NodeId) {
+        let children: Vec<NodeId> = self.nodes[node_id as usize].children.clone();
+        for child_id in children {
+            self.free_subtree_recursive(child_id);
+        }
+        self.nodes[node_id as usize].children.clear();
+    }
+
+    fn free_subtree_recursive(&mut self, node_id: NodeId) {
+        let children: Vec<NodeId> = self.nodes[node_id as usize].children.clone();
+        for child_id in children {
+            self.free_subtree_recursive(child_id);
+        }
+        self.nodes[node_id as usize].children.clear();
+        self.free_list.push(node_id);
+    }
+
+    /// Transplant all root children from another document into this one as children of `parent_id`.
+    pub fn transplant_children_from(&mut self, source: &CxrdDocument, parent_id: NodeId) {
+        let root_children: Vec<NodeId> = source.nodes[source.root as usize].children.clone();
+        for &child_id in &root_children {
+            let new_id = self.transplant_node_recursive(source, child_id);
+            self.add_child(parent_id, new_id);
+        }
+    }
+
+    fn transplant_node_recursive(&mut self, source: &CxrdDocument, src_id: NodeId) -> NodeId {
+        let src_node = &source.nodes[src_id as usize];
+        let src_children: Vec<NodeId> = src_node.children.clone();
+        let mut new_node = src_node.clone();
+        new_node.children = Vec::new();
+        let new_id = self.add_node(new_node);
+        for &child_src_id in &src_children {
+            let child_new_id = self.transplant_node_recursive(source, child_src_id);
+            self.add_child(new_id, child_new_id);
+        }
+        new_id
     }
 
     /// Serialize to binary for disk caching (.cxrd format).

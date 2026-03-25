@@ -183,6 +183,8 @@ pub enum AppEvent {
     TrayToggleWindow,
     /// Tray: custom action fired.
     TrayAction(String),
+    /// Content was swapped inside a `<page-content>` container.
+    ContentSwap { page: PageId, content_id: String },
 }
 
 impl AppHost {
@@ -396,6 +398,13 @@ impl AppHost {
                         UiEvent::NavigateRequest { scene_id } => {
                             if self.routes.iter().any(|r| r.id == scene_id) {
                                 self.pending_events.push(AppEvent::NavigateTo(scene_id));
+                            } else if page.scene.document.find_page_content_node().is_some() {
+                                // Active page has a <page-content> container — swap content
+                                // instead of doing a full page navigation.
+                                self.pending_events.push(AppEvent::ContentSwap {
+                                    page: page_id.clone(),
+                                    content_id: scene_id,
+                                });
                             } else {
                                 self.pending_events.push(AppEvent::LinkClicked {
                                     url: scene_id,
@@ -529,7 +538,20 @@ impl AppHost {
         }
 
         // Drain pending events.
-        let events = std::mem::take(&mut self.pending_events);
+        let mut events = std::mem::take(&mut self.pending_events);
+
+        // Handle content swaps internally (page-content fragment loading).
+        let mut i = 0;
+        while i < events.len() {
+            if let AppEvent::ContentSwap { ref page, ref content_id } = events[i] {
+                let page_id = page.clone();
+                let target = content_id.clone();
+                self.swap_page_content(&page_id, &target);
+                events.remove(i);
+            } else {
+                i += 1;
+            }
+        }
 
         // Navigate to pending pages (from handle_input click events).
         for event in &events {
@@ -598,8 +620,8 @@ impl AppHost {
         let mut js_rt = JsRuntime::new(doc, css_rules, css_variables);
         js_rt.init_canvases(viewport_width, viewport_height);
 
-        // Execute page scripts.
-        for script in &scripts {
+        // Helper closure to execute a single script block.
+        let execute_script = |js_rt: &mut JsRuntime, script: &ScriptBlock, source_dir: &Option<PathBuf>| {
             if let Some(ref src) = script.src {
                 let script_path = if let Some(ref dir) = source_dir {
                     dir.join(src)
@@ -611,6 +633,13 @@ impl AppHost {
             } else if !script.content.is_empty() {
                 log::info!("Executing inline script ({} bytes)", script.content.len());
                 js_rt.execute(&script.content, "<inline>");
+            }
+        };
+
+        // Execute immediate (non-deferred) scripts first.
+        for script in &scripts {
+            if !script.deferred {
+                execute_script(&mut js_rt, script, &source_dir);
             }
         }
 
@@ -624,6 +653,13 @@ impl AppHost {
             })();"#,
             "<DOMContentLoaded>",
         );
+
+        // Execute deferred scripts after DOM is ready.
+        for script in &scripts {
+            if script.deferred {
+                execute_script(&mut js_rt, script, &source_dir);
+            }
+        }
 
         js_rt.cache_raf_tick_fn();
         self.canvas_texture_slots.clear();
@@ -762,6 +798,74 @@ impl AppHost {
     }
 
     // --- Internal ---
+
+    /// Swap the content of a `<page-content>` container with a new HTML fragment.
+    ///
+    /// Loads `{source_dir}/{target_id}.html`, compiles its nodes, and replaces
+    /// the children of the PageContent node in-place. Respects `<meta name="redirect">`
+    /// in the fragment to prevent redirect loops.
+    fn swap_page_content(&mut self, page_id: &str, target_id: &str) {
+        let page = match self.pages.get_mut(page_id) {
+            Some(p) => p,
+            None => return,
+        };
+
+        let pc_node_id = match page.scene.document.find_page_content_node() {
+            Some(id) => id,
+            None => return,
+        };
+
+        // Don't reload if already showing this content.
+        let already_active = page.scene.document.get_node(pc_node_id)
+            .and_then(|n| n.attributes.get("data-active-content"))
+            .map(|s| s.as_str()) == Some(target_id);
+        if already_active {
+            return;
+        }
+
+        let source_dir = match page.source_dir.as_ref() {
+            Some(d) => d.clone(),
+            None => return,
+        };
+
+        let fragment_path = source_dir.join(format!("{}.html", target_id));
+        let (frag_doc, _frag_scripts, _) = match load_html_document_full(&fragment_path, target_id) {
+            Ok(result) => result,
+            Err(e) => {
+                log::error!("Failed to load content fragment '{}': {}", target_id, e);
+                return;
+            }
+        };
+
+        // Check for redirect in the fragment.
+        if let Some(ref redirect) = frag_doc.redirect {
+            if redirect != target_id {
+                let redirect = redirect.clone();
+                let page_id = page_id.to_string();
+                // Re-borrow after drop to avoid double mutable borrow.
+                self.swap_page_content(&page_id, &redirect);
+                return;
+            }
+        }
+
+        // Re-acquire mutable reference (needed after potential recursive call above).
+        let page = self.pages.get_mut(page_id).unwrap();
+
+        // Free old children of page-content node.
+        page.scene.document.free_subtree(pc_node_id);
+
+        // Transplant new children from fragment document.
+        page.scene.document.transplant_children_from(&frag_doc, pc_node_id);
+
+        // Update the active content attribute.
+        if let Some(node) = page.scene.document.get_node_mut(pc_node_id) {
+            node.attributes.insert("data-active-content".to_string(), target_id.to_string());
+        }
+
+        page.dirty = true;
+        page.scene.invalidate_layout();
+        log::info!("AppHost: swapped page-content to '{}'", target_id);
+    }
 
     fn load_page(&mut self, route: &Route) {
         let (doc, scripts, css_rules, source_dir) = match &route.source {

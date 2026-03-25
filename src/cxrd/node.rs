@@ -57,6 +57,10 @@ pub enum NodeKind {
     /// Interactive input widget (button, text field, slider, etc.).
     /// These make CanvasX documents usable as full application windows.
     Input(InputKind),
+
+    /// Page content container — children are swapped dynamically on navigation.
+    /// Used with `<page-content default="...">` tags in HTML templates.
+    PageContent,
 }
 
 /// Image fit mode (analogous to CSS object-fit).
