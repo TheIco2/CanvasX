@@ -296,10 +296,8 @@ impl CanvasBuffer {
     }
 
     pub fn rotate(&mut self, angle: f32) {
-        // tiny-skia rotate takes degrees
-        let degrees = angle * 180.0 / std::f32::consts::PI;
         self.transform = self.transform.pre_concat(
-            tiny_skia::Transform::from_rotate(degrees)
+            tiny_skia::Transform::from_rotate(angle)
         );
     }
 

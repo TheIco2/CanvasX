@@ -104,7 +104,7 @@ fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, gr
             let base_sy = r.y + shadow.offset_y - spread;
             let base_sw = r.width + spread * 2.0;
             let base_sh = r.height + spread * 2.0;
-            let base_alpha = c[3] * 0.30;
+            let base_alpha = c[3] * 0.16;
             out.push(filled_rect(
                 base_sx,
                 base_sy,
@@ -122,11 +122,11 @@ fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, gr
             ));
 
             // Layered falloff shells approximate blur without a dedicated blur pass.
-            let layers = blur.ceil().clamp(0.0, 4.0) as usize;
+            let layers = blur.ceil().clamp(0.0, 3.0) as usize;
             for layer in 0..layers {
                 let t = (layer + 1) as f32 / (layers as f32 + 1.0);
                 let expand = spread + blur * t;
-                let alpha = c[3] * 0.22 * (1.0 - t).powf(1.5);
+                let alpha = c[3] * 0.12 * (1.0 - t).powf(1.6);
                 if alpha <= 0.001 { continue; }
 
                 out.push(filled_rect(
@@ -154,7 +154,7 @@ fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, gr
                     r.y + shadow.offset_y - fringe_expand,
                     r.width + fringe_expand * 2.0,
                     r.height + fringe_expand * 2.0,
-                    [c[0], c[1], c[2], c[3] * 0.06],
+                    [c[0], c[1], c[2], c[3] * 0.025],
                     [
                         (node.style.border_radius.top_left + fringe_expand).max(0.0),
                         (node.style.border_radius.top_right + fringe_expand).max(0.0),

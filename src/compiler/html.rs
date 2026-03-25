@@ -12,7 +12,7 @@
 use crate::cxrd::document::{CxrdDocument, SceneType};
 use crate::cxrd::node::{CxrdNode, NodeKind, ImageFit, NodeId, EventBinding, EventAction};
 use crate::cxrd::input::{InputKind, TextInputType, ButtonVariant, CheckboxStyle};
-use crate::cxrd::style::{ComputedStyle, Display, FlexDirection, FontWeight, TextAlign};
+use crate::cxrd::style::{AlignItems, ComputedStyle, Display, FlexDirection, FontWeight, TextAlign};
 use crate::cxrd::value::Dimension;
 use crate::compiler::css::{parse_css, apply_property, parse_color, CssRule, CompoundSelector};
 use std::collections::HashMap;
@@ -518,20 +518,17 @@ fn add_node_recursive(
     // Inline-level tags default to flex-row so their children flow horizontally,
     // which is the closest equivalent to inline-flow in our block/flex engine.
     match parsed.tag.as_str() {
-        "span" | "a" | "label" | "code" | "small" => {
-            style.display = Display::Flex;
-            style.flex_direction = FlexDirection::Row;
+        "#text" | "span" | "a" | "label" | "code" | "small" => {
+            style.display = Display::InlineBlock;
         }
         // Inline + bold
         "strong" | "b" => {
-            style.display = Display::Flex;
-            style.flex_direction = FlexDirection::Row;
+            style.display = Display::InlineBlock;
             style.font_weight = FontWeight(700);
         }
         // Inline + italic (note: we store italic as weight 0 sentinel; see text painter)
         "em" | "i" => {
-            style.display = Display::Flex;
-            style.flex_direction = FlexDirection::Row;
+            style.display = Display::InlineBlock;
             // Italic handled via tag check in text painter; no weight change.
         }
         // Heading defaults — browser UA sizes relative to 16px base.
@@ -577,6 +574,7 @@ fn add_node_recursive(
             style.display = Display::Flex;
             style.flex_direction = FlexDirection::Row;
             style.flex_wrap = crate::cxrd::style::FlexWrap::Wrap;
+            style.align_items = AlignItems::FlexStart;
             style.margin.top = Dimension::Em(1.0);
             style.margin.bottom = Dimension::Em(1.0);
         }
@@ -1013,18 +1011,15 @@ fn restyle_recursive(
     // Tag-specific display defaults (mirrors add_node_recursive).
     if let Some(ref t) = tag {
         match t.as_str() {
-            "span" | "a" | "label" | "code" | "small" => {
-                style.display = Display::Flex;
-                style.flex_direction = FlexDirection::Row;
+            "#text" | "span" | "a" | "label" | "code" | "small" => {
+                style.display = Display::InlineBlock;
             }
             "strong" | "b" => {
-                style.display = Display::Flex;
-                style.flex_direction = FlexDirection::Row;
+                style.display = Display::InlineBlock;
                 style.font_weight = FontWeight(700);
             }
             "em" | "i" => {
-                style.display = Display::Flex;
-                style.flex_direction = FlexDirection::Row;
+                style.display = Display::InlineBlock;
             }
             "h1" => { style.font_size = 32.0; style.font_weight = FontWeight(700); }
             "h2" => { style.font_size = 24.0; style.font_weight = FontWeight(700); }
@@ -1036,6 +1031,7 @@ fn restyle_recursive(
                 style.display = Display::Flex;
                 style.flex_direction = FlexDirection::Row;
                 style.flex_wrap = crate::cxrd::style::FlexWrap::Wrap;
+                style.align_items = AlignItems::FlexStart;
             }
             "data-bind" => {
                 style.display = crate::cxrd::style::Display::InlineBlock;

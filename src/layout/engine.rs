@@ -608,14 +608,15 @@ fn estimate_content_width(doc: &CxrdDocument, node_id: NodeId, constraints: &Lay
 
         // Text leaf fallback.
         let font_size = cs.font_size.max(1.0);
-        // Average character width ~0.65 × font-size for a proportional sans-serif.
-        // 0.55 was too narrow and caused labels with wide glyphs (M, W, N) to clip.
-        let char_width = font_size * 0.65;
-        let text_chars = match &node.kind {
-            NodeKind::Text { content } => content.len(),
-            _ => 0,
+        let text_width = match &node.kind {
+            NodeKind::Text { content } => {
+                let letters = content.chars().filter(|c| !c.is_whitespace()).count() as f32;
+                let spaces = content.chars().filter(|c| c.is_whitespace()).count() as f32;
+                letters * font_size * 0.54 + spaces * font_size * 0.28
+            }
+            _ => 0.0,
         };
-        return padding_h + border_h + margin_h + (text_chars as f32 * char_width);
+        return padding_h + border_h + margin_h + text_width;
     }
 
     // Container node.
@@ -782,7 +783,7 @@ fn layout_flex_children(
         };
 
         items.push(ItemData {
-            base_main: basis,
+            base_main: basis.max(min_main).min(max_main),
             base_cross: cross,
             min_main,
             max_main,
@@ -821,12 +822,32 @@ fn layout_flex_children(
         lines
     };
 
-    let num_lines = lines.len().max(1);
-    let line_cross = cross_size / num_lines as f32;
+    let wrapped_lines = !matches!(wrap, crate::cxrd::style::FlexWrap::NoWrap);
+    let line_crosses: Vec<f32> = if wrapped_lines {
+        lines.iter().map(|line| {
+            let mut max_cross = 0.0f32;
+            for &idx in line {
+                let item = &items[idx];
+                let cid = flex_children[idx];
+                let intrinsic = if item.base_cross > 0.0 {
+                    item.base_cross
+                } else if is_row {
+                    estimate_content_height(doc, cid, constraints)
+                } else {
+                    estimate_content_width(doc, cid, constraints)
+                };
+                max_cross = max_cross.max(intrinsic + item.c_start + item.c_end);
+            }
+            max_cross.max(0.0)
+        }).collect()
+    } else {
+        vec![cross_size]
+    };
     let mut cross_pos = 0.0f32;
 
-    for line in &lines {
+    for (line_index, line) in lines.iter().enumerate() {
         if line.is_empty() { continue; }
+        let line_cross = line_crosses.get(line_index).copied().unwrap_or(cross_size);
 
         // Flex distribution for this line
         let num_gaps_l = if line.len() > 1 { (line.len() - 1) as f32 } else { 0.0 };
@@ -920,7 +941,7 @@ fn layout_flex_children(
             offset += m + item.m_end + gap + extra_gap;
         }
 
-        cross_pos += line_cross;
+        cross_pos += line_cross + if wrapped_lines { gap } else { 0.0 };
     }
 }
 
