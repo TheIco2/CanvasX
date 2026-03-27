@@ -548,7 +548,7 @@ impl ApplicationHandler for App {
                     }
 
                     // Check badge click
-                    if self.devtools.hit_test_badge(x, y, vh) {
+                    if self.devtools.hit_test_badge(x, y, vw, vh) {
                         self.devtools.toggle();
                         return;
                     }

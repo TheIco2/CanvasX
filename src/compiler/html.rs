@@ -12,7 +12,7 @@
 use crate::cxrd::document::{CxrdDocument, SceneType};
 use crate::cxrd::node::{CxrdNode, NodeKind, ImageFit, NodeId, EventBinding, EventAction};
 use crate::cxrd::input::{InputKind, TextInputType, ButtonVariant, CheckboxStyle};
-use crate::cxrd::style::{AlignItems, ComputedStyle, Display, FlexDirection, FontWeight, TextAlign};
+use crate::cxrd::style::{AlignItems, ComputedStyle, CursorStyle, Display, FlexDirection, FontWeight, TextAlign};
 use crate::cxrd::value::Dimension;
 use crate::compiler::css::{parse_css, apply_property, parse_color, CssRule, CompoundSelector};
 use std::collections::HashMap;
@@ -559,6 +559,7 @@ struct InheritedProps {
     letter_spacing: f32,
     text_align: TextAlign,
     white_space: crate::cxrd::style::WhiteSpace,
+    cursor: CursorStyle,
 }
 
 impl InheritedProps {
@@ -572,6 +573,7 @@ impl InheritedProps {
             letter_spacing: s.letter_spacing,
             text_align: s.text_align,
             white_space: s.white_space,
+            cursor: s.cursor,
         }
     }
 }
@@ -616,6 +618,10 @@ fn propagate_recursive(
         // white-space: inherit if default.
         if node.style.white_space == defaults.white_space {
             node.style.white_space = parent.white_space;
+        }
+        // cursor: inherit if still Auto (default).
+        if node.style.cursor == defaults.cursor {
+            node.style.cursor = parent.cursor;
         }
     }
 
@@ -1033,7 +1039,11 @@ fn add_node_recursive(
         animations: Vec::new(),
         layout: Default::default(),
         hover_style: Vec::new(),
+        active_style: Vec::new(),
+        focus_style: Vec::new(),
         hovered: false,
+        active: false,
+        focused: false,
     };
 
     // Keep the raw id for selector matching.
@@ -1311,6 +1321,8 @@ pub fn reapply_all_styles(doc: &mut CxrdDocument, rules: &[CssRule]) {
         let tag = node.tag.as_deref().unwrap_or("");
         node.style = tag_default_style(tag);
         node.hover_style.clear();
+        node.active_style.clear();
+        node.focus_style.clear();
         let html_id = node.html_id.clone();
         apply_rules_to_node_with_ancestors(node, &html_id, rules, &variables, &[]);
         reapply_inline_styles(node, &variables);
@@ -1350,6 +1362,8 @@ fn reapply_styles_recursive(
         let tag_str = node.tag.as_deref().unwrap_or("");
         node.style = tag_default_style(tag_str);
         node.hover_style.clear();
+        node.active_style.clear();
+        node.focus_style.clear();
         apply_rules_to_node_with_ancestors(node, &html_id, rules, variables, ancestors);
         reapply_inline_styles(node, variables);
     }
@@ -1459,13 +1473,21 @@ pub fn apply_rules_to_node_with_ancestors(
         if compound_selector_matches(&rule.compound_selectors, node, html_id, ancestors) {
             if let Some(ref pseudo) = rule.pseudo_class {
                 if pseudo == "hover" {
-                    // Store declarations as hover overrides instead of applying immediately.
                     for (prop, val) in &rule.declarations {
                         let resolved = crate::compiler::css::resolve_var_pub(val, variables);
                         node.hover_style.push((prop.clone(), resolved));
                     }
+                } else if pseudo == "active" {
+                    for (prop, val) in &rule.declarations {
+                        let resolved = crate::compiler::css::resolve_var_pub(val, variables);
+                        node.active_style.push((prop.clone(), resolved));
+                    }
+                } else if pseudo == "focus" || pseudo == "focus-visible" || pseudo == "focus-within" {
+                    for (prop, val) in &rule.declarations {
+                        let resolved = crate::compiler::css::resolve_var_pub(val, variables);
+                        node.focus_style.push((prop.clone(), resolved));
+                    }
                 }
-                // Other pseudo-classes (focus, active) ignored for now.
             } else {
                 for (prop, val) in &rule.declarations {
                     apply_property(&mut node.style, prop, val, variables);

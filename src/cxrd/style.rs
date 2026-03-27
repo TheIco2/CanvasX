@@ -194,6 +194,37 @@ impl Default for FontWeight {
     }
 }
 
+/// Font style (normal, italic, oblique).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FontStyle {
+    Normal,
+    Italic,
+    Oblique,
+}
+
+impl Default for FontStyle {
+    fn default() -> Self { FontStyle::Normal }
+}
+
+/// Border line style.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum BorderStyle {
+    None,
+    Solid,
+    Dashed,
+    Dotted,
+    Double,
+    Groove,
+    Ridge,
+    Inset,
+    Outset,
+    Hidden,
+}
+
+impl Default for BorderStyle {
+    fn default() -> Self { BorderStyle::Solid }
+}
+
 /// Visibility mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Visibility {
@@ -450,6 +481,7 @@ pub struct ComputedStyle {
     pub border_color: Color,
     pub border_width: EdgeInsets,
     pub border_radius: CornerRadii,
+    pub border_style: BorderStyle,
     pub box_shadow: Vec<BoxShadow>,
     pub backdrop_blur: f32,
     pub transform_scale: f32,
@@ -468,6 +500,7 @@ pub struct ComputedStyle {
     pub font_family: String,
     pub font_size: f32,      // px, resolved
     pub font_weight: FontWeight,
+    pub font_style: FontStyle,
     pub line_height: f32,    // multiplier
     pub text_align: TextAlign,
     pub letter_spacing: f32,
@@ -602,6 +635,7 @@ impl Default for ComputedStyle {
             border_color: Color::TRANSPARENT,
             border_width: EdgeInsets::default(),
             border_radius: CornerRadii::default(),
+            border_style: BorderStyle::default(),
             box_shadow: Vec::new(),
             backdrop_blur: 0.0,
             transform_scale: 1.0,
@@ -610,6 +644,7 @@ impl Default for ComputedStyle {
             font_family: String::new(),
             font_size: 16.0,
             font_weight: FontWeight::default(),
+            font_style: FontStyle::default(),
             line_height: 1.2,
             text_align: TextAlign::default(),
             letter_spacing: 0.0,

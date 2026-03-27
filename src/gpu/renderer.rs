@@ -38,6 +38,11 @@ pub struct Renderer {
     pub text_cache: glyphon::Cache,
     pub text_viewport: glyphon::Viewport,
 
+    // Overlay text renderer (separate atlas to avoid eviction issues)
+    overlay_text_renderer: glyphon::TextRenderer,
+    overlay_text_atlas: glyphon::TextAtlas,
+    overlay_text_viewport: glyphon::Viewport,
+
     // State
     frame_time: f32,
     scale_factor: f32,
@@ -124,6 +129,16 @@ impl Renderer {
             None,
         );
 
+        // Overlay text (separate atlas so prepare() doesn't evict scene glyphs).
+        let overlay_text_viewport = glyphon::Viewport::new(device, &text_cache);
+        let mut overlay_text_atlas = glyphon::TextAtlas::with_color_mode(device, queue, &text_cache, ctx.surface_format, glyphon::ColorMode::Web);
+        let overlay_text_renderer = glyphon::TextRenderer::new(
+            &mut overlay_text_atlas,
+            device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
+
         Ok(Self {
             pipelines,
             texture_manager,
@@ -142,6 +157,9 @@ impl Renderer {
             text_atlas,
             text_cache,
             text_viewport,
+            overlay_text_renderer,
+            overlay_text_atlas,
+            overlay_text_viewport,
             frame_time: 0.0,
             scale_factor: 1.0,
             frame_count: 0,
@@ -175,11 +193,28 @@ impl Renderer {
     }
 
     /// Render a frame: clear + draw all UI instances + text.
+    ///
+    /// When `overlay_instances` and `overlay_text` are provided, scene text is drawn
+    /// first, then overlay box instances (e.g. context menu background), then overlay
+    /// text. This ensures overlay backgrounds occlude scene text.
     pub fn render(
         &mut self,
         ctx: &GpuContext,
         instances: &[UiInstance],
         text_areas: Vec<glyphon::TextArea<'_>>,
+        clear_color: Color,
+    ) -> Result<(), wgpu::SurfaceError> {
+        self.render_layered(ctx, instances, text_areas, &[], Vec::new(), clear_color)
+    }
+
+    /// Layered render: scene instances + scene text, then overlay instances + overlay text.
+    pub fn render_layered(
+        &mut self,
+        ctx: &GpuContext,
+        instances: &[UiInstance],
+        scene_text: Vec<glyphon::TextArea<'_>>,
+        overlay_instances: &[UiInstance],
+        overlay_text: Vec<glyphon::TextArea<'_>>,
         clear_color: Color,
     ) -> Result<(), wgpu::SurfaceError> {
         let acq_start = Instant::now();
@@ -190,21 +225,31 @@ impl Renderer {
         }
         let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
 
-        // Upload instances
-        self.upload_instances(&ctx.device, &ctx.queue, instances);
+        // Combine scene + overlay instances into one buffer; track the split.
+        let scene_count = instances.len();
+        let has_overlay = !overlay_instances.is_empty() || !overlay_text.is_empty();
+        let has_overlay_text = !overlay_text.is_empty();
+        let all_instances: Vec<UiInstance> = if has_overlay {
+            let mut combined = Vec::with_capacity(instances.len() + overlay_instances.len());
+            combined.extend_from_slice(instances);
+            combined.extend_from_slice(overlay_instances);
+            combined
+        } else {
+            Vec::new() // unused when no overlay
+        };
+        let upload_instances = if has_overlay { &all_instances[..] } else { instances };
+        self.upload_instances(&ctx.device, &ctx.queue, upload_instances);
 
-        // Update text viewport (use virtual dims matching our UI viewport).
+        // Update text viewport.
         let vp_w = (ctx.size.0 as f32 / self.scale_factor) as u32;
         let vp_h = (ctx.size.1 as f32 / self.scale_factor) as u32;
-        self.text_viewport.update(
-            &ctx.queue,
-            glyphon::Resolution {
-                width: vp_w.max(1),
-                height: vp_h.max(1),
-            },
-        );
+        let resolution = glyphon::Resolution {
+            width: vp_w.max(1),
+            height: vp_h.max(1),
+        };
+        self.text_viewport.update(&ctx.queue, resolution);
 
-        // Prepare text
+        // Prepare scene text.
         self.text_renderer
             .prepare(
                 &ctx.device,
@@ -212,10 +257,26 @@ impl Renderer {
                 &mut self.font_system,
                 &mut self.text_atlas,
                 &self.text_viewport,
-                text_areas,
+                scene_text,
                 &mut self.swash_cache,
             )
             .ok();
+
+        // Prepare overlay text using a separate renderer + atlas (avoids evicting scene glyphs).
+        if has_overlay_text {
+            self.overlay_text_viewport.update(&ctx.queue, resolution);
+            self.overlay_text_renderer
+                .prepare(
+                    &ctx.device,
+                    &ctx.queue,
+                    &mut self.font_system,
+                    &mut self.overlay_text_atlas,
+                    &self.overlay_text_viewport,
+                    overlay_text,
+                    &mut self.swash_cache,
+                )
+                .ok();
+        }
 
         let mut encoder = ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
             label: Some("frame_encoder"),
@@ -242,40 +303,52 @@ impl Renderer {
                 ..Default::default()
             });
 
-            if !instances.is_empty() {
+            let total = upload_instances.len();
+            if total > 0 {
                 pass.set_pipeline(&self.pipelines.box_pipeline);
                 pass.set_bind_group(0, &self.globals_bg, &[]);
                 pass.set_vertex_buffer(0, self.quad_vbo.slice(..));
                 pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
                 pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
 
-                // Draw in batches grouped by texture_index.
-                // Instances with texture_index < 0 use the default texture.
-                let mut batch_start: u32 = 0;
-                let mut current_tex_idx = instances[0].texture_index;
-
-                for i in 0..=instances.len() {
-                    let tex_idx = if i < instances.len() { instances[i].texture_index } else { i32::MIN };
-
-                    if tex_idx != current_tex_idx || i == instances.len() {
-                        // Flush batch
-                        let batch_end = i as u32;
-                        let bg = if current_tex_idx >= 0 {
-                            self.texture_bind_groups.get(&(current_tex_idx as u32))
-                                .unwrap_or(&self.default_texture_bg)
-                        } else {
-                            &self.default_texture_bg
-                        };
-                        pass.set_bind_group(1, bg, &[]);
-                        pass.draw_indexed(0..6, 0, batch_start..batch_end);
-                        batch_start = batch_end;
-                        current_tex_idx = tex_idx;
-                    }
+                // Draw scene instances (0..scene_count).
+                let draw_end = if has_overlay { scene_count } else { total };
+                if draw_end > 0 {
+                    self.draw_instance_batches(&mut pass, upload_instances, 0, draw_end);
                 }
             }
 
-            // Draw text on top
+            // Draw scene text.
             self.text_renderer.render(&self.text_atlas, &self.text_viewport, &mut pass).ok();
+
+            // Draw overlay instances on top of scene text, then overlay text.
+            if has_overlay && scene_count < total {
+                pass.set_pipeline(&self.pipelines.box_pipeline);
+                pass.set_bind_group(0, &self.globals_bg, &[]);
+                pass.set_vertex_buffer(0, self.quad_vbo.slice(..));
+                pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+                pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+                self.draw_instance_batches(&mut pass, upload_instances, scene_count, total);
+            }
+        }
+
+        // Second text pass for overlay text (if any) using the separate overlay renderer.
+        if has_overlay_text {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("overlay_text_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            self.overlay_text_renderer.render(&self.overlay_text_atlas, &self.overlay_text_viewport, &mut pass).ok();
         }
 
         ctx.queue.submit(std::iter::once(encoder.finish()));
@@ -285,9 +358,42 @@ impl Renderer {
         self.frame_count = self.frame_count.wrapping_add(1);
         if self.frame_count & 0x3F == 0 {
             self.text_atlas.trim();
+            self.overlay_text_atlas.trim();
         }
 
         Ok(())
+    }
+
+    /// Draw instance batches in [start..end) range, grouped by texture_index.
+    fn draw_instance_batches<'a>(
+        &'a self,
+        pass: &mut wgpu::RenderPass<'a>,
+        instances: &[UiInstance],
+        start: usize,
+        end: usize,
+    ) {
+        if start >= end {
+            return;
+        }
+        let mut batch_start = start as u32;
+        let mut current_tex_idx = instances[start].texture_index;
+
+        for i in start..=end {
+            let tex_idx = if i < end { instances[i].texture_index } else { i32::MIN };
+            if tex_idx != current_tex_idx || i == end {
+                let batch_end = i as u32;
+                let bg = if current_tex_idx >= 0 {
+                    self.texture_bind_groups.get(&(current_tex_idx as u32))
+                        .unwrap_or(&self.default_texture_bg)
+                } else {
+                    &self.default_texture_bg
+                };
+                pass.set_bind_group(1, bg, &[]);
+                pass.draw_indexed(0..6, 0, batch_start..batch_end);
+                batch_start = batch_end;
+                current_tex_idx = tex_idx;
+            }
+        }
     }
 
     fn upload_instances(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, instances: &[UiInstance]) {

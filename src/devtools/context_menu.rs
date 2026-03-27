@@ -175,6 +175,14 @@ impl ContextMenu {
         content + MENU_PADDING * 2.0
     }
 
+    /// Returns the bounding rect `(x, y, w, h)` if the context menu is open, else `None`.
+    pub fn overlay_rect(&self) -> Option<(f32, f32, f32, f32)> {
+        if !self.open {
+            return None;
+        }
+        Some((self.x, self.y, MENU_WIDTH, self.total_height()))
+    }
+
     /// Generate GPU instances for the context menu.
     pub fn paint(&self) -> Vec<UiInstance> {
         if !self.open {

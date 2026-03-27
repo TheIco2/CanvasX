@@ -24,6 +24,20 @@ pub enum DevToolsTab {
     Network,
 }
 
+/// Badge anchor position on the viewport edges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BadgePosition {
+    TopLeft,
+    TopCenter,
+    TopRight,
+    CenterLeft,
+    Center,
+    CenterRight,
+    BottomLeft,
+    BottomCenter,
+    BottomRight,
+}
+
 /// The DevTools panel state.
 pub struct DevTools {
     /// Whether the DevTools panel is open (visible).
@@ -50,6 +64,10 @@ pub struct DevTools {
     pub selected_node: Option<u32>,
     /// Right-click context menu state.
     pub context_menu: context_menu::ContextMenu,
+    /// Badge anchor position (default: BottomRight).
+    pub badge_position: BadgePosition,
+    /// Badge rotation in degrees (0, 90, 180, 270). Controls text flow direction.
+    pub badge_rotation: u16,
 }
 
 impl DevTools {
@@ -67,6 +85,8 @@ impl DevTools {
             console_scroll: 0.0,
             selected_node: None,
             context_menu: context_menu::ContextMenu::new(),
+            badge_position: BadgePosition::BottomRight,
+            badge_rotation: 0,
         }
     }
 
@@ -75,14 +95,48 @@ impl DevTools {
         self.open = !self.open;
     }
 
+    /// Set the badge position and rotation.
+    pub fn set_badge(&mut self, position: BadgePosition, rotation: u16) {
+        self.badge_position = position;
+        self.badge_rotation = rotation % 360;
+    }
+
+    /// Compute the badge bounding rect (x, y, w, h) based on position and rotation.
+    fn badge_rect(&self, viewport_width: f32, viewport_height: f32) -> (f32, f32, f32, f32) {
+        let m = overlay::BADGE_MARGIN;
+        let is_vertical = self.badge_rotation == 90 || self.badge_rotation == 270;
+        // When rotated 90/270, swap width/height for the bounding box.
+        let (w, h) = if is_vertical {
+            (overlay::BADGE_HEIGHT, overlay::BADGE_WIDTH)
+        } else {
+            (overlay::BADGE_WIDTH, overlay::BADGE_HEIGHT)
+        };
+
+        let x = match self.badge_position {
+            BadgePosition::TopLeft | BadgePosition::CenterLeft | BadgePosition::BottomLeft => m,
+            BadgePosition::TopCenter | BadgePosition::Center | BadgePosition::BottomCenter => {
+                (viewport_width - w) / 2.0
+            }
+            BadgePosition::TopRight | BadgePosition::CenterRight | BadgePosition::BottomRight => {
+                viewport_width - w - m
+            }
+        };
+        let y = match self.badge_position {
+            BadgePosition::TopLeft | BadgePosition::TopCenter | BadgePosition::TopRight => m,
+            BadgePosition::CenterLeft | BadgePosition::Center | BadgePosition::CenterRight => {
+                (viewport_height - h) / 2.0
+            }
+            BadgePosition::BottomLeft | BadgePosition::BottomCenter | BadgePosition::BottomRight => {
+                viewport_height - h - m
+            }
+        };
+        (x, y, w, h)
+    }
+
     /// Check if a click at (x, y) hits the CanvasX watermark badge.
-    /// The badge is a fixed-position element at the bottom-left.
-    pub fn hit_test_badge(&self, x: f32, y: f32, viewport_height: f32) -> bool {
-        let badge_x = overlay::BADGE_MARGIN;
-        let badge_y = viewport_height - overlay::BADGE_HEIGHT - overlay::BADGE_MARGIN;
-        let badge_w = overlay::BADGE_WIDTH;
-        let badge_h = overlay::BADGE_HEIGHT;
-        x >= badge_x && x <= badge_x + badge_w && y >= badge_y && y <= badge_y + badge_h
+    pub fn hit_test_badge(&self, x: f32, y: f32, viewport_width: f32, viewport_height: f32) -> bool {
+        let (bx, by, bw, bh) = self.badge_rect(viewport_width, viewport_height);
+        x >= bx && x <= bx + bw && y >= by && y <= by + bh
     }
 
     /// Check if a click at (x, y) hits one of the tab buttons.
@@ -164,10 +218,15 @@ impl DevTools {
             );
         }
 
-        // Paint right-click context menu on top of everything.
-        instances.extend(self.context_menu.paint());
+        // Context menu instances are rendered separately in the overlay layer
+        // via context_menu_instances() so they appear on top of scene text.
 
         instances
+    }
+
+    /// GPU instances for the context menu overlay (rendered on top of scene text).
+    pub fn context_menu_instances(&self) -> Vec<UiInstance> {
+        self.context_menu.paint()
     }
 
     /// Generate text areas for the DevTools overlay.
@@ -180,17 +239,54 @@ impl DevTools {
         let mut entries = Vec::new();
 
         // Badge text "CanvasX"
-        let badge_x = overlay::BADGE_MARGIN;
-        let badge_y = viewport_height - overlay::BADGE_HEIGHT - overlay::BADGE_MARGIN;
-        entries.push(DevToolsTextEntry {
-            text: "CanvasX".to_string(),
-            x: badge_x + 8.0,
-            y: badge_y + 3.0,
-            width: overlay::BADGE_WIDTH - 16.0,
-            font_size: 11.0,
-            color: Color::new(0.45, 0.45, 0.50, 0.5), // Dim subtle text
-            bold: false,
-        });
+        let (bx, by, bw, bh) = self.badge_rect(viewport_width, viewport_height);
+        let is_vertical = self.badge_rotation == 90 || self.badge_rotation == 270;
+        let badge_color = Color::new(0.45, 0.45, 0.50, 0.5);
+
+        if is_vertical {
+            // Vertical text: render each character stacked on its own line.
+            let label = if self.badge_rotation == 270 {
+                // 270°: read top-to-bottom (reversed so first char is at top)
+                "CanvasX".to_string()
+            } else {
+                // 90°: read bottom-to-top
+                "CanvasX".chars().rev().collect::<String>()
+            };
+            let char_text = label.chars()
+                .map(|c| c.to_string())
+                .collect::<Vec<_>>()
+                .join("\n");
+            let font_size = 11.0;
+            let line_h = font_size * 1.3;
+            let text_h = line_h * 7.0; // 7 chars
+            let inset_x = (bw - font_size) / 2.0;
+            let inset_y = (bh - text_h) / 2.0;
+            entries.push(DevToolsTextEntry {
+                text: char_text,
+                x: bx + inset_x,
+                y: by + inset_y.max(0.0),
+                width: font_size + 4.0,
+                font_size,
+                color: badge_color,
+                bold: false,
+            });
+        } else {
+            // Horizontal text (0° or 180°).
+            let label = if self.badge_rotation == 180 {
+                "CanvasX".chars().rev().collect::<String>()
+            } else {
+                "CanvasX".to_string()
+            };
+            entries.push(DevToolsTextEntry {
+                text: label,
+                x: bx + 8.0,
+                y: by + 3.0,
+                width: bw - 16.0,
+                font_size: 11.0,
+                color: badge_color,
+                bold: false,
+            });
+        }
 
         if self.open {
             let panel_y = viewport_height - overlay::PANEL_HEIGHT;
@@ -275,10 +371,15 @@ impl DevTools {
             }
         }
 
-        // Right-click context menu text.
-        entries.extend(self.context_menu.text_entries());
+        // Context menu text is rendered separately in the overlay layer
+        // via context_menu_text_entries() so it appears on top of scene text.
 
         entries
+    }
+
+    /// Text entries for the context menu overlay (rendered on top of scene text).
+    pub fn context_menu_text_entries(&self) -> Vec<DevToolsTextEntry> {
+        self.context_menu.text_entries()
     }
 }
 

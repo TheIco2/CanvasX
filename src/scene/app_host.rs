@@ -206,6 +206,9 @@ pub enum AppEvent {
     TrayAction(String),
     /// Content was swapped inside a `<page-content>` container.
     ContentSwap { page: PageId, content_id: String },
+    /// The active page was reloaded (HTML/CSS recompiled, JS runtime dropped).
+    /// Consumer should call `init_js_for_active_page()`.
+    PageReloaded(PageId),
     /// Update the window title.
     SetTitle(String),
     /// Window drag requested (from custom title bar).
@@ -413,7 +416,7 @@ impl AppHost {
                 }
 
                 // Badge click → toggle DevTools.
-                if self.devtools.hit_test_badge(x, y, viewport_height) {
+                if self.devtools.hit_test_badge(x, y, viewport_width, viewport_height) {
                     self.devtools.toggle();
                     return;
                 }
@@ -509,6 +512,8 @@ impl AppHost {
 
         // Route event to active page's input handler.
         let is_mouse_move = matches!(event, RawInputEvent::MouseMove { .. });
+        let is_mouse_down = matches!(event, RawInputEvent::MouseDown { .. });
+        let is_mouse_up = matches!(event, RawInputEvent::MouseUp { .. });
         if let Some(ref page_id) = self.active_page.clone() {
             if let Some(page) = self.pages.get_mut(page_id) {
                 let prev_hovered = page.input_handler.hovered;
@@ -585,6 +590,11 @@ impl AppHost {
                 // If hover target changed and any involved node has hover_style,
                 // repaint so the hover overrides are applied visually.
                 if is_mouse_move && page.input_handler.hovered != prev_hovered {
+                    page.scene.invalidate_paint();
+                }
+
+                // If mouse was pressed or released, repaint for :active / :focus styles.
+                if is_mouse_down || is_mouse_up {
                     page.scene.invalidate_paint();
                 }
 
@@ -866,6 +876,8 @@ impl AppHost {
         self.load_page(&route);
         self.js_runtime = None;
         self.devtools.console.entries.clear();
+        // Emit PageReloaded so the consumer re-initializes the JS runtime.
+        self.pending_events.push(AppEvent::PageReloaded(page_id));
     }
 
     /// Toggle the debug web server on/off and open the browser.
@@ -975,6 +987,22 @@ impl AppHost {
             );
         };
         self.devtools.text_entries(doc, viewport_width, viewport_height)
+    }
+
+    /// Returns the context menu overlay rect `(x, y, w, h)` if open, else `None`.
+    /// Consumers can use this to clip scene text behind the context menu.
+    pub fn context_menu_rect(&self) -> Option<(f32, f32, f32, f32)> {
+        self.devtools.context_menu.overlay_rect()
+    }
+
+    /// GPU instances for the context menu overlay (rendered in a separate layer).
+    pub fn context_menu_instances(&self) -> Vec<UiInstance> {
+        self.devtools.context_menu_instances()
+    }
+
+    /// Text entries for the context menu overlay (rendered in a separate layer).
+    pub fn context_menu_text_entries(&self) -> Vec<crate::devtools::DevToolsTextEntry> {
+        self.devtools.context_menu_text_entries()
     }
 
     /// Get dirty canvas textures from JS runtime for GPU upload.
@@ -1140,6 +1168,13 @@ impl AppHost {
 
         // Transplant new children from fragment document.
         page.scene.document.transplant_children_from(&frag_doc, pc_node_id);
+
+        // Re-apply the page's CSS rules to the transplanted nodes so they pick
+        // up the page-level stylesheet (fragments compile with no external CSS).
+        crate::compiler::html::reapply_all_styles(
+            &mut page.scene.document,
+            &page.css_rules,
+        );
 
         // Reset scroll position for the new content.
         if let Some(node) = page.scene.document.get_node_mut(pc_node_id) {

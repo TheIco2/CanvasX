@@ -15,6 +15,7 @@ use crate::layout::types::LayoutConstraints;
 /// After this, every node's `layout.rect` is populated with its
 /// absolute pixel position and size.
 pub fn compute_layout(doc: &mut CxrdDocument, viewport_width: f32, viewport_height: f32) {
+    log::trace!("[layout] ═══ compute_layout START  vp={viewport_width:.0}×{viewport_height:.0}  nodes={}", doc.nodes.len());
     let constraints = LayoutConstraints::new(viewport_width, viewport_height);
 
     // Set root node to fill viewport.
@@ -53,10 +54,20 @@ fn layout_node_recursive(
         return;
     }
 
+    let tag = node.tag.as_deref().unwrap_or("-");
+    let cls = node.classes.first().map(|s| s.as_str()).unwrap_or("");
     let style = node.style.clone();
     let container_rect = node.layout.content_rect;
     let scroll_y = node.layout.scroll_y;
     let children: Vec<NodeId> = node.children.clone();
+
+    log::trace!(
+        "[layout] node {node_id} <{tag}> .{cls}  display={:?}  rect=({:.1},{:.1} {:.1}×{:.1})  content=({:.1},{:.1} {:.1}×{:.1})  children={}",
+        style.display,
+        node.layout.rect.x, node.layout.rect.y, node.layout.rect.width, node.layout.rect.height,
+        container_rect.x, container_rect.y, container_rect.width, container_rect.height,
+        children.len(),
+    );
 
     // Set clip for overflow: hidden or scroll containers.
     let child_clip = if matches!(style.overflow, crate::cxrd::style::Overflow::Hidden | crate::cxrd::style::Overflow::Scroll) {
@@ -78,7 +89,50 @@ fn layout_node_recursive(
         layout_grid_children(doc, node_id, container_rect, &children, constraints);
     } else if is_flex {
         // --- Flexbox layout ---
-        layout_flex_children(doc, node_id, container_rect, &children, constraints);
+        let (main_used, cross_used) = layout_flex_children(doc, node_id, container_rect, &children, constraints);
+
+        // If this flex container has auto-height and its content *overflows*
+        // the initially-estimated size, grow the container to fit.
+        // We never shrink — a parent flex may have deliberately stretched this
+        // node (e.g. align-items: stretch) and shrinking would break hit testing.
+        let is_row = matches!(style.flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
+        if is_row && style.height.is_auto() && cross_used > container_rect.height {
+            let node = &mut doc.nodes[node_id as usize];
+            let pad_border_v = node.layout.padding.vertical() + style.border_width.vertical();
+            let new_h = cross_used + pad_border_v;
+            log::trace!("[layout] flex row auto-height GROW node {} from {:.1} to {:.1}",
+                node_id, node.layout.rect.height, new_h);
+            node.layout.rect.height = new_h;
+            node.layout.content_rect.height = cross_used;
+        }
+        if !is_row && style.height.is_auto() && main_used > container_rect.height {
+            // Column flex: main axis is vertical — grow height to fit content.
+            let node = &mut doc.nodes[node_id as usize];
+            let pad_border_v = node.layout.padding.vertical() + style.border_width.vertical();
+            let new_h = main_used + pad_border_v;
+            log::trace!("[layout] flex col auto-height GROW node {} from {:.1} to {:.1}",
+                node_id, node.layout.rect.height, new_h);
+            node.layout.rect.height = new_h;
+            node.layout.content_rect.height = main_used;
+        }
+        if is_row && style.width.is_auto() && main_used > container_rect.width {
+            let node = &mut doc.nodes[node_id as usize];
+            let pad_border_h = node.layout.padding.horizontal() + style.border_width.horizontal();
+            let new_w = main_used + pad_border_h;
+            log::trace!("[layout] flex row auto-width GROW node {} from {:.1} to {:.1}",
+                node_id, node.layout.rect.width, new_w);
+            node.layout.rect.width = new_w;
+            node.layout.content_rect.width = main_used;
+        }
+        if !is_row && style.width.is_auto() && cross_used > container_rect.width {
+            let node = &mut doc.nodes[node_id as usize];
+            let pad_border_h = node.layout.padding.horizontal() + style.border_width.horizontal();
+            let new_w = cross_used + pad_border_h;
+            log::trace!("[layout] flex col auto-width GROW node {} from {:.1} to {:.1}",
+                node_id, node.layout.rect.width, new_w);
+            node.layout.rect.width = new_w;
+            node.layout.content_rect.width = cross_used;
+        }
     } else {
         // --- Block flow layout ---
         layout_block_children(doc, container_rect, &children, constraints);
@@ -505,13 +559,17 @@ fn estimate_content_height(doc: &CxrdDocument, node_id: NodeId, constraints: &La
     };
 
     let cs = &node.style;
+    let tag = node.tag.as_deref().unwrap_or("-");
+    let cls = node.classes.first().map(|s| s.as_str()).unwrap_or("");
     let resolve = |d: Dimension, parent: f32| -> f32 {
         d.resolve(parent, constraints.viewport_width, constraints.viewport_height, cs.font_size, constraints.root_font_size)
     };
 
     // If height is explicitly set, use it.
     if !cs.height.is_auto() {
-        return resolve(cs.height, constraints.viewport_height);
+        let h = resolve(cs.height, constraints.viewport_height);
+        log::trace!("[layout] estimate_h node={node_id} <{tag}> .{cls}  explicit h={h:.1}");
+        return h;
     }
 
     let padding_v = resolve(cs.padding.top, 0.0) + resolve(cs.padding.bottom, 0.0);
@@ -520,11 +578,14 @@ fn estimate_content_height(doc: &CxrdDocument, node_id: NodeId, constraints: &La
     if node.children.is_empty() {
         // Leaf node: estimate intrinsic height.
         if let NodeKind::Input(input) = &node.kind {
+            let font_size = cs.font_size.max(1.0);
+            let line_h = cs.line_height * font_size;
             let intrinsic = match input {
-                InputKind::TextArea { rows, .. } => (cs.font_size * cs.line_height * (*rows).max(1) as f32).max(30.0),
+                InputKind::TextArea { rows, .. } => (font_size * cs.line_height * (*rows).max(1) as f32).max(30.0),
                 InputKind::TabBar { .. } => 30.0,
                 InputKind::Checkbox { .. } => 22.0,
                 InputKind::Slider { .. } => 22.0,
+                InputKind::Button { .. } | InputKind::Link { .. } => line_h,
                 _ => 30.0,
             };
             return padding_v + border_v + intrinsic;
@@ -553,16 +614,33 @@ fn estimate_content_height(doc: &CxrdDocument, node_id: NodeId, constraints: &La
         && matches!(cs.flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
     let is_wrap_row = is_flex_row && !matches!(cs.flex_wrap, crate::cxrd::style::FlexWrap::NoWrap);
     let is_paragraph_like = node.tag.as_deref() == Some("p");
+
+    // Narrow max_width for children: subtract this node's horizontal padding/border
+    // so that text wrapping estimates use the actual available content width rather
+    // than the viewport width.
+    let padding_h = resolve(cs.padding.left, constraints.max_width) + resolve(cs.padding.right, constraints.max_width);
+    let border_h = cs.border_width.left + cs.border_width.right;
+    let content_width = if !cs.width.is_auto() {
+        (resolve(cs.width, constraints.max_width) - padding_h - border_h).max(0.0)
+    } else {
+        (constraints.max_width - padding_h - border_h).max(0.0)
+    };
+    let child_constraints = constraints.with_max(content_width, constraints.max_height);
+
     let mut total_h: f32 = 0.0;
     let mut max_h: f32 = 0.0;
     let mut count = 0;
+
+    // For wrapping flex rows, collect child widths+heights to simulate wrap.
+    let mut wrap_items: Vec<(f32, f32)> = Vec::new(); // (width, height)
+
     for &child_id in &node.children {
         if let Some(child) = doc.nodes.get(child_id as usize) {
             if matches!(child.style.display, Display::None) || matches!(child.style.position, Position::Absolute | Position::Fixed) {
                 continue;
             }
         }
-        let ch = estimate_content_height(doc, child_id, constraints);
+        let ch = estimate_content_height(doc, child_id, &child_constraints);
         // Add child's margins since they contribute to the parent's content height.
         let child_margin_v = if let Some(child) = doc.nodes.get(child_id as usize) {
             let ccs = &child.style;
@@ -577,13 +655,62 @@ fn estimate_content_height(doc: &CxrdDocument, node_id: NodeId, constraints: &La
         let ch_with_m = ch + child_margin_v;
         if ch_with_m > max_h { max_h = ch_with_m; }
         count += 1;
+
+        if is_wrap_row {
+            let cw = estimate_content_width(doc, child_id, &child_constraints);
+            let child_margin_h = if let Some(child) = doc.nodes.get(child_id as usize) {
+                let ccs = &child.style;
+                let r = |d: Dimension| -> f32 {
+                    d.resolve(0.0, constraints.viewport_width, constraints.viewport_height, ccs.font_size, constraints.root_font_size)
+                };
+                r(ccs.margin.left) + r(ccs.margin.right)
+            } else {
+                0.0
+            };
+            wrap_items.push((cw + child_margin_h, ch_with_m));
+        }
     }
     if count > 1 && (!is_flex_row || (is_wrap_row && is_paragraph_like)) {
         total_h += gap * (count - 1) as f32;
     }
 
-    let children_h = if is_flex_row && !(is_wrap_row && is_paragraph_like) { max_h } else { total_h };
-    padding_v + border_v + children_h
+    let children_h = if is_wrap_row && !wrap_items.is_empty() {
+        // Simulate wrapping: group items into lines and sum line heights + gaps.
+        let mut lines_h: f32 = 0.0;
+        let mut line_max_h: f32 = 0.0;
+        let mut line_used: f32 = 0.0;
+        let mut line_count: usize = 0;
+        let mut num_lines: usize = 1;
+        for &(w, h) in &wrap_items {
+            let gap_before = if line_count == 0 { 0.0 } else { gap };
+            if line_count > 0 && line_used + gap_before + w > content_width {
+                lines_h += line_max_h;
+                line_max_h = h;
+                line_used = w;
+                line_count = 1;
+                num_lines += 1;
+            } else {
+                line_used += gap_before + w;
+                if h > line_max_h { line_max_h = h; }
+                line_count += 1;
+            }
+        }
+        lines_h += line_max_h;
+        if num_lines > 1 {
+            lines_h += gap * (num_lines - 1) as f32;
+        }
+        log::trace!("[layout] estimate_h node={node_id} <{tag}> .{cls}  wrap_row {num_lines} lines  children_h={lines_h:.1}  avail_w={content_width:.1}");
+        lines_h
+    } else if is_flex_row {
+        log::trace!("[layout] estimate_h node={node_id} <{tag}> .{cls}  flex_row  max_h={max_h:.1}");
+        max_h
+    } else {
+        log::trace!("[layout] estimate_h node={node_id} <{tag}> .{cls}  block/col  total_h={total_h:.1} count={count}");
+        total_h
+    };
+    let result = padding_v + border_v + children_h;
+    log::trace!("[layout] estimate_h node={node_id} <{tag}> .{cls}  → {result:.1}  (pad={padding_v:.1} border={border_v:.1} content={children_h:.1})");
+    result
 }
 
 /// Estimate the intrinsic content width of a node (for flex-row auto-basis).
@@ -693,13 +820,16 @@ fn estimate_content_width(doc: &CxrdDocument, node_id: NodeId, constraints: &Lay
 }
 
 /// Layout children using flexbox.
+/// Returns `(main_used, cross_used)` — the total main-axis and cross-axis
+/// size consumed by all flex lines, *excluding* the container's own padding
+/// and border.  The caller can use these to shrink-wrap auto-sized containers.
 fn layout_flex_children(
     doc: &mut CxrdDocument,
     parent_id: NodeId,
     container_rect: Rect,
     child_ids: &[NodeId],
     constraints: &LayoutConstraints,
-) {
+) -> (f32, f32) {
     // We need to temporarily extract children to mutate them together with the parent.
     // Since they're all in the same Vec, we use index-based access.
     // First, initialize child rects.
@@ -717,13 +847,14 @@ fn layout_flex_children(
         .copied()
         .filter(|&cid| {
             doc.nodes.get(cid as usize)
-                .map(|c| !matches!(c.style.position, Position::Absolute | Position::Fixed))
+                .map(|c| !matches!(c.style.position, Position::Absolute | Position::Fixed)
+                      && !matches!(c.style.display, Display::None))
                 .unwrap_or(false)
         })
         .collect();
 
     if flex_children.is_empty() {
-        return;
+        return (0.0, 0.0);
     }
 
     // We'll do the flex computation using extracted data then write back.
@@ -737,6 +868,11 @@ fn layout_flex_children(
     let is_row = matches!(dir, crate::cxrd::style::FlexDirection::Row | crate::cxrd::style::FlexDirection::RowReverse);
     let main_size = if is_row { container_rect.width } else { container_rect.height };
     let cross_size = if is_row { container_rect.height } else { container_rect.width };
+
+    log::trace!(
+        "[layout]   flex parent={parent_id} dir={dir:?} wrap={:?} main={main_size:.1} cross={cross_size:.1} gap={gap:.1} items={}",
+        parent_style.flex_wrap, flex_children.len(),
+    );
 
     struct ItemData {
         base_main: f32,
@@ -753,6 +889,10 @@ fn layout_flex_children(
         border: EdgeInsets,
         align: crate::cxrd::style::AlignItems,
     }
+
+    // Use container-aware constraints so text wrapping estimates use
+    // the actual available width rather than the full viewport.
+    let inner_constraints = constraints.with_max(container_rect.width, container_rect.height);
 
     let mut items: Vec<ItemData> = Vec::with_capacity(flex_children.len());
     for &cid in &flex_children {
@@ -790,7 +930,7 @@ fn layout_flex_children(
         } else {
             // Auto basis: use intrinsic content size.
             if !is_row {
-                estimate_content_height(doc, cid, constraints)
+                estimate_content_height(doc, cid, &inner_constraints)
             } else {
                 estimate_content_width(doc, cid, constraints)
             }
@@ -827,8 +967,14 @@ fn layout_flex_children(
             if cs.max_height.is_auto() { f32::INFINITY } else { resolve(cs.max_height, container_rect.height) }
         };
 
+        let final_basis = basis.max(min_main).min(max_main);
+        log::trace!(
+            "[layout]     flex item {cid} basis={final_basis:.1} cross={cross:.1} grow={:.1} shrink={:.1}",
+            cs.flex_grow, cs.flex_shrink,
+        );
+
         items.push(ItemData {
-            base_main: basis.max(min_main).min(max_main),
+            base_main: final_basis,
             base_cross: cross,
             min_main,
             max_main,
@@ -867,6 +1013,11 @@ fn layout_flex_children(
         lines
     };
 
+    log::trace!("[layout]   flex wrap → {} lines  items_per_line=[{}]",
+        lines.len(),
+        lines.iter().map(|l| l.len().to_string()).collect::<Vec<_>>().join(","),
+    );
+
     let wrapped_lines = !matches!(wrap, crate::cxrd::style::FlexWrap::NoWrap);
     let line_crosses: Vec<f32> = if wrapped_lines {
         lines.iter().map(|line| {
@@ -877,9 +1028,9 @@ fn layout_flex_children(
                 let intrinsic = if item.base_cross > 0.0 {
                     item.base_cross
                 } else if is_row {
-                    estimate_content_height(doc, cid, constraints)
+                    estimate_content_height(doc, cid, &inner_constraints)
                 } else {
-                    estimate_content_width(doc, cid, constraints)
+                    estimate_content_width(doc, cid, &inner_constraints)
                 };
                 max_cross = max_cross.max(intrinsic + item.c_start + item.c_end);
             }
@@ -889,6 +1040,7 @@ fn layout_flex_children(
         vec![cross_size]
     };
     let mut cross_pos = 0.0f32;
+    let mut max_main_used = 0.0f32;
 
     for (line_index, line) in lines.iter().enumerate() {
         if line.is_empty() { continue; }
@@ -901,6 +1053,10 @@ fn layout_flex_children(
         let free_l = main_size - total_base_l - total_gap_l;
         let total_grow_l: f32 = line.iter().map(|&i| items[i].flex_grow).sum();
         let total_shrink_l: f32 = line.iter().map(|&i| items[i].flex_shrink * items[i].base_main).sum();
+
+        log::trace!(
+            "[layout]   flex line {line_index}  cross={line_cross:.1} base_total={total_base_l:.1} free={free_l:.1} grow_sum={total_grow_l:.1}",
+        );
         let pure_base_l: f32 = line.iter().map(|&i| items[i].base_main).sum();
 
         let finals_l: Vec<f32> = line.iter().map(|&idx| {
@@ -951,9 +1107,9 @@ fn layout_flex_children(
                 line_cross - item.c_start - item.c_end
             } else {
                 let intrinsic = if is_row {
-                    estimate_content_height(doc, cid, constraints)
+                    estimate_content_height(doc, cid, &inner_constraints)
                 } else {
-                    estimate_content_width(doc, cid, constraints)
+                    estimate_content_width(doc, cid, &inner_constraints)
                 };
                 intrinsic.min(line_cross - item.c_start - item.c_end)
             };
@@ -973,6 +1129,10 @@ fn layout_flex_children(
                 (container_rect.x + cross_pos + item_cross_offset, container_rect.y + offset, c, m)
             };
 
+            log::trace!(
+                "[layout]     → child {cid} pos=({x:.1},{y:.1}) size={w:.1}×{h:.1}  main_slot={m:.1}",
+            );
+
             let node = &mut doc.nodes[cid as usize];
             node.layout.rect = Rect { x, y, width: w, height: h };
             node.layout.content_rect = Rect {
@@ -986,8 +1146,18 @@ fn layout_flex_children(
             offset += m + item.m_end + gap + extra_gap;
         }
 
+        // Track maximum main-axis content extent (items + margins + gaps,
+        // excluding justify-content offset which is layout distribution, not content).
+        if used_l > max_main_used { max_main_used = used_l; }
+        log::trace!(
+            "[layout]   flex line {line_index} done  used_l={used_l:.1} remaining={remaining_l:.1} offset={offset:.1}",
+        );
+
         cross_pos += line_cross + if wrapped_lines { gap } else { 0.0 };
     }
+
+    log::trace!("[layout]   flex result  main_used={max_main_used:.1}  cross_used={cross_pos:.1}");
+    (max_main_used, cross_pos)
 }
 
 /// Layout children using simple block flow (stack vertically).
@@ -1035,10 +1205,16 @@ fn layout_block_children(
             // Auto height: estimate from content.
             // For containers with children, estimate recursively.
             // For leaf nodes, use text line height.
-            estimate_content_height(doc, cid, constraints)
+            let inner_constraints = constraints.with_max(container_rect.width, container_rect.height);
+            estimate_content_height(doc, cid, &inner_constraints)
         };
 
         y_cursor += margin.top;
+
+        log::trace!(
+            "[layout] block child {cid} at ({:.1},{y_cursor:.1}) {w:.1}×{h:.1}",
+            container_rect.x + margin.left,
+        );
 
         let node = &mut doc.nodes[cid as usize];
         node.layout.rect = Rect {

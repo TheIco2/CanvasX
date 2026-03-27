@@ -211,6 +211,12 @@ impl InputHandler {
         // Check if point is in this node's rect.
         let rect = &node.layout.rect;
         if !point_in_rect(x, y, rect) {
+            let tag = node.tag.as_deref().unwrap_or("-");
+            let cls = node.classes.first().map(|s| s.as_str()).unwrap_or("");
+            log::trace!(
+                "[hit] MISS node {node_id} <{tag}> .{cls}  rect=({:.1},{:.1} {:.1}×{:.1})  mouse=({x:.1},{y:.1})",
+                rect.x, rect.y, rect.width, rect.height,
+            );
             return None;
         }
 
@@ -223,6 +229,12 @@ impl InputHandler {
 
         // If this node is interactive or has event bindings, return it.
         if is_interactive(&node.kind) || !node.events.is_empty() {
+            let tag = node.tag.as_deref().unwrap_or("-");
+            let cls = node.classes.first().map(|s| s.as_str()).unwrap_or("");
+            log::trace!(
+                "[hit] HIT  node {node_id} <{tag}> .{cls}  rect=({:.1},{:.1} {:.1}×{:.1})",
+                rect.x, rect.y, rect.width, rect.height,
+            );
             return Some(node_id);
         }
 
@@ -284,12 +296,11 @@ impl InputHandler {
         }
 
         // Update cursor.
+        // Check :hover style overrides first (e.g. `cursor: pointer` on :hover).
+        // Walk up ancestors to find hover cursor since hit test returns the deepest node
+        // but CSS cursor on :hover may be set on a parent.
         self.cursor = if let Some(node_id) = hit {
-            if let Some(node) = doc.get_node(node_id) {
-                css_cursor_or_fallback(&node.style.cursor, &node.kind)
-            } else {
-                CursorIcon::Default
-            }
+            resolve_hover_cursor(doc, node_id)
         } else {
             CursorIcon::Default
         };
@@ -300,20 +311,44 @@ impl InputHandler {
 
         // Update focus.
         if hit != self.focused {
-            // Blur previous.
+            // Blur previous — clear focused flag on node and ancestors.
             if let Some(prev) = self.focused {
                 if let Some(state) = self.states.get_mut(&prev) {
                     state.focus = FocusState::None;
                 }
+                let mut clear_id = Some(prev);
+                while let Some(nid) = clear_id {
+                    if let Some(node) = doc.get_node_mut(nid) {
+                        node.focused = false;
+                    }
+                    clear_id = doc.find_parent(nid);
+                }
             }
             self.focused = hit;
+            // Set focused flag on new node and ancestors.
+            if let Some(node_id) = hit {
+                let mut focus_id = Some(node_id);
+                while let Some(nid) = focus_id {
+                    if let Some(node) = doc.get_node_mut(nid) {
+                        node.focused = true;
+                    }
+                    focus_id = doc.find_parent(nid);
+                }
+            }
         }
 
-        // Set pressed state.
+        // Set pressed / :active state on node and ancestors.
         if let Some(node_id) = hit {
             let state = self.states.entry(node_id).or_default();
             state.pressed = true;
             state.focus = FocusState::Active;
+            let mut active_id = Some(node_id);
+            while let Some(nid) = active_id {
+                if let Some(node) = doc.get_node_mut(nid) {
+                    node.active = true;
+                }
+                active_id = doc.find_parent(nid);
+            }
         }
     }
 
@@ -336,6 +371,15 @@ impl InputHandler {
                 } else {
                     FocusState::None
                 };
+            }
+
+            // Clear :active flag on the node and all ancestors.
+            let mut clear_id = Some(node_id);
+            while let Some(nid) = clear_id {
+                if let Some(node) = doc.get_node_mut(nid) {
+                    node.active = false;
+                }
+                clear_id = doc.find_parent(nid);
             }
 
             // If released on the same node it was pressed on, it's a click.
@@ -923,6 +967,53 @@ fn css_cursor_or_fallback(css: &CursorStyle, kind: &NodeKind) -> CursorIcon {
         CursorStyle::Grab | CursorStyle::Grabbing | CursorStyle::CrossHair
         | CursorStyle::ColResize | CursorStyle::RowResize => cursor_for_node(kind),
     }
+}
+
+/// Resolve a raw CSS cursor value string (from hover_style) to a CursorIcon.
+fn css_cursor_from_str(value: &str, kind: &NodeKind) -> CursorIcon {
+    match value.trim() {
+        "pointer" => CursorIcon::Pointer,
+        "default" => CursorIcon::Default,
+        "text" => CursorIcon::Text,
+        "move" => CursorIcon::Move,
+        "not-allowed" => CursorIcon::NotAllowed,
+        "ns-resize" | "n-resize" | "s-resize" => CursorIcon::ResizeNS,
+        "ew-resize" | "e-resize" | "w-resize" => CursorIcon::ResizeEW,
+        "grab" | "grabbing" | "crosshair" | "col-resize" | "row-resize" => cursor_for_node(kind),
+        "auto" => cursor_for_node(kind),
+        _ => CursorIcon::Default,
+    }
+}
+
+/// Resolve cursor for a hit node, walking up ancestors to find hover cursor.
+///
+/// CSS `cursor` is an inherited property and `:hover` rules may set it on a
+/// parent while the hit test returns a deeper child. We walk up the ancestor
+/// chain checking `hover_style` for a cursor override, then fall back to the
+/// compiled `style.cursor` (which already has inheritance baked in).
+fn resolve_hover_cursor(doc: &CxrdDocument, start: NodeId) -> CursorIcon {
+    let mut nid = Some(start);
+    while let Some(id) = nid {
+        if let Some(node) = doc.get_node(id) {
+            if node.hovered {
+                if let Some(cursor_val) = node.hover_style.iter()
+                    .find(|(p, _)| p == "cursor")
+                    .map(|(_, v)| v.as_str())
+                {
+                    return css_cursor_from_str(cursor_val, &node.kind);
+                }
+            }
+            // Check compiled style for a non-Auto cursor.
+            if !matches!(node.style.cursor, CursorStyle::Auto) {
+                return css_cursor_or_fallback(&node.style.cursor, &node.kind);
+            }
+        }
+        nid = doc.find_parent(id);
+    }
+    // Nothing found — use node-kind heuristic on the hit node.
+    doc.get_node(start)
+        .map(|n| cursor_for_node(&n.kind))
+        .unwrap_or(CursorIcon::Default)
 }
 
 /// Collect all interactive node IDs in document order (depth-first).

@@ -8,7 +8,7 @@ use crate::compiler::css::apply_property;
 use crate::cxrd::document::CxrdDocument;
 use crate::cxrd::node::{NodeId, NodeKind, CxrdNode};
 use crate::cxrd::input::{InputKind, ButtonVariant, CheckboxStyle};
-use crate::cxrd::style::{ComputedStyle, Display, Background, GradientStop};
+use crate::cxrd::style::{BorderStyle, ComputedStyle, Display, Background, GradientStop};
 use crate::gpu::vertex::UiInstance;
 use std::collections::HashMap;
 
@@ -404,14 +404,19 @@ fn should_paint(node: &CxrdNode) -> bool {
     // Has box shadow? (TODO: separate pass for shadows)
     let has_shadow = !s.box_shadow.is_empty();
 
-    // Hover overrides might add background or border even when none in base style.
-    let hover_adds_visual = node.hovered && node.hover_style.iter().any(|(p, _)| {
-        matches!(p.as_str(), "background" | "background-color" | "border" | "border-color"
-            | "border-width" | "border-top-width" | "border-right-width"
-            | "border-bottom-width" | "border-left-width")
-    });
+    // Pseudo-class overrides might add background or border even when none in base style.
+    let pseudo_adds_visual = {
+        let check = |styles: &[(String, String)]| styles.iter().any(|(p, _)| {
+            matches!(p.as_str(), "background" | "background-color" | "border" | "border-color"
+                | "border-width" | "border-top-width" | "border-right-width"
+                | "border-bottom-width" | "border-left-width")
+        });
+        (node.hovered && check(&node.hover_style))
+            || (node.active && check(&node.active_style))
+            || (node.focused && check(&node.focus_style))
+    };
 
-    has_bg || has_border || has_shadow || hover_adds_visual
+    has_bg || has_border || has_shadow || pseudo_adds_visual
 }
 
 // ---------------------------------------------------------------------------
@@ -670,13 +675,31 @@ fn paint_input_widget(node: &CxrdNode, input: &InputKind, out: &mut Vec<UiInstan
     }
 }
 
-/// Return the effective style for a node, applying hover overrides when hovered.
+/// Return the effective style for a node, applying pseudo-class overrides.
+/// Priority: base → :hover → :focus → :active (highest wins).
 fn effective_style(node: &CxrdNode) -> ComputedStyle {
-    if node.hovered && !node.hover_style.is_empty() {
+    let needs_override = (node.hovered && !node.hover_style.is_empty())
+        || (node.focused && !node.focus_style.is_empty())
+        || (node.active && !node.active_style.is_empty());
+
+    if needs_override {
         let mut style = node.style.clone();
         let empty_vars = HashMap::new();
-        for (prop, val) in &node.hover_style {
-            apply_property(&mut style, prop, val, &empty_vars);
+        // Apply in order of specificity: hover, then focus, then active.
+        if node.hovered && !node.hover_style.is_empty() {
+            for (prop, val) in &node.hover_style {
+                apply_property(&mut style, prop, val, &empty_vars);
+            }
+        }
+        if node.focused && !node.focus_style.is_empty() {
+            for (prop, val) in &node.focus_style {
+                apply_property(&mut style, prop, val, &empty_vars);
+            }
+        }
+        if node.active && !node.active_style.is_empty() {
+            for (prop, val) in &node.active_style {
+                apply_property(&mut style, prop, val, &empty_vars);
+            }
         }
         style
     } else {
@@ -703,8 +726,9 @@ fn node_to_instance(node: &CxrdNode) -> UiInstance {
     };
 
     let has_bg = !matches!(s.background, Background::None);
-    let has_border = s.border_width.top > 0.0 || s.border_width.right > 0.0
-        || s.border_width.bottom > 0.0 || s.border_width.left > 0.0;
+    let has_border = !matches!(s.border_style, BorderStyle::None | BorderStyle::Hidden)
+        && (s.border_width.top > 0.0 || s.border_width.right > 0.0
+        || s.border_width.bottom > 0.0 || s.border_width.left > 0.0);
     let has_texture = matches!(s.background, Background::Image { .. });
     let has_clip = node.layout.clip.is_some();
 

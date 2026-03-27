@@ -108,6 +108,14 @@ pub struct CxrdNode {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub hover_style: Vec<(String, String)>,
 
+    /// Style property overrides for `:active` state (mouse pressed).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub active_style: Vec<(String, String)>,
+
+    /// Style property overrides for `:focus` state.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub focus_style: Vec<(String, String)>,
+
     /// Child node IDs (indexes into the document's node list).
     pub children: Vec<NodeId>,
 
@@ -120,6 +128,14 @@ pub struct CxrdNode {
     /// Whether this node is currently hovered (runtime state, not serialised).
     #[serde(skip)]
     pub hovered: bool,
+
+    /// Whether this node is currently pressed / :active (runtime state).
+    #[serde(skip)]
+    pub active: bool,
+
+    /// Whether this node is currently focused (runtime state).
+    #[serde(skip)]
+    pub focused: bool,
 
     /// Layout result — populated after layout pass.
     #[serde(skip)]
@@ -199,7 +215,11 @@ impl CxrdNode {
             animations: Vec::new(),
             layout: LayoutResult::default(),
             hover_style: Vec::new(),
+            active_style: Vec::new(),
+            focus_style: Vec::new(),
             hovered: false,
+            active: false,
+            focused: false,
         }
     }
 
@@ -218,7 +238,11 @@ impl CxrdNode {
             animations: Vec::new(),
             layout: LayoutResult::default(),
             hover_style: Vec::new(),
+            active_style: Vec::new(),
+            focus_style: Vec::new(),
             hovered: false,
+            active: false,
+            focused: false,
         }
     }
 }

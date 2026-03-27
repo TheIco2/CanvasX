@@ -6,7 +6,7 @@
 use crate::cxrd::document::CxrdDocument;
 use crate::cxrd::node::{NodeId, NodeKind};
 use crate::cxrd::input::InputKind;
-use crate::cxrd::style::{Display, TextAlign, TextTransform, WhiteSpace};
+use crate::cxrd::style::{Display, FontStyle, TextAlign, TextTransform, WhiteSpace};
 use glyphon::{Attrs, Buffer, Color as GlyphonColor, Family, Metrics, Shaping, TextArea, TextBounds, Weight};
 use glyphon::cosmic_text::Align;
 use std::collections::HashMap;
@@ -243,7 +243,12 @@ impl TextPainter {
                         glyphon::Family::Name(&style.font_family)
                     };
                     let weight = glyphon::Weight(style.font_weight.0);
-                    let attrs = glyphon::Attrs::new().family(family).weight(weight);
+                    let glyph_style = match style.font_style {
+                        FontStyle::Italic => glyphon::Style::Italic,
+                        FontStyle::Oblique => glyphon::Style::Italic, // glyphon maps oblique to italic
+                        FontStyle::Normal => glyphon::Style::Normal,
+                    };
+                    let attrs = glyphon::Attrs::new().family(family).weight(weight).style(glyph_style);
                     let alignment = if center_align {
                         Some(glyphon::cosmic_text::Align::Center)
                     } else {
@@ -277,40 +282,80 @@ impl TextPainter {
             };
 
             let rect = &node.layout.content_rect;
-            let color = if node.hovered && !node.hover_style.is_empty() {
-                // Check if hover_style overrides the color.
+            // Determine text color with pseudo-class overrides.
+            // Priority: :active > :focus > :hover > base.
+            let color = {
                 let mut c = node.style.color.clone();
-                for (prop, val) in &node.hover_style {
-                    if prop == "color" {
-                        if let Some(parsed) = crate::compiler::css::parse_color(val) {
-                            c = parsed;
+                let mut resolved = false;
+
+                // Check for :active override (highest priority).
+                if node.active && !node.active_style.is_empty() {
+                    for (prop, val) in &node.active_style {
+                        if prop == "color" {
+                            if let Some(parsed) = crate::compiler::css::parse_color(val) {
+                                c = parsed;
+                                resolved = true;
+                            }
                         }
                     }
                 }
-                c
-            } else if node.hovered {
-                // Node is hovered but has no hover_style — check ancestors for
-                // inheritable color overrides (e.g. parent .nav-item:hover { color: ... }).
-                let mut c = node.style.color.clone();
-                let mut ancestor_id = doc.find_parent(*node_id);
-                while let Some(aid) = ancestor_id {
-                    if let Some(ancestor) = doc.get_node(aid) {
-                        if ancestor.hovered && !ancestor.hover_style.is_empty() {
-                            for (prop, val) in &ancestor.hover_style {
-                                if prop == "color" {
-                                    if let Some(parsed) = crate::compiler::css::parse_color(val) {
-                                        c = parsed;
-                                    }
+                // Check for :focus override.
+                if !resolved && node.focused && !node.focus_style.is_empty() {
+                    for (prop, val) in &node.focus_style {
+                        if prop == "color" {
+                            if let Some(parsed) = crate::compiler::css::parse_color(val) {
+                                c = parsed;
+                                resolved = true;
+                            }
+                        }
+                    }
+                }
+                // Check for :hover override (own or inherited from ancestor).
+                if !resolved && node.hovered {
+                    if !node.hover_style.is_empty() {
+                        for (prop, val) in &node.hover_style {
+                            if prop == "color" {
+                                if let Some(parsed) = crate::compiler::css::parse_color(val) {
+                                    c = parsed;
+                                    resolved = true;
                                 }
                             }
-                            break;
                         }
                     }
-                    ancestor_id = doc.find_parent(aid);
+                    if !resolved {
+                        // Check ancestors for inheritable color overrides.
+                        let mut ancestor_id = doc.find_parent(*node_id);
+                        while let Some(aid) = ancestor_id {
+                            if let Some(ancestor) = doc.get_node(aid) {
+                                // Check active first, then focus, then hover on ancestor.
+                                if ancestor.active && !ancestor.active_style.is_empty() {
+                                    for (prop, val) in &ancestor.active_style {
+                                        if prop == "color" {
+                                            if let Some(parsed) = crate::compiler::css::parse_color(val) {
+                                                c = parsed;
+                                                resolved = true;
+                                            }
+                                        }
+                                    }
+                                    if resolved { break; }
+                                }
+                                if ancestor.hovered && !ancestor.hover_style.is_empty() {
+                                    for (prop, val) in &ancestor.hover_style {
+                                        if prop == "color" {
+                                            if let Some(parsed) = crate::compiler::css::parse_color(val) {
+                                                c = parsed;
+                                                resolved = true;
+                                            }
+                                        }
+                                    }
+                                    if resolved { break; }
+                                }
+                            }
+                            ancestor_id = doc.find_parent(aid);
+                        }
+                    }
                 }
                 c
-            } else {
-                node.style.color.clone()
             };
 
             // Use floor/ceil to prevent fractional-pixel clipping at text edges.

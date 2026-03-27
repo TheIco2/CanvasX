@@ -118,6 +118,8 @@ impl SceneGraph {
             node.kind = js_node.kind.clone();
             node.style = js_node.style.clone();
             node.hover_style = js_node.hover_style.clone();
+            node.active_style = js_node.active_style.clone();
+            node.focus_style = js_node.focus_style.clone();
             node.children = js_node.children.clone();
             node.events = js_node.events.clone();
             node.animations = js_node.animations.clone();
