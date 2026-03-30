@@ -1,4 +1,4 @@
-// canvasx-runtime/src/scripting/v8_runtime.rs
+// openrender-runtime/src/scripting/v8_runtime.rs
 //
 // JavaScript runtime powered by V8 (via the `v8` crate / rusty_v8).
 // Drop-in replacement for the boa_engine-based runtime — same public API,
@@ -207,19 +207,19 @@ impl JsRuntime {
             let tc = tc.init();
             match v8::Script::compile(&tc, code, None) {
                 Some(script) => match script.run(&tc) {
-                    Some(_) => log::info!("[CX][JS] V8 shim injected OK ({} bytes)", JS_SHIM.len()),
+                    Some(_) => log::info!("[OR][JS] V8 shim injected OK ({} bytes)", JS_SHIM.len()),
                     None => {
                         let msg = tc.exception()
                             .map(|e| e.to_rust_string_lossy(&tc))
                             .unwrap_or_default();
-                        log::error!("[CX][JS] V8 shim execution FAILED: {}", msg);
+                        log::error!("[OR][JS] V8 shim execution FAILED: {}", msg);
                     }
                 },
                 None => {
                     let msg = tc.exception()
                         .map(|e| e.to_rust_string_lossy(&tc))
                         .unwrap_or_default();
-                    log::error!("[CX][JS] V8 shim compilation FAILED: {}", msg);
+                    log::error!("[OR][JS] V8 shim compilation FAILED: {}", msg);
                 }
             }
         }
@@ -271,7 +271,7 @@ impl JsRuntime {
     /// Execute script source code.
     pub fn execute(&mut self, source: &str, name: &str) {
         self.activate();
-        log::warn!("[CX][JS] Executing script '{}' ({} bytes)", name, source.len());
+        log::warn!("[OR][JS] Executing script '{}' ({} bytes)", name, source.len());
 
         let hs = std::pin::pin!(v8::HandleScope::new(&mut self.isolate));
         let mut hs = hs.init();
@@ -281,7 +281,7 @@ impl JsRuntime {
         let code = match v8::String::new(cs, source) {
             Some(s) => s,
             None => {
-                log::error!("[CX][JS] Failed to create V8 string for '{}'", name);
+                log::error!("[OR][JS] Failed to create V8 string for '{}'", name);
                 return;
             }
         };
@@ -291,10 +291,10 @@ impl JsRuntime {
         match v8::Script::compile(&tc, code, None) {
             Some(script) => match script.run(&tc) {
                 Some(_) => {
-                    log::debug!("[CX][JS] Script '{}' completed OK", name);
+                    log::debug!("[OR][JS] Script '{}' completed OK", name);
                     let state = self.state.borrow();
                     log::warn!(
-                        "[CX][JS] Doc state: {} nodes, {} canvases, layout_dirty={}",
+                        "[OR][JS] Doc state: {} nodes, {} canvases, layout_dirty={}",
                         state.document.nodes.len(),
                         state.node_canvas_map.len(),
                         state.layout_dirty,
@@ -304,14 +304,14 @@ impl JsRuntime {
                     let msg = tc.exception()
                         .map(|e| e.to_rust_string_lossy(&tc))
                         .unwrap_or_default();
-                    log::error!("[CX][JS] Script '{}' THREW: {}", name, msg);
+                    log::error!("[OR][JS] Script '{}' THREW: {}", name, msg);
                 }
             },
             None => {
                 let msg = tc.exception()
                     .map(|e| e.to_rust_string_lossy(&tc))
                     .unwrap_or_default();
-                log::error!("[CX][JS] Script '{}' compile error: {}", name, msg);
+                log::error!("[OR][JS] Script '{}' compile error: {}", name, msg);
             }
         }
     }
@@ -319,7 +319,7 @@ impl JsRuntime {
     /// Execute a script file from disk.
     pub fn execute_file(&mut self, path: &Path) {
         self.activate();
-        log::warn!("[CX][JS] Loading script file: {}", path.display());
+        log::warn!("[OR][JS] Loading script file: {}", path.display());
         match std::fs::read_to_string(path) {
             Ok(source) => {
                 let name = path.file_name()
@@ -327,11 +327,11 @@ impl JsRuntime {
                     .unwrap_or("unknown");
                 self.execute(&source, name);
             }
-            Err(e) => log::error!("[CX][JS] Failed to read script '{}': {}", path.display(), e),
+            Err(e) => log::error!("[OR][JS] Failed to read script '{}': {}", path.display(), e),
         }
     }
 
-    /// Resolve and cache the global __cx_raf_tick function.
+    /// Resolve and cache the global __or_raf_tick function.
     pub fn cache_raf_tick_fn(&mut self) {
         let global_fn = {
             let hs = std::pin::pin!(v8::HandleScope::new(&mut self.isolate));
@@ -340,7 +340,7 @@ impl JsRuntime {
             let cs = &mut v8::ContextScope::new(&mut hs, ctx);
 
             let global = ctx.global(cs);
-            let key = v8::String::new(cs, "__cx_raf_tick").unwrap();
+            let key = v8::String::new(cs, "__or_raf_tick").unwrap();
             global.get(cs, key.into()).and_then(|val| {
                 if val.is_function() {
                     let func: v8::Local<v8::Function> = { val.cast() };
@@ -353,9 +353,9 @@ impl JsRuntime {
 
         if let Some(func) = global_fn {
             self.raf_tick_fn = Some(func);
-            log::info!("[CX][JS] Cached __cx_raf_tick function for direct calls");
+            log::info!("[OR][JS] Cached __or_raf_tick function for direct calls");
         } else {
-            log::warn!("[CX][JS] __cx_raf_tick not found or not callable — will fall back to eval");
+            log::warn!("[OR][JS] __or_raf_tick not found or not callable — will fall back to eval");
         }
     }
 
@@ -381,12 +381,12 @@ impl JsRuntime {
                 if func.call(&tc, recv, &args).is_none() {
                     if let Some(ex) = tc.exception() {
                         let msg = ex.to_rust_string_lossy(&tc);
-                        log::error!("[CX][JS] tick error: {}", msg);
+                        log::error!("[OR][JS] tick error: {}", msg);
                     }
                 }
             } else {
                 let code_str = format!(
-                    "if(typeof __cx_raf_tick==='function')__cx_raf_tick({});",
+                    "if(typeof __or_raf_tick==='function')__or_raf_tick({});",
                     now_ms
                 );
                 if let Some(code) = v8::String::new(cs, &code_str) {
@@ -396,7 +396,7 @@ impl JsRuntime {
                         if script.run(&tc).is_none() {
                             if let Some(ex) = tc.exception() {
                                 let msg = ex.to_rust_string_lossy(&tc);
-                                log::error!("[CX][JS] tick eval error: {}", msg);
+                                log::error!("[OR][JS] tick eval error: {}", msg);
                             }
                         }
                     }
@@ -470,7 +470,7 @@ impl JsRuntime {
         let vw = state.viewport_width as f32;
         let vh = state.viewport_height as f32;
         compute_layout(&mut state.document, vw, vh);
-        log::debug!("[CX][JS] Restyled document with {} rules", rules.len());
+        log::debug!("[OR][JS] Restyled document with {} rules", rules.len());
     }
 
     /// Drain all console messages buffered since the last call.
@@ -481,11 +481,11 @@ impl JsRuntime {
     }
 
     /// Dispatch a DOM event to JS element listeners (with bubbling).
-    /// Calls the JS-side `__cx_dispatchDomEvent(nodeId, type)` function.
+    /// Calls the JS-side `__or_dispatchDomEvent(nodeId, type)` function.
     pub fn dispatch_dom_event(&mut self, node_id: u32, event_type: &str) {
         self.activate();
         let code = format!(
-            "if(typeof __cx_dispatchDomEvent==='function')__cx_dispatchDomEvent({},\"{}\");",
+            "if(typeof __or_dispatchDomEvent==='function')__or_dispatchDomEvent({},\"{}\");",
             node_id, event_type
         );
         let hs = std::pin::pin!(v8::HandleScope::new(&mut self.isolate));
@@ -498,7 +498,7 @@ impl JsRuntime {
         if let Some(script) = v8::Script::compile(&tc, source, None) {
             if script.run(&tc).is_none() {
                 if let Some(exc) = tc.exception() {
-                    log::error!("[CX][JS] Event dispatch error: {}", exc.to_rust_string_lossy(&tc));
+                    log::error!("[OR][JS] Event dispatch error: {}", exc.to_rust_string_lossy(&tc));
                 }
             }
         }
@@ -521,64 +521,64 @@ fn register_all_functions(scope: &mut v8::PinScope<'_, '_>) {
     }
 
     // Console
-    set_fn!("__cx_log", cx_log);
+    set_fn!("__or_log", cx_log);
     // Performance
-    set_fn!("__cx_performance_now", cx_performance_now);
+    set_fn!("__or_performance_now", cx_performance_now);
     // DOM
-    set_fn!("__cx_getElementById", cx_get_element_by_id);
-    set_fn!("__cx_querySelector", cx_query_selector);
-    set_fn!("__cx_querySelectorAll", cx_query_selector_all);
-    set_fn!("__cx_createElement", cx_create_element);
-    set_fn!("__cx_getTextContent", cx_get_text_content);
-    set_fn!("__cx_setTextContent", cx_set_text_content);
-    set_fn!("__cx_setInnerHTML", cx_set_inner_html);
-    set_fn!("__cx_getNodeAttribute", cx_get_node_attribute);
-    set_fn!("__cx_setNodeAttribute", cx_set_node_attribute);
-    set_fn!("__cx_classListOp", cx_class_list_op);
-    set_fn!("__cx_getStyle", cx_get_style);
-    set_fn!("__cx_setStyle", cx_set_style);
-    set_fn!("__cx_getComputedStyleVar", cx_get_computed_style_var);
-    set_fn!("__cx_setRootStyleProperty", cx_set_root_style_property);
-    set_fn!("__cx_getNodeTag", cx_get_node_tag);
-    set_fn!("__cx_getNodeChildren", cx_get_node_children);
-    set_fn!("__cx_getNodeId", cx_get_node_id);
-    set_fn!("__cx_appendChild", cx_append_child);
-    set_fn!("__cx_removeChild", cx_remove_child);
-    set_fn!("__cx_getParentNode", cx_get_parent_node);
-    set_fn!("__cx_insertBefore", cx_insert_before);
-    set_fn!("__cx_getNodeClientSize", cx_get_node_client_size);
-    set_fn!("__cx_getNodeRect", cx_get_node_rect);
+    set_fn!("__or_getElementById", cx_get_element_by_id);
+    set_fn!("__or_querySelector", cx_query_selector);
+    set_fn!("__or_querySelectorAll", cx_query_selector_all);
+    set_fn!("__or_createElement", cx_create_element);
+    set_fn!("__or_getTextContent", cx_get_text_content);
+    set_fn!("__or_setTextContent", cx_set_text_content);
+    set_fn!("__or_setInnerHTML", cx_set_inner_html);
+    set_fn!("__or_getNodeAttribute", cx_get_node_attribute);
+    set_fn!("__or_setNodeAttribute", cx_set_node_attribute);
+    set_fn!("__or_classListOp", cx_class_list_op);
+    set_fn!("__or_getStyle", cx_get_style);
+    set_fn!("__or_setStyle", cx_set_style);
+    set_fn!("__or_getComputedStyleVar", cx_get_computed_style_var);
+    set_fn!("__or_setRootStyleProperty", cx_set_root_style_property);
+    set_fn!("__or_getNodeTag", cx_get_node_tag);
+    set_fn!("__or_getNodeChildren", cx_get_node_children);
+    set_fn!("__or_getNodeId", cx_get_node_id);
+    set_fn!("__or_appendChild", cx_append_child);
+    set_fn!("__or_removeChild", cx_remove_child);
+    set_fn!("__or_getParentNode", cx_get_parent_node);
+    set_fn!("__or_insertBefore", cx_insert_before);
+    set_fn!("__or_getNodeClientSize", cx_get_node_client_size);
+    set_fn!("__or_getNodeRect", cx_get_node_rect);
     // Canvas 2D
-    set_fn!("__cx_getCanvasId", cx_get_canvas_id);
-    set_fn!("__cx_canvasSetSize", cx_canvas_set_size);
-    set_fn!("__cx_canvasGetSize", cx_canvas_get_size);
-    set_fn!("__cx_c2d", cx_c2d);
-    set_fn!("__cx_c2d_setFillStyle", cx_c2d_set_fill_style);
-    set_fn!("__cx_c2d_setStrokeStyle", cx_c2d_set_stroke_style);
-    set_fn!("__cx_c2d_setFillGradient", cx_c2d_set_fill_gradient);
-    set_fn!("__cx_c2d_setStrokeGradient", cx_c2d_set_stroke_gradient);
-    set_fn!("__cx_c2d_setFillPattern", cx_c2d_set_fill_pattern);
-    set_fn!("__cx_c2d_setBlendMode", cx_c2d_set_blend_mode);
-    set_fn!("__cx_c2d_setFont", cx_c2d_set_font);
-    set_fn!("__cx_c2d_setTextAlign", cx_c2d_set_text_align);
-    set_fn!("__cx_c2d_setTextBaseline", cx_c2d_set_text_baseline);
-    set_fn!("__cx_c2d_fillText", cx_c2d_fill_text);
-    set_fn!("__cx_c2d_drawImage", cx_c2d_draw_image);
-    set_fn!("__cx_c2d_createRadialGradient", cx_c2d_create_radial_gradient);
-    set_fn!("__cx_c2d_createLinearGradient", cx_c2d_create_linear_gradient);
-    set_fn!("__cx_c2d_gradientAddStop", cx_c2d_gradient_add_stop);
-    set_fn!("__cx_c2d_createPattern", cx_c2d_create_pattern);
-    set_fn!("__cx_c2d_fillRectGrad", cx_c2d_fill_rect_grad);
-    set_fn!("__cx_c2d_fillRectPattern", cx_c2d_fill_rect_pattern);
-    set_fn!("__cx_c2d_getImageData", cx_c2d_get_image_data);
-    set_fn!("__cx_c2d_putImageData", cx_c2d_put_image_data);
-    set_fn!("__cx_c2d_clipPath", cx_c2d_clip_path);
+    set_fn!("__or_getCanvasId", cx_get_canvas_id);
+    set_fn!("__or_canvasSetSize", cx_canvas_set_size);
+    set_fn!("__or_canvasGetSize", cx_canvas_get_size);
+    set_fn!("__or_c2d", cx_c2d);
+    set_fn!("__or_c2d_setFillStyle", cx_c2d_set_fill_style);
+    set_fn!("__or_c2d_setStrokeStyle", cx_c2d_set_stroke_style);
+    set_fn!("__or_c2d_setFillGradient", cx_c2d_set_fill_gradient);
+    set_fn!("__or_c2d_setStrokeGradient", cx_c2d_set_stroke_gradient);
+    set_fn!("__or_c2d_setFillPattern", cx_c2d_set_fill_pattern);
+    set_fn!("__or_c2d_setBlendMode", cx_c2d_set_blend_mode);
+    set_fn!("__or_c2d_setFont", cx_c2d_set_font);
+    set_fn!("__or_c2d_setTextAlign", cx_c2d_set_text_align);
+    set_fn!("__or_c2d_setTextBaseline", cx_c2d_set_text_baseline);
+    set_fn!("__or_c2d_fillText", cx_c2d_fill_text);
+    set_fn!("__or_c2d_drawImage", cx_c2d_draw_image);
+    set_fn!("__or_c2d_createRadialGradient", cx_c2d_create_radial_gradient);
+    set_fn!("__or_c2d_createLinearGradient", cx_c2d_create_linear_gradient);
+    set_fn!("__or_c2d_gradientAddStop", cx_c2d_gradient_add_stop);
+    set_fn!("__or_c2d_createPattern", cx_c2d_create_pattern);
+    set_fn!("__or_c2d_fillRectGrad", cx_c2d_fill_rect_grad);
+    set_fn!("__or_c2d_fillRectPattern", cx_c2d_fill_rect_pattern);
+    set_fn!("__or_c2d_getImageData", cx_c2d_get_image_data);
+    set_fn!("__or_c2d_putImageData", cx_c2d_put_image_data);
+    set_fn!("__or_c2d_clipPath", cx_c2d_clip_path);
     // IPC
-    set_fn!("__cx_ipc_send", cx_ipc_send);
+    set_fn!("__or_ipc_send", cx_ipc_send);
     // Misc
-    set_fn!("__cx_setDataValue", cx_set_data_value);
-    set_fn!("__cx_getViewportSize", cx_get_viewport_size);
-    set_fn!("__cx_dumpDoc", cx_dump_doc);
+    set_fn!("__or_setDataValue", cx_set_data_value);
+    set_fn!("__or_getViewportSize", cx_get_viewport_size);
+    set_fn!("__or_dumpDoc", cx_dump_doc);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -674,9 +674,9 @@ fn cx_create_element(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbac
             let cid = st.canvas_manager.create_canvas(300, 150);
             st.node_canvas_map.insert(node_id, cid);
             st.canvas_node_map.insert(cid, node_id);
-            log::info!("[CX][DOM] createElement('canvas') → node={} canvas={}", node_id, cid);
+            log::info!("[OR][DOM] createElement('canvas') → node={} canvas={}", node_id, cid);
         } else {
-            log::info!("[CX][DOM] createElement('{}') → node={}", tag, node_id);
+            log::info!("[OR][DOM] createElement('{}') → node={}", tag, node_id);
         }
         node_id as i32
     });
@@ -765,7 +765,7 @@ fn cx_set_inner_html(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbac
     let nid = v8_i32(&args, scope, 0) as u32;
     let html = v8_str(scope, &args, 1);
     with_state(|st| {
-        log::info!("[CX][DOM] setInnerHTML: node={} html_len={}", nid, html.len());
+        log::info!("[OR][DOM] setInnerHTML: node={} html_len={}", nid, html.len());
         set_inner_html(st, nid, &html);
     });
 }
@@ -1457,7 +1457,7 @@ fn cx_get_viewport_size(scope: &mut v8::PinScope<'_, '_>, _args: v8::FunctionCal
 
 fn cx_dump_doc(_scope: &mut v8::PinScope<'_, '_>, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue<v8::Value>) {
     with_state(|st| {
-        log::warn!("[CX][DEBUG] === Document dump: {} nodes ===", st.document.nodes.len());
+        log::warn!("[OR][DEBUG] === Document dump: {} nodes ===", st.document.nodes.len());
         for node in &st.document.nodes {
             let tag = node.tag.as_deref().unwrap_or("(none)");
             let id = node.html_id.as_deref().unwrap_or("");
@@ -1465,7 +1465,7 @@ fn cx_dump_doc(_scope: &mut v8::PinScope<'_, '_>, _args: v8::FunctionCallbackArg
             let kind = match &node.kind {
                 NodeKind::Container => "Container",
                 NodeKind::Text { content } => {
-                    log::warn!("[CX][DEBUG]   node {} tag={} id={} class='{}' kind=Text text='{}'",
+                    log::warn!("[OR][DEBUG]   node {} tag={} id={} class='{}' kind=Text text='{}'",
                         node.id, tag, id, classes, &content[..content.len().min(60)]);
                     continue;
                 },
@@ -1474,10 +1474,10 @@ fn cx_dump_doc(_scope: &mut v8::PinScope<'_, '_>, _args: v8::FunctionCallbackArg
             };
             let children_str: Vec<String> = node.children.iter().map(|c| c.to_string()).collect();
             let has_canvas = st.node_canvas_map.contains_key(&node.id);
-            log::warn!("[CX][DEBUG]   node {} tag={} id={} class='{}' kind={} children=[{}] canvas={}",
+            log::warn!("[OR][DEBUG]   node {} tag={} id={} class='{}' kind={} children=[{}] canvas={}",
                 node.id, tag, id, classes, kind, children_str.join(","), has_canvas);
         }
-        log::warn!("[CX][DEBUG] === End document dump ===");
+        log::warn!("[OR][DEBUG] === End document dump ===");
     });
 }
 
@@ -1732,6 +1732,9 @@ fn add_html_children(st: &mut SharedState, parent_id: NodeId, html: &str) {
                 }
             }
 
+            // Extract event bindings from data-action attributes (same as compiler).
+            extract_runtime_event_bindings(&mut node);
+
             let parent = *node_stack.last().unwrap_or(&parent_id);
             let child_id = st.document.add_node(node);
             st.document.add_child(parent, child_id);
@@ -1809,6 +1812,63 @@ fn collect_ancestor_chain(doc: &CxrdDocument, node_id: NodeId) -> Vec<AncestorIn
     }
     chain.reverse();
     chain
+}
+
+/// Extract event bindings from data-action/data-ns/data-cmd attributes on
+/// dynamically inserted nodes (innerHTML). Mirrors the compiler logic.
+fn extract_runtime_event_bindings(node: &mut crate::cxrd::node::CxrdNode) {
+    use crate::cxrd::node::{EventAction, EventBinding};
+
+    let action_type = match node.attributes.get("data-action") {
+        Some(a) => a.clone(),
+        None => {
+            // data-navigate shorthand
+            if let Some(target) = node.attributes.get("data-navigate").cloned() {
+                node.events.push(EventBinding {
+                    event: "click".to_string(),
+                    action: EventAction::Navigate { scene_id: target },
+                });
+            }
+            return;
+        }
+    };
+
+    let action = match action_type.as_str() {
+        "navigate" => {
+            let target = node.attributes.get("data-target").cloned().unwrap_or_default();
+            EventAction::Navigate { scene_id: target }
+        }
+        "ipc" => {
+            let ns = node.attributes.get("data-ns").cloned().unwrap_or_default();
+            let cmd = node.attributes.get("data-cmd").cloned().unwrap_or_default();
+            let args = node.attributes.get("data-args")
+                .and_then(|a| serde_json::from_str(a).ok());
+            EventAction::IpcCommand { ns, cmd, args }
+        }
+        "toggle-class" => {
+            let class = node.attributes.get("data-class").cloned().unwrap_or_default();
+            let target_id = node.attributes.get("data-target").cloned().unwrap_or_default();
+            EventAction::ToggleClass { target: 0, class, target_html_id: target_id }
+        }
+        "window-close" => EventAction::WindowClose,
+        "window-minimize" => EventAction::WindowMinimize,
+        "window-maximize" => EventAction::WindowMaximize,
+        "window-drag" => EventAction::WindowDrag,
+        _ => {
+            EventAction::IpcCommand { ns: String::new(), cmd: action_type, args: None }
+        }
+    };
+
+    let event_type = node.attributes.get("data-event").cloned().unwrap_or_else(|| "click".to_string());
+    node.events.push(EventBinding { event: event_type, action });
+
+    // data-navigate shorthand (can coexist)
+    if let Some(target) = node.attributes.get("data-navigate").cloned() {
+        node.events.push(EventBinding {
+            event: "click".to_string(),
+            action: EventAction::Navigate { scene_id: target },
+        });
+    }
 }
 
 fn apply_dynamic_tag_defaults(node: &mut crate::cxrd::node::CxrdNode) {
@@ -1960,56 +2020,56 @@ fn style_dimension_px(dim: &crate::cxrd::value::Dimension, viewport: f32) -> Opt
 // ═══════════════════════════════════════════════════════════════════════════
 
 const JS_SHIM: &str = r#"
-// CanvasX DOM/Canvas2D Shim
-// Wraps native __cx_* functions into standard web APIs
+// OpenRender DOM/Canvas2D Shim
+// Wraps native __or_* functions into standard web APIs
 
-var __cx_elementCache = {};
-var __cx_rafCallbacks = [];
-var __cx_rafId = 0;
-var __cx_canvasContexts = {};
-var __cx_startTime = __cx_performance_now();
-var __cx_timeouts = [];
-var __cx_intervals = [];
-var __cx_nextTimerId = 1;
+var __or_elementCache = {};
+var __or_rafCallbacks = [];
+var __or_rafId = 0;
+var __or_canvasContexts = {};
+var __or_startTime = __or_performance_now();
+var __or_timeouts = [];
+var __or_intervals = [];
+var __or_nextTimerId = 1;
 
 // ─── Helper: wrap a node ID into an Element-like object ───
-function __cx_wrapElement(nid) {
+function __or_wrapElement(nid) {
     if (nid < 0) return null;
-    if (__cx_elementCache[nid]) return __cx_elementCache[nid];
+    if (__or_elementCache[nid]) return __or_elementCache[nid];
 
     var el = {
         _nid: nid,
         _eventListeners: {},
-        get id() { return __cx_getNodeId(nid); },
-        get tagName() { return __cx_getNodeTag(nid); },
-        get nodeName() { return __cx_getNodeTag(nid); },
-        get textContent() { return __cx_getTextContent(nid); },
-        set textContent(v) { __cx_setTextContent(nid, String(v)); },
+        get id() { return __or_getNodeId(nid); },
+        get tagName() { return __or_getNodeTag(nid); },
+        get nodeName() { return __or_getNodeTag(nid); },
+        get textContent() { return __or_getTextContent(nid); },
+        set textContent(v) { __or_setTextContent(nid, String(v)); },
         get innerHTML() { return ''; },
-        set innerHTML(v) { __cx_setInnerHTML(nid, String(v)); },
+        set innerHTML(v) { __or_setInnerHTML(nid, String(v)); },
         get children() {
-            var ids = JSON.parse(__cx_getNodeChildren(nid));
-            return ids.map(function(cid) { return __cx_wrapElement(cid); });
+            var ids = JSON.parse(__or_getNodeChildren(nid));
+            return ids.map(function(cid) { return __or_wrapElement(cid); });
         },
         getAttribute: function(name) {
-            return __cx_getNodeAttribute(nid, name);
+            return __or_getNodeAttribute(nid, name);
         },
         setAttribute: function(name, value) {
-            __cx_setNodeAttribute(nid, name, String(value));
+            __or_setNodeAttribute(nid, name, String(value));
         },
         querySelector: function(sel) {
-            var ids = JSON.parse(__cx_querySelectorAll(sel));
-            var children = JSON.parse(__cx_getNodeChildren(nid));
+            var ids = JSON.parse(__or_querySelectorAll(sel));
+            var children = JSON.parse(__or_getNodeChildren(nid));
             for (var i = 0; i < ids.length; i++) {
-                if (isDescendant(nid, ids[i])) return __cx_wrapElement(ids[i]);
+                if (isDescendant(nid, ids[i])) return __or_wrapElement(ids[i]);
             }
             return null;
         },
         querySelectorAll: function(sel) {
-            var ids = JSON.parse(__cx_querySelectorAll(sel));
+            var ids = JSON.parse(__or_querySelectorAll(sel));
             var result = [];
             for (var i = 0; i < ids.length; i++) {
-                if (isDescendant(nid, ids[i])) result.push(__cx_wrapElement(ids[i]));
+                if (isDescendant(nid, ids[i])) result.push(__or_wrapElement(ids[i]));
             }
             return result;
         },
@@ -2024,10 +2084,10 @@ function __cx_wrapElement(nid) {
         },
         get classList() {
             return {
-                add: function(c) { __cx_classListOp(nid, 0, c); },
-                remove: function(c) { __cx_classListOp(nid, 1, c); },
-                toggle: function(c, force) { return __cx_classListOp(nid, 2, c, force); },
-                contains: function(c) { return __cx_classListOp(nid, 3, c); },
+                add: function(c) { __or_classListOp(nid, 0, c); },
+                remove: function(c) { __or_classListOp(nid, 1, c); },
+                toggle: function(c, force) { return __or_classListOp(nid, 2, c, force); },
+                contains: function(c) { return __or_classListOp(nid, 3, c); },
             };
         },
         get style() {
@@ -2035,56 +2095,56 @@ function __cx_wrapElement(nid) {
                 get: function(t, p) {
                     if (p === 'setProperty') return function(name, val) {
                         if (name.startsWith('--')) {
-                            __cx_setRootStyleProperty(name, String(val));
+                            __or_setRootStyleProperty(name, String(val));
                         } else {
-                            __cx_setStyle(nid, name, String(val));
+                            __or_setStyle(nid, name, String(val));
                         }
                     };
                     if (p === 'getPropertyValue') return function(name) {
-                        if (name.startsWith('--')) return __cx_getComputedStyleVar(name);
-                        return __cx_getStyle(nid, name);
+                        if (name.startsWith('--')) return __or_getComputedStyleVar(name);
+                        return __or_getStyle(nid, name);
                     };
-                    return __cx_getStyle(nid, String(p));
+                    return __or_getStyle(nid, String(p));
                 },
                 set: function(t, p, v) {
-                    __cx_setStyle(nid, String(p), String(v));
+                    __or_setStyle(nid, String(p), String(v));
                     return true;
                 }
             });
         },
         getContext: function(type) {
             if (type !== '2d') return null;
-            var cid = __cx_getCanvasId(nid);
+            var cid = __or_getCanvasId(nid);
             if (cid < 0) return null;
-            if (__cx_canvasContexts[cid]) return __cx_canvasContexts[cid];
-            var ctx = __cx_createContext2D(cid);
-            __cx_canvasContexts[cid] = ctx;
+            if (__or_canvasContexts[cid]) return __or_canvasContexts[cid];
+            var ctx = __or_createContext2D(cid);
+            __or_canvasContexts[cid] = ctx;
             return ctx;
         },
         get width() {
-            var cid = __cx_getCanvasId(nid);
+            var cid = __or_getCanvasId(nid);
             if (cid < 0) return 0;
-            return parseInt(__cx_canvasGetSize(cid).split(',')[0]);
+            return parseInt(__or_canvasGetSize(cid).split(',')[0]);
         },
         set width(v) {
-            var cid = __cx_getCanvasId(nid);
+            var cid = __or_getCanvasId(nid);
             if (cid < 0) return;
-            var h = parseInt(__cx_canvasGetSize(cid).split(',')[1]);
-            __cx_canvasSetSize(cid, v, h);
+            var h = parseInt(__or_canvasGetSize(cid).split(',')[1]);
+            __or_canvasSetSize(cid, v, h);
         },
         get height() {
-            var cid = __cx_getCanvasId(nid);
+            var cid = __or_getCanvasId(nid);
             if (cid < 0) return 0;
-            return parseInt(__cx_canvasGetSize(cid).split(',')[1]);
+            return parseInt(__or_canvasGetSize(cid).split(',')[1]);
         },
         set height(v) {
-            var cid = __cx_getCanvasId(nid);
+            var cid = __or_getCanvasId(nid);
             if (cid < 0) return;
-            var w = parseInt(__cx_canvasGetSize(cid).split(',')[0]);
-            __cx_canvasSetSize(cid, w, v);
+            var w = parseInt(__or_canvasGetSize(cid).split(',')[0]);
+            __or_canvasSetSize(cid, w, v);
         },
         getBoundingClientRect: function() {
-            var rr = __cx_getNodeRect(nid).split(',');
+            var rr = __or_getNodeRect(nid).split(',');
             var x = parseInt(rr[0]) || 0;
             var y = parseInt(rr[1]) || 0;
             var w = parseInt(rr[2]) || 0;
@@ -2092,66 +2152,66 @@ function __cx_wrapElement(nid) {
             return { x: x, y: y, width: w, height: h, top: y, left: x, bottom: y + h, right: x + w };
         },
         appendChild: function(child) {
-            if (child && child._nid >= 0) __cx_appendChild(nid, child._nid);
+            if (child && child._nid >= 0) __or_appendChild(nid, child._nid);
             return child;
         },
         removeChild: function(child) {
-            if (child && child._nid >= 0) __cx_removeChild(nid, child._nid);
+            if (child && child._nid >= 0) __or_removeChild(nid, child._nid);
             return child;
         },
         insertBefore: function(newChild, refChild) {
             var refNid = (refChild && refChild._nid >= 0) ? refChild._nid : -1;
-            if (newChild && newChild._nid >= 0) __cx_insertBefore(nid, newChild._nid, refNid);
+            if (newChild && newChild._nid >= 0) __or_insertBefore(nid, newChild._nid, refNid);
             return newChild;
         },
         prepend: function() {
             for (var i = arguments.length - 1; i >= 0; i--) {
                 var child = arguments[i];
-                if (child && child._nid >= 0) __cx_insertBefore(nid, child._nid, -1);
+                if (child && child._nid >= 0) __or_insertBefore(nid, child._nid, -1);
             }
         },
         remove: function() {
-            var p = __cx_getParentNode(nid);
-            if (p >= 0) __cx_removeChild(p, nid);
+            var p = __or_getParentNode(nid);
+            if (p >= 0) __or_removeChild(p, nid);
         },
         get parentElement() {
-            var p = __cx_getParentNode(nid);
-            return p >= 0 ? __cx_wrapElement(p) : null;
+            var p = __or_getParentNode(nid);
+            return p >= 0 ? __or_wrapElement(p) : null;
         },
         get parentNode() {
-            var p = __cx_getParentNode(nid);
-            return p >= 0 ? __cx_wrapElement(p) : null;
+            var p = __or_getParentNode(nid);
+            return p >= 0 ? __or_wrapElement(p) : null;
         },
         get firstChild() {
-            var ids = JSON.parse(__cx_getNodeChildren(nid));
-            return ids.length > 0 ? __cx_wrapElement(ids[0]) : null;
+            var ids = JSON.parse(__or_getNodeChildren(nid));
+            return ids.length > 0 ? __or_wrapElement(ids[0]) : null;
         },
         get lastChild() {
-            var ids = JSON.parse(__cx_getNodeChildren(nid));
-            return ids.length > 0 ? __cx_wrapElement(ids[ids.length - 1]) : null;
+            var ids = JSON.parse(__or_getNodeChildren(nid));
+            return ids.length > 0 ? __or_wrapElement(ids[ids.length - 1]) : null;
         },
         get childNodes() {
-            var ids = JSON.parse(__cx_getNodeChildren(nid));
-            return ids.map(function(cid) { return __cx_wrapElement(cid); });
+            var ids = JSON.parse(__or_getNodeChildren(nid));
+            return ids.map(function(cid) { return __or_wrapElement(cid); });
         },
         get nextSibling() { return null; },
         get className() {
-            return __cx_getNodeAttribute(nid, 'class') || '';
+            return __or_getNodeAttribute(nid, 'class') || '';
         },
         set className(v) {
-            __cx_setNodeAttribute(nid, 'class', String(v));
+            __or_setNodeAttribute(nid, 'class', String(v));
         },
         set id(v) {
-            __cx_setNodeAttribute(nid, 'id', String(v));
+            __or_setNodeAttribute(nid, 'id', String(v));
         },
-        get clientWidth() { return parseInt(__cx_getNodeClientSize(nid).split(',')[0]) || 0; },
-        get clientHeight() { return parseInt(__cx_getNodeClientSize(nid).split(',')[1]) || 0; },
-        get offsetWidth() { return parseInt(__cx_getNodeClientSize(nid).split(',')[0]) || 0; },
-        get offsetHeight() { return parseInt(__cx_getNodeClientSize(nid).split(',')[1]) || 0; },
-        get offsetLeft() { return parseInt(__cx_getNodeRect(nid).split(',')[0]) || 0; },
-        get offsetTop() { return parseInt(__cx_getNodeRect(nid).split(',')[1]) || 0; },
+        get clientWidth() { return parseInt(__or_getNodeClientSize(nid).split(',')[0]) || 0; },
+        get clientHeight() { return parseInt(__or_getNodeClientSize(nid).split(',')[1]) || 0; },
+        get offsetWidth() { return parseInt(__or_getNodeClientSize(nid).split(',')[0]) || 0; },
+        get offsetHeight() { return parseInt(__or_getNodeClientSize(nid).split(',')[1]) || 0; },
+        get offsetLeft() { return parseInt(__or_getNodeRect(nid).split(',')[0]) || 0; },
+        get offsetTop() { return parseInt(__or_getNodeRect(nid).split(',')[1]) || 0; },
     };
-    __cx_elementCache[nid] = el;
+    __or_elementCache[nid] = el;
     return el;
 }
 
@@ -2160,7 +2220,7 @@ function isDescendant(parentNid, childNid) {
 }
 
 // ─── Canvas 2D Context Factory ───
-function __cx_createContext2D(cid) {
+function __or_createContext2D(cid) {
     var _fillStyleStr = '#000000';
     var _strokeStyleStr = '#000000';
     var _lineWidth = 1;
@@ -2179,8 +2239,8 @@ function __cx_createContext2D(cid) {
 
     var ctx = {
         get canvas() {
-            for (var nid in __cx_elementCache) {
-                if (__cx_getCanvasId(parseInt(nid)) === cid) return __cx_elementCache[nid];
+            for (var nid in __or_elementCache) {
+                if (__or_getCanvasId(parseInt(nid)) === cid) return __or_elementCache[nid];
             }
             return null;
         },
@@ -2188,34 +2248,34 @@ function __cx_createContext2D(cid) {
         set fillStyle(v) {
             _fillStyleStr = v;
             if (typeof v === 'string') {
-                __cx_c2d_setFillStyle(cid, v);
+                __or_c2d_setFillStyle(cid, v);
             } else if (v && v._type === 'gradient') {
-                __cx_c2d_setFillGradient(cid, v._id);
+                __or_c2d_setFillGradient(cid, v._id);
             } else if (v && v._type === 'pattern') {
-                __cx_c2d_setFillPattern(cid, v._id);
+                __or_c2d_setFillPattern(cid, v._id);
             }
         },
         get strokeStyle() { return _strokeStyleStr; },
         set strokeStyle(v) {
             _strokeStyleStr = v;
             if (typeof v === 'string') {
-                __cx_c2d_setStrokeStyle(cid, v);
+                __or_c2d_setStrokeStyle(cid, v);
             } else if (v && v._type === 'gradient') {
-                __cx_c2d_setStrokeGradient(cid, v._id);
+                __or_c2d_setStrokeGradient(cid, v._id);
             }
         },
         get lineWidth() { return _lineWidth; },
-        set lineWidth(v) { _lineWidth = v; __cx_c2d(cid, 16, v, 0, 0, 0, 0, 0); },
+        set lineWidth(v) { _lineWidth = v; __or_c2d(cid, 16, v, 0, 0, 0, 0, 0); },
         get globalAlpha() { return _globalAlpha; },
-        set globalAlpha(v) { _globalAlpha = v; __cx_c2d(cid, 17, v, 0, 0, 0, 0, 0); },
+        set globalAlpha(v) { _globalAlpha = v; __or_c2d(cid, 17, v, 0, 0, 0, 0, 0); },
         get globalCompositeOperation() { return _globalCompositeOperation; },
-        set globalCompositeOperation(v) { _globalCompositeOperation = v; __cx_c2d_setBlendMode(cid, v); },
+        set globalCompositeOperation(v) { _globalCompositeOperation = v; __or_c2d_setBlendMode(cid, v); },
         get font() { return _font; },
-        set font(v) { _font = v; __cx_c2d_setFont(cid, v); },
+        set font(v) { _font = v; __or_c2d_setFont(cid, v); },
         get textAlign() { return _textAlign; },
-        set textAlign(v) { _textAlign = v; __cx_c2d_setTextAlign(cid, v); },
+        set textAlign(v) { _textAlign = v; __or_c2d_setTextAlign(cid, v); },
         get textBaseline() { return _textBaseline; },
-        set textBaseline(v) { _textBaseline = v; __cx_c2d_setTextBaseline(cid, v); },
+        set textBaseline(v) { _textBaseline = v; __or_c2d_setTextBaseline(cid, v); },
         get lineCap() { return _lineCap; },
         set lineCap(v) { _lineCap = v; },
         get lineJoin() { return _lineJoin; },
@@ -2234,79 +2294,79 @@ function __cx_createContext2D(cid) {
         fillRect: function(x, y, w, h) {
             if (_fillStyleStr && typeof _fillStyleStr === 'object') {
                 if (_fillStyleStr._type === 'pattern') {
-                    __cx_c2d_fillRectPattern(cid, x, y, w, h);
+                    __or_c2d_fillRectPattern(cid, x, y, w, h);
                 } else {
-                    __cx_c2d_fillRectGrad(cid, x, y, w, h);
+                    __or_c2d_fillRectGrad(cid, x, y, w, h);
                 }
             } else {
-                __cx_c2d(cid, 1, x, y, w, h, 0, 0);
+                __or_c2d(cid, 1, x, y, w, h, 0, 0);
             }
         },
-        strokeRect: function(x, y, w, h) { __cx_c2d(cid, 2, x, y, w, h, 0, 0); },
-        clearRect: function(x, y, w, h) { __cx_c2d(cid, 3, x, y, w, h, 0, 0); },
-        beginPath: function() { __cx_c2d(cid, 4, 0, 0, 0, 0, 0, 0); },
-        closePath: function() { __cx_c2d(cid, 5, 0, 0, 0, 0, 0, 0); },
-        moveTo: function(x, y) { __cx_c2d(cid, 6, x, y, 0, 0, 0, 0); },
-        lineTo: function(x, y) { __cx_c2d(cid, 7, x, y, 0, 0, 0, 0); },
-        arc: function(x, y, r, start, end, ccw) { __cx_c2d(cid, 8, x, y, r, start, end, ccw ? 1 : 0); },
-        fill: function() { __cx_c2d(cid, 9, 0, 0, 0, 0, 0, 0); },
-        stroke: function() { __cx_c2d(cid, 10, 0, 0, 0, 0, 0, 0); },
-        save: function() { __cx_c2d(cid, 11, 0, 0, 0, 0, 0, 0); },
-        restore: function() { __cx_c2d(cid, 12, 0, 0, 0, 0, 0, 0); },
-        translate: function(x, y) { __cx_c2d(cid, 13, x, y, 0, 0, 0, 0); },
-        rotate: function(a) { __cx_c2d(cid, 14, a, 0, 0, 0, 0, 0); },
-        scale: function(x, y) { __cx_c2d(cid, 15, x, y, 0, 0, 0, 0); },
-        setTransform: function(a, b, c, d, e, f) { __cx_c2d(cid, 20, a, b, c, d, e, f); },
-        resetTransform: function() { __cx_c2d(cid, 21, 0, 0, 0, 0, 0, 0); },
-        bezierCurveTo: function(cp1x, cp1y, cp2x, cp2y, x, y) { __cx_c2d(cid, 18, cp1x, cp1y, cp2x, cp2y, x, y); },
-        quadraticCurveTo: function(cpx, cpy, x, y) { __cx_c2d(cid, 19, cpx, cpy, x, y, 0, 0); },
+        strokeRect: function(x, y, w, h) { __or_c2d(cid, 2, x, y, w, h, 0, 0); },
+        clearRect: function(x, y, w, h) { __or_c2d(cid, 3, x, y, w, h, 0, 0); },
+        beginPath: function() { __or_c2d(cid, 4, 0, 0, 0, 0, 0, 0); },
+        closePath: function() { __or_c2d(cid, 5, 0, 0, 0, 0, 0, 0); },
+        moveTo: function(x, y) { __or_c2d(cid, 6, x, y, 0, 0, 0, 0); },
+        lineTo: function(x, y) { __or_c2d(cid, 7, x, y, 0, 0, 0, 0); },
+        arc: function(x, y, r, start, end, ccw) { __or_c2d(cid, 8, x, y, r, start, end, ccw ? 1 : 0); },
+        fill: function() { __or_c2d(cid, 9, 0, 0, 0, 0, 0, 0); },
+        stroke: function() { __or_c2d(cid, 10, 0, 0, 0, 0, 0, 0); },
+        save: function() { __or_c2d(cid, 11, 0, 0, 0, 0, 0, 0); },
+        restore: function() { __or_c2d(cid, 12, 0, 0, 0, 0, 0, 0); },
+        translate: function(x, y) { __or_c2d(cid, 13, x, y, 0, 0, 0, 0); },
+        rotate: function(a) { __or_c2d(cid, 14, a, 0, 0, 0, 0, 0); },
+        scale: function(x, y) { __or_c2d(cid, 15, x, y, 0, 0, 0, 0); },
+        setTransform: function(a, b, c, d, e, f) { __or_c2d(cid, 20, a, b, c, d, e, f); },
+        resetTransform: function() { __or_c2d(cid, 21, 0, 0, 0, 0, 0, 0); },
+        bezierCurveTo: function(cp1x, cp1y, cp2x, cp2y, x, y) { __or_c2d(cid, 18, cp1x, cp1y, cp2x, cp2y, x, y); },
+        quadraticCurveTo: function(cpx, cpy, x, y) { __or_c2d(cid, 19, cpx, cpy, x, y, 0, 0); },
 
         drawImage: function(source) {
             if (!source || !source._nid) return;
-            var srcCid = __cx_getCanvasId(source._nid);
+            var srcCid = __or_getCanvasId(source._nid);
             if (srcCid < 0) return;
             if (arguments.length >= 5) {
-                __cx_c2d_drawImage(cid, srcCid, arguments[1], arguments[2], arguments[3], arguments[4]);
+                __or_c2d_drawImage(cid, srcCid, arguments[1], arguments[2], arguments[3], arguments[4]);
             } else if (arguments.length >= 3) {
-                var size = __cx_canvasGetSize(srcCid).split(',');
-                __cx_c2d_drawImage(cid, srcCid, arguments[1], arguments[2], parseInt(size[0]), parseInt(size[1]));
+                var size = __or_canvasGetSize(srcCid).split(',');
+                __or_c2d_drawImage(cid, srcCid, arguments[1], arguments[2], parseInt(size[0]), parseInt(size[1]));
             }
         },
 
         createRadialGradient: function(x0, y0, r0, x1, y1, r1) {
-            var gid = __cx_c2d_createRadialGradient(x0, y0, r0, x1, y1, r1);
+            var gid = __or_c2d_createRadialGradient(x0, y0, r0, x1, y1, r1);
             return {
                 _type: 'gradient',
                 _id: gid,
                 addColorStop: function(offset, color) {
-                    __cx_c2d_gradientAddStop(gid, offset, color);
+                    __or_c2d_gradientAddStop(gid, offset, color);
                 }
             };
         },
         createLinearGradient: function(x0, y0, x1, y1) {
-            var gid = __cx_c2d_createLinearGradient(x0, y0, x1, y1);
+            var gid = __or_c2d_createLinearGradient(x0, y0, x1, y1);
             return {
                 _type: 'gradient',
                 _id: gid,
                 addColorStop: function(offset, color) {
-                    __cx_c2d_gradientAddStop(gid, offset, color);
+                    __or_c2d_gradientAddStop(gid, offset, color);
                 }
             };
         },
         createPattern: function(source, repeat) {
             if (!source || !source._nid) return null;
-            var srcCid = __cx_getCanvasId(source._nid);
+            var srcCid = __or_getCanvasId(source._nid);
             if (srcCid < 0) return null;
             return {
                 _type: 'pattern',
                 _id: srcCid,
             };
         },
-        fillText: function(text, x, y) { __cx_c2d_fillText(cid, text, x, y); },
+        fillText: function(text, x, y) { __or_c2d_fillText(cid, text, x, y); },
         strokeText: function() {},
         measureText: function(text) { return { width: text.length * 7 }; },
         getImageData: function(x, y, w, h) {
-            var raw = __cx_c2d_getImageData(cid, x|0, y|0, w|0, h|0);
+            var raw = __or_c2d_getImageData(cid, x|0, y|0, w|0, h|0);
             var parsed = { width: 0, height: 0, data: [] };
             try { parsed = JSON.parse(raw); } catch(_) {}
             return {
@@ -2317,7 +2377,7 @@ function __cx_createContext2D(cid) {
         },
         putImageData: function(imageData, x, y) {
             if (!imageData || !imageData.data) return;
-            __cx_c2d_putImageData(
+            __or_c2d_putImageData(
                 cid,
                 x|0,
                 y|0,
@@ -2326,7 +2386,7 @@ function __cx_createContext2D(cid) {
                 JSON.stringify(Array.prototype.slice.call(imageData.data))
             );
         },
-        clip: function() { __cx_c2d_clipPath(cid); },
+        clip: function() { __or_c2d_clipPath(cid); },
         setLineDash: function(segments) {},
         getLineDash: function() { return []; },
     };
@@ -2336,140 +2396,140 @@ function __cx_createContext2D(cid) {
 // ─── document object ───
 var document = {
     getElementById: function(id) {
-        var nid = __cx_getElementById(id);
-        return __cx_wrapElement(nid);
+        var nid = __or_getElementById(id);
+        return __or_wrapElement(nid);
     },
     querySelector: function(sel) {
-        var ids = JSON.parse(__cx_querySelectorAll(sel));
-        if (ids.length > 0) return __cx_wrapElement(ids[0]);
+        var ids = JSON.parse(__or_querySelectorAll(sel));
+        if (ids.length > 0) return __or_wrapElement(ids[0]);
         return null;
     },
     querySelectorAll: function(sel) {
-        var ids = JSON.parse(__cx_querySelectorAll(sel));
-        return ids.map(function(id) { return __cx_wrapElement(id); });
+        var ids = JSON.parse(__or_querySelectorAll(sel));
+        return ids.map(function(id) { return __or_wrapElement(id); });
     },
     createElement: function(tag) {
-        var nid = __cx_createElement(tag);
-        return __cx_wrapElement(nid);
+        var nid = __or_createElement(tag);
+        return __or_wrapElement(nid);
     },
     get documentElement() {
-        return __cx_wrapElement(0);
+        return __or_wrapElement(0);
     },
     get body() {
-        return __cx_wrapElement(0);
+        return __or_wrapElement(0);
     },
 };
 
 // ─── window object ───
 var window = (typeof globalThis !== 'undefined') ? globalThis : {};
 window.document = document;
-var __cx_viewport = __cx_getViewportSize().split(',');
-window.innerWidth = parseInt(__cx_viewport[0]) || 1920;
-window.innerHeight = parseInt(__cx_viewport[1]) || 1080;
+var __or_viewport = __or_getViewportSize().split(',');
+window.innerWidth = parseInt(__or_viewport[0]) || 1920;
+window.innerHeight = parseInt(__or_viewport[1]) || 1080;
 window.top = window;
 window.self = window;
 window.parent = window;
 
-var __cx_globalListeners = {};
+var __or_globalListeners = {};
 function addEventListener(type, fn) {
-    if (!__cx_globalListeners[type]) __cx_globalListeners[type] = [];
-    __cx_globalListeners[type].push(fn);
+    if (!__or_globalListeners[type]) __or_globalListeners[type] = [];
+    __or_globalListeners[type].push(fn);
 }
 function removeEventListener(type, fn) {
-    if (!__cx_globalListeners[type]) return;
-    var idx = __cx_globalListeners[type].indexOf(fn);
-    if (idx >= 0) __cx_globalListeners[type].splice(idx, 1);
+    if (!__or_globalListeners[type]) return;
+    var idx = __or_globalListeners[type].indexOf(fn);
+    if (idx >= 0) __or_globalListeners[type].splice(idx, 1);
 }
 window.addEventListener = addEventListener;
 window.removeEventListener = removeEventListener;
 
 // ─── console ───
 var console = {
-    log: function() { __cx_log(1, Array.prototype.slice.call(arguments).join(' ')); },
-    warn: function() { __cx_log(2, Array.prototype.slice.call(arguments).join(' ')); },
-    error: function() { __cx_log(3, Array.prototype.slice.call(arguments).join(' ')); },
-    info: function() { __cx_log(1, Array.prototype.slice.call(arguments).join(' ')); },
-    debug: function() { __cx_log(0, Array.prototype.slice.call(arguments).join(' ')); },
-    dumpDoc: function() { __cx_dumpDoc(); },
+    log: function() { __or_log(1, Array.prototype.slice.call(arguments).join(' ')); },
+    warn: function() { __or_log(2, Array.prototype.slice.call(arguments).join(' ')); },
+    error: function() { __or_log(3, Array.prototype.slice.call(arguments).join(' ')); },
+    info: function() { __or_log(1, Array.prototype.slice.call(arguments).join(' ')); },
+    debug: function() { __or_log(0, Array.prototype.slice.call(arguments).join(' ')); },
+    dumpDoc: function() { __or_dumpDoc(); },
 };
 
 // ─── performance ───
 var performance = {
-    now: function() { return __cx_performance_now() - __cx_startTime; },
+    now: function() { return __or_performance_now() - __or_startTime; },
 };
 
 // ─── requestAnimationFrame ───
 function requestAnimationFrame(cb) {
-    var id = ++__cx_rafId;
-    __cx_rafCallbacks.push({ id: id, callback: cb });
+    var id = ++__or_rafId;
+    __or_rafCallbacks.push({ id: id, callback: cb });
     return id;
 }
 function cancelAnimationFrame(id) {
-    __cx_rafCallbacks = __cx_rafCallbacks.filter(function(c) { return c.id !== id; });
+    __or_rafCallbacks = __or_rafCallbacks.filter(function(c) { return c.id !== id; });
 }
 
 // ─── setTimeout / setInterval ───
 function setTimeout(fn, delay) {
-    var id = __cx_nextTimerId++;
-    var triggerAt = __cx_performance_now() + (delay || 0);
-    __cx_timeouts.push({ id: id, callback: fn, triggerAt: triggerAt });
+    var id = __or_nextTimerId++;
+    var triggerAt = __or_performance_now() + (delay || 0);
+    __or_timeouts.push({ id: id, callback: fn, triggerAt: triggerAt });
     return id;
 }
 function clearTimeout(id) {
-    __cx_timeouts = __cx_timeouts.filter(function(t) { return t.id !== id; });
+    __or_timeouts = __or_timeouts.filter(function(t) { return t.id !== id; });
 }
 function setInterval(fn, delay) {
-    var id = __cx_nextTimerId++;
+    var id = __or_nextTimerId++;
     var interval = delay || 16;
-    var triggerAt = __cx_performance_now() + interval;
-    __cx_intervals.push({ id: id, callback: fn, interval: interval, triggerAt: triggerAt });
+    var triggerAt = __or_performance_now() + interval;
+    __or_intervals.push({ id: id, callback: fn, interval: interval, triggerAt: triggerAt });
     return id;
 }
 function clearInterval(id) {
-    __cx_intervals = __cx_intervals.filter(function(t) { return t.id !== id; });
+    __or_intervals = __or_intervals.filter(function(t) { return t.id !== id; });
 }
 
 // ─── getComputedStyle ───
 function getComputedStyle(el) {
     return {
         getPropertyValue: function(name) {
-            if (name.startsWith('--')) return __cx_getComputedStyleVar(name);
-            if (el && el._nid !== undefined) return __cx_getStyle(el._nid, name);
+            if (name.startsWith('--')) return __or_getComputedStyleVar(name);
+            if (el && el._nid !== undefined) return __or_getStyle(el._nid, name);
             return '';
         }
     };
 }
 
 // ─── rAF tick function (called by Rust each frame) ───
-function __cx_raf_tick(timestamp) {
-    var now = __cx_performance_now();
+function __or_raf_tick(timestamp) {
+    var now = __or_performance_now();
     var pendingTimeouts = [];
     var remaining = [];
-    for (var i = 0; i < __cx_timeouts.length; i++) {
-        if (now >= __cx_timeouts[i].triggerAt) {
-            pendingTimeouts.push(__cx_timeouts[i]);
+    for (var i = 0; i < __or_timeouts.length; i++) {
+        if (now >= __or_timeouts[i].triggerAt) {
+            pendingTimeouts.push(__or_timeouts[i]);
         } else {
-            remaining.push(__cx_timeouts[i]);
+            remaining.push(__or_timeouts[i]);
         }
     }
-    __cx_timeouts = remaining;
+    __or_timeouts = remaining;
     for (var j = 0; j < pendingTimeouts.length; j++) {
         try { pendingTimeouts[j].callback(); } catch(e) { console.error('Timeout error:', e); }
     }
 
-    for (var k = 0; k < __cx_intervals.length; k++) {
-        if (now >= __cx_intervals[k].triggerAt) {
-            try { __cx_intervals[k].callback(); } catch(e) { console.error('Interval error:', e); }
-            __cx_intervals[k].triggerAt = now + __cx_intervals[k].interval;
+    for (var k = 0; k < __or_intervals.length; k++) {
+        if (now >= __or_intervals[k].triggerAt) {
+            try { __or_intervals[k].callback(); } catch(e) { console.error('Interval error:', e); }
+            __or_intervals[k].triggerAt = now + __or_intervals[k].interval;
         }
     }
 
-    var callbacks = __cx_rafCallbacks.slice();
-    __cx_rafCallbacks = [];
+    var callbacks = __or_rafCallbacks.slice();
+    __or_rafCallbacks = [];
     for (var m = 0; m < callbacks.length; m++) {
         var entry = callbacks[m];
         if (typeof entry.callback !== 'function') {
-            console.error('[CX] rAF entry not callable: type=' + typeof entry.callback + ' id=' + entry.id);
+            console.error('[OR] rAF entry not callable: type=' + typeof entry.callback + ' id=' + entry.id);
             continue;
         }
         try { entry.callback(timestamp); } catch(e) { console.error('rAF error:', e); }
@@ -2489,27 +2549,27 @@ if (typeof Array.from === 'undefined') {
 }
 
 try {
-    var __vp = __cx_getViewportSize().split(',');
+    var __vp = __or_getViewportSize().split(',');
     window.innerWidth = parseInt(__vp[0]) || 1920;
     window.innerHeight = parseInt(__vp[1]) || 1080;
 } catch(e) {}
 
 // ─── DOM event dispatch (called from Rust) ───
 // Walk from the target element up through ancestors (bubble phase).
-function __cx_dispatchDomEvent(nodeId, eventType) {
+function __or_dispatchDomEvent(nodeId, eventType) {
     var nid = nodeId;
     while (nid >= 0) {
-        var el = __cx_elementCache[nid];
+        var el = __or_elementCache[nid];
         if (el && el._eventListeners && el._eventListeners[eventType]) {
             var fns = el._eventListeners[eventType].slice();
-            var evt = { type: eventType, target: __cx_wrapElement(nodeId), currentTarget: el, stopPropagation: function(){nid=-1;}, preventDefault: function(){} };
+            var evt = { type: eventType, target: __or_wrapElement(nodeId), currentTarget: el, stopPropagation: function(){nid=-1;}, preventDefault: function(){} };
             for (var i = 0; i < fns.length; i++) {
                 try { fns[i](evt); } catch(e) { console.error(eventType + ' handler error:', e); }
             }
             if (nid < 0) break; // stopPropagation was called
         }
         // Walk up to parent.
-        var parentStr = __cx_getParentNode(nid);
+        var parentStr = __or_getParentNode(nid);
         nid = (typeof parentStr === 'number') ? parentStr : parseInt(parentStr);
         if (isNaN(nid)) break;
     }

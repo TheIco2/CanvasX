@@ -1,4 +1,4 @@
-// canvasx-runtime/src/cxrp/builder.rs
+// openrender-runtime/src/cxrp/builder.rs
 //
 // Package builder — creates .cxrp archives from documents and assets.
 

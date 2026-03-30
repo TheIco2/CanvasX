@@ -1,4 +1,4 @@
-// canvasx-runtime/src/platform/desktop.rs
+// openrender-runtime/src/platform/desktop.rs
 //
 // WorkerW desktop window embedding for wallpapers.
 // This finds the desktop's WorkerW layer and creates a child window that

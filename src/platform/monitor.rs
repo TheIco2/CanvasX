@@ -1,4 +1,4 @@
-// canvasx-runtime/src/platform/monitor.rs
+// openrender-runtime/src/platform/monitor.rs
 //
 // Multi-monitor enumeration and DPI-aware monitor info.
 

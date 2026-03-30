@@ -1,4 +1,4 @@
-// canvasx-runtime/src/gpu/pipeline.rs
+// openrender-runtime/src/gpu/pipeline.rs
 //
 // Render pipelines: the SDF-based UI pipeline and the texture pipeline.
 // We use SDF rendering for boxes (rounded rects with borders) so that

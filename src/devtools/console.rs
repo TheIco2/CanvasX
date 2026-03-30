@@ -1,6 +1,6 @@
-// canvasx-runtime/src/devtools/console.rs
+// openrender-runtime/src/devtools/console.rs
 //
-// Console log capture for the CanvasX DevTools.
+// Console log capture for the OpenRender DevTools.
 // Stores log entries with level, message, and timestamp.
 
 use crate::cxrd::value::Color;

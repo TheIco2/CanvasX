@@ -1,11 +1,11 @@
-// canvasx-runtime/src/compiler/editable.rs
+// openrender-runtime/src/compiler/editable.rs
 //
-// Editable properties system — bridges Sentinel's manifest.json editable
+// Editable properties system — bridges OpenDesktop's manifest.json editable
 // schema + editable.yaml user overrides into a flat property map that
-// CanvasX scenes can consume.
+// OpenRender scenes can consume.
 //
 // In the WebView2 world, editables became CSS variables pushed into JS.
-// In CanvasX, they become data-bound scene properties applied at runtime.
+// In OpenRender, they become data-bound scene properties applied at runtime.
 //
 // Schema format (from manifest.json):
 //   { "editable": { "groupKey": { "name": "..", "propKey": { "selector": "..", "value": .., "variable": "--css-var" } } } }
@@ -338,7 +338,7 @@ fn json_to_editable_value(val: Option<&Value>) -> EditableValue {
 
 /// Minimal YAML-to-JSON parser for editable.yaml files.
 ///
-/// Handles the subset of YAML that Sentinel's editable files actually use:
+/// Handles the subset of YAML that OpenDesktop's editable files actually use:
 ///   - Nested object keys via indentation
 ///   - Scalar values (strings, numbers, bools)
 ///   - Simple arrays (- item lines)

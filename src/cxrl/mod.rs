@@ -1,6 +1,6 @@
-// canvasx-runtime/src/cxrl/mod.rs
+// openrender-runtime/src/cxrl/mod.rs
 //
-// CXRL — CanvasX Runtime Library
+// CXRL — OpenRender Runtime Library
 //
 // A reusable component library format. Libraries contain:
 // - Reusable node subtrees (components)

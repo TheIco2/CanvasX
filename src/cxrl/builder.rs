@@ -1,4 +1,4 @@
-// canvasx-runtime/src/cxrl/builder.rs
+// openrender-runtime/src/cxrl/builder.rs
 //
 // Library builder — creates .cxrl archives from components, themes,
 // animations, and assets.

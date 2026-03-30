@@ -1,4 +1,4 @@
-// canvasx-runtime/src/cxrd/node.rs
+// openrender-runtime/src/cxrd/node.rs
 //
 // Scene graph node types for the CXRD format.
 // Each node is a renderable element in the UI tree.
@@ -31,7 +31,7 @@ pub enum NodeKind {
         fit: ImageFit,
     },
 
-    /// SVG path (for inline SVGs used in CanvasX UI).
+    /// SVG path (for inline SVGs used in OpenRender UI).
     SvgPath {
         /// SVG path data string.
         d: String,
@@ -55,7 +55,7 @@ pub enum NodeKind {
     },
 
     /// Interactive input widget (button, text field, slider, etc.).
-    /// These make CanvasX documents usable as full application windows.
+    /// These make OpenRender documents usable as full application windows.
     Input(InputKind),
 
     /// Page content container — children are swapped dynamically on navigation.

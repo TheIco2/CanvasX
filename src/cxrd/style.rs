@@ -1,4 +1,4 @@
-// canvasx-runtime/src/cxrd/style.rs
+// openrender-runtime/src/cxrd/style.rs
 //
 // Computed style properties for CXRD nodes.
 // These are fully resolved — no cascading, no inheritance at render time.

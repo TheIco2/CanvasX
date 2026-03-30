@@ -1,4 +1,4 @@
-// canvasx-runtime/src/compiler/bundle.rs
+// openrender-runtime/src/compiler/bundle.rs
 //
 // Asset bundler — collects and bundles all local resources (images, fonts)
 // referenced by an HTML/CSS scene into the CXRD asset table.

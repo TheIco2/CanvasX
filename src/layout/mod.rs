@@ -1,4 +1,4 @@
-// canvasx-runtime/src/layout/mod.rs
+// openrender-runtime/src/layout/mod.rs
 //
 // Simplified layout engine.
 // Supports: block flow, flexbox (row/column), absolute positioning.

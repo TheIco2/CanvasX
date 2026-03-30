@@ -1,4 +1,4 @@
-// canvasx-runtime/src/cxrl/manifest.rs
+// openrender-runtime/src/cxrl/manifest.rs
 //
 // Library manifest — describes the contents of a .cxrl archive.
 // Libraries are reusable collections of components, styles, animations, and assets
@@ -9,7 +9,7 @@ use serde::{Serialize, Deserialize};
 /// Current library format version.
 pub const CXRL_FORMAT_VERSION: u32 = 1;
 
-/// The manifest for a CanvasX Runtime Library (.cxrl).
+/// The manifest for a OpenRender Runtime Library (.cxrl).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibraryManifest {
     /// Format version.
@@ -37,7 +37,7 @@ pub struct LibraryManifest {
 /// Library metadata.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LibraryMeta {
-    /// Unique library identifier (e.g., "canvasx.ui-kit").
+    /// Unique library identifier (e.g., "openrender.ui-kit").
     pub id: String,
 
     /// Human-readable name.
@@ -55,7 +55,7 @@ pub struct LibraryMeta {
     /// License.
     pub license: Option<String>,
 
-    /// Minimum CanvasX runtime version required.
+    /// Minimum OpenRender runtime version required.
     pub min_runtime_version: Option<String>,
 
     /// Tags for discovery.

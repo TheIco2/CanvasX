@@ -1,11 +1,11 @@
-// canvasx-runtime/src/cxrp/manifest.rs
+// openrender-runtime/src/cxrp/manifest.rs
 //
 // Package manifest — describes the contents and metadata of a .cxrp archive.
 
 use serde::{Serialize, Deserialize};
 use std::collections::HashMap;
 
-/// The manifest for a CanvasX Runtime Package (.cxrp).
+/// The manifest for a OpenRender Runtime Package (.cxrp).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PackageManifest {
     /// Package format version.
@@ -57,7 +57,7 @@ pub struct PackageMeta {
     /// Tags for discovery.
     pub tags: Vec<String>,
 
-    /// Minimum CanvasX runtime version required.
+    /// Minimum OpenRender runtime version required.
     pub min_runtime_version: Option<String>,
 
     /// Preview image paths (relative to archive root).

@@ -1,6 +1,6 @@
-// canvasx-runtime/src/cxrd/mod.rs
+// openrender-runtime/src/cxrd/mod.rs
 //
-// CXRD — CanvasX Runtime Document
+// CXRD — OpenRender Runtime Document
 //
 // The compiled, binary-serializable scene graph format.
 // HTML/CSS/JS gets compiled to CXRD once, then the runtime only

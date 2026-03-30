@@ -1,6 +1,6 @@
-# CanvasX Runtime
+# OpenRender Runtime
 
-A standalone GPU-native 2D scene graph renderer for desktop personalization, widgets, and interactive content. Written in Rust, powered by [wgpu](https://wgpu.rs/) (Vulkan / DX12). Part of the [Sentinel](https://github.com/The-Ico2/Sentinel) desktop customization platform.
+A standalone GPU-native 2D scene graph renderer for desktop personalization, widgets, and interactive content. Written in Rust, powered by [wgpu](https://wgpu.rs/) (Vulkan / DX12). Part of the [OpenDesktop](https://github.com/The-Ico2/OpenDesktop) desktop customization platform.
 
 > **Note:** This is one of my first Rust project, and I'm actively learning as I build. Expect rough edges and architectural evolution. If you spot bugs, design issues, or potential improvements, feel free to open a PR or reach out to me on **Discord** or **X (formerly Twitter)**.
 
@@ -8,7 +8,7 @@ A standalone GPU-native 2D scene graph renderer for desktop personalization, wid
 
 ## What It Does
 
-CanvasX compiles a restricted subset of HTML and CSS into a binary intermediate format (**CXRD** — CanvasX Runtime Document), then renders it directly on the GPU via instanced SDF quads. No browser engine, no WebView, no JavaScript runtime — just a single Rust library that turns markup into pixels.
+OpenRender compiles a restricted subset of HTML and CSS into a binary intermediate format (**CXRD** — OpenRender Runtime Document), then renders it directly on the GPU via instanced SDF quads. No browser engine, no WebView, no JavaScript runtime — just a single Rust library that turns markup into pixels.
 
 ```bash
 HTML/CSS → Compiler → CXRD Document → Layout → Animate → Paint → GPU Renderer
@@ -16,7 +16,7 @@ HTML/CSS → Compiler → CXRD Document → Layout → Animate → Paint → GPU
                                     IPC (live data)           wgpu (Vulkan/DX12)
 ```
 
-The library crate (`canvasx_runtime`) can be embedded into any Rust application. A standalone binary (`canvasx-rt`) is also provided for quick prototyping and direct use.
+The library crate (`OpenRender_runtime`) can be embedded into any Rust application. A standalone binary (`OpenRender-rt`) is also provided for quick prototyping and direct use.
 
 ---
 
@@ -30,7 +30,7 @@ The library crate (`canvasx_runtime`) can be embedded into any Rust application.
 - **Text rendering** — GPU text via [glyphon](https://github.com/grovesNL/glyphon) (cosmic-text). Supports font families, weight, size, line-height, letter-spacing, text-transform, and text-align
 - **CSS variables** — Custom properties (`--var`) resolved at compile time, with runtime updates via editable overrides
 - **Image support** — PNG, JPEG, WebP embedded in the asset bundle. No network fetches
-- **IPC bridge** — Generic named-pipe client for live data streaming. Optional `SentinelBridge` for Sentinel-specific system data (CPU, GPU, RAM, storage, network, audio, etc.)
+- **IPC bridge** — Generic named-pipe client for live data streaming. Optional `OpenDesktopBridge` for OpenDesktop-specific system data (CPU, GPU, RAM, storage, network, audio, etc.)
 - **Platform layer** — Windows desktop embedding (WorkerW) for wallpapers, monitor enumeration with DPI awareness
 - **Editable properties** — Runtime CSS variable overrides driven by `manifest.json` schema + `editable.yaml` user values
 - **Compile-once caching** — CXRD documents are cached to disk with SHA-256 hash invalidation. No parsing during rendering
@@ -60,7 +60,7 @@ Each frame follows the same path:
 | `layout/` | Block flow, Flexbox, CSS Grid, absolute/fixed positioning |
 | `scene/` | Scene graph coordinator, paint pass, text painter, input handler, app host |
 | `animate/` | Animation timeline, keyframe interpolation, easing functions |
-| `ipc/` | Named-pipe client, protocol types, Sentinel bridge (optional) |
+| `ipc/` | Named-pipe client, protocol types, OpenDesktop bridge (optional) |
 | `platform/` | Monitor enumeration, WorkerW desktop embedding (Windows) |
 
 ### GPU Rendering
@@ -139,14 +139,14 @@ Global uniforms provide viewport size, elapsed time, and DPI scale factor.
 
 ```toml
 [dependencies]
-canvasx-runtime = { path = "../CanvasX" }
+OpenRender-runtime = { path = "../OpenRender" }
 ```
 
 ```rust
-use canvasx_runtime::{GpuContext, SceneGraph};
-use canvasx_runtime::compiler::html::compile_html;
-use canvasx_runtime::gpu::renderer::Renderer;
-use canvasx_runtime::cxrd::document::SceneType;
+use OpenRender_runtime::{GpuContext, SceneGraph};
+use OpenRender_runtime::compiler::html::compile_html;
+use OpenRender_runtime::gpu::renderer::Renderer;
+use OpenRender_runtime::cxrd::document::SceneType;
 
 // Compile HTML/CSS to CXRD
 let doc = compile_html(&html, &css, "my-scene", SceneType::Wallpaper, Some(&asset_dir));
@@ -164,9 +164,9 @@ renderer.render(&gpu_ctx, &instances, clear_color, scale);
 ### As a Standalone Binary
 
 ```bash
-canvasx-rt --wallpaper --source index.html --css style.css --monitor 0
-canvasx-rt --widget --source panel.html --fps 60
-canvasx-rt --config --source settings.html
+OpenRender-rt --wallpaper --source index.html --css style.css --monitor 0
+OpenRender-rt --widget --source panel.html --fps 60
+OpenRender-rt --config --source settings.html
 ```
 
 | Flag | Description |
@@ -184,7 +184,7 @@ canvasx-rt --config --source settings.html
 
 ## IPC Data Binding
 
-CanvasX nodes can bind to live data via the IPC bridge. Data keys use dot-notation paths (e.g. `cpu.usage`, `ram.used_gb`, `storage.disks.0.used_bytes`).
+OpenRender nodes can bind to live data via the IPC bridge. Data keys use dot-notation paths (e.g. `cpu.usage`, `ram.used_gb`, `storage.disks.0.used_bytes`).
 
 ```html
 <data-bind binding="cpu.usage" format="{value}%"></data-bind>
@@ -195,7 +195,7 @@ CanvasX nodes can bind to live data via the IPC bridge. Data keys use dot-notati
 </data-bar-stack>
 ```
 
-When connected to Sentinel, the `SentinelBridge` polls 16 data sections (time, cpu, gpu, ram, storage, displays, network, wifi, bluetooth, audio, keyboard, mouse, power, idle, system, processes) and flattens them into a key-value map consumed by the scene graph.
+When connected to OpenDesktop, the `OpenDesktopBridge` polls 16 data sections (time, cpu, gpu, ram, storage, displays, network, wifi, bluetooth, audio, keyboard, mouse, power, idle, system, processes) and flattens them into a key-value map consumed by the scene graph.
 
 ---
 
@@ -224,7 +224,7 @@ When connected to Sentinel, the `SentinelBridge` polls 16 data sections (time, c
 
 - Windows 10/11
 - GPU with Vulkan or DirectX 12 support
-- Sentinel Backend (`sentinelc.exe`) — only required for live data binding
+- OpenDesktop Backend (`OpenDesktop.exe`) — only required for live data binding
 
 ---
 
@@ -238,7 +238,7 @@ Apache 2.0 — see [LICENSE](LICENSE).
 
 Under active development (`v0.1.0`). APIs, document format, and behavior may change.
 
-> Currently this project is being developed for Sentinel, but in the future I intend to completely decouple this from Sentinel and make it its own thing for everyone to use if they wish.
+> Currently this project is being developed for OpenDesktop, but in the future I intend to completely decouple this from OpenDesktop and make it its own thing for everyone to use if they wish.
 
 ---
 

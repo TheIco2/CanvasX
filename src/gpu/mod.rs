@@ -1,4 +1,4 @@
-// canvasx-runtime/src/gpu/mod.rs
+// openrender-runtime/src/gpu/mod.rs
 //
 // GPU rendering layer — wgpu-based renderer supporting Vulkan and DirectX 12.
 // This module handles all GPU state, pipelines, and draw call submission.

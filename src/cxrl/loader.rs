@@ -1,4 +1,4 @@
-// canvasx-runtime/src/cxrl/loader.rs
+// openrender-runtime/src/cxrl/loader.rs
 //
 // Library loader — reads .cxrl archives and provides access to components,
 // themes, animations, and assets.
@@ -10,7 +10,7 @@ use std::path::Path;
 
 use crate::cxrl::manifest::LibraryManifest;
 
-/// A loaded CanvasX Runtime Library.
+/// A loaded OpenRender Runtime Library.
 pub struct LoadedLibrary {
     /// The parsed manifest.
     pub manifest: LibraryManifest,

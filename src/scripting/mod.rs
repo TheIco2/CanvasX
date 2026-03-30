@@ -1,6 +1,6 @@
-// canvasx-runtime/src/scripting/mod.rs
+// openrender-runtime/src/scripting/mod.rs
 //
-// JavaScript runtime integration for CanvasX.
+// JavaScript runtime integration for OpenRender.
 //
 // Uses V8 (via the `v8` crate) for high-performance JS execution.
 // Provides DOM-like API, Canvas 2D rendering via tiny-skia,

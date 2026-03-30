@@ -1,6 +1,6 @@
-// canvasx-runtime/src/cxrp/mod.rs
+// openrender-runtime/src/cxrp/mod.rs
 //
-// CXRP — CanvasX Runtime Package
+// CXRP — OpenRender Runtime Package
 //
 // A .cxrp file bundles multiple .cxrd documents and their associated assets
 // into a single distributable archive. The format is a ZIP archive with a
@@ -15,7 +15,7 @@
 //     video/              — shared video
 //   libraries/            — referenced .cxrl files
 //
-// Any host application can load .cxrp packages to render CanvasX content.
+// Any host application can load .cxrp packages to render OpenRender content.
 
 pub mod manifest;
 pub mod loader;

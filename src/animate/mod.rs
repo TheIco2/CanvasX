@@ -1,4 +1,4 @@
-// canvasx-runtime/src/animate/mod.rs
+// openrender-runtime/src/animate/mod.rs
 //
 // Animation runtime — advances CSS keyframe animations and transitions
 // each frame, interpolating properties on CXRD nodes.

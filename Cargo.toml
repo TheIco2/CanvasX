@@ -1,20 +1,20 @@
 [package]
-name = "canvasx-runtime"
+name = "openrender-runtime"
 version = "0.1.0"
 edition = "2021"
 authors = ["Ico2"]
-description = "CanvasX Runtime — a standalone GPU-native 2D scene graph renderer for desktop personalization, widgets, and interactive content"
+description = "openrender Runtime — a standalone GPU-native 2D scene graph renderer for desktop personalization, widgets, and interactive content"
 license = "Apache 2.0"
-repository = "https://github.com/The-Ico2/canvasx-runtime"
+repository = "https://github.com/The-Ico2/openrender-runtime"
 keywords = ["gpu", "renderer", "desktop", "wallpaper", "widget"]
 categories = ["rendering", "graphics"]
 
 [lib]
-name = "canvasx_runtime"
+name = "openrender_runtime"
 path = "src/lib.rs"
 
 [[bin]]
-name = "canvasx-rt"
+name = "openrender-rt"
 path = "src/main.rs"
 
 [dependencies]
@@ -30,7 +30,7 @@ serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.149"
 bincode = "2.0"
 
-# --- HTML/CSS Parsing (CanvasX subset) ---
+# --- HTML/CSS Parsing (openrender subset) ---
 cssparser = "0.36.0"
 
 # --- JavaScript Engine ---

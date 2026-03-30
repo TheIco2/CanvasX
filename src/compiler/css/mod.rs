@@ -1,4 +1,4 @@
-// canvasx-runtime/src/compiler/css/mod.rs
+// openrender-runtime/src/compiler/css/mod.rs
 //
 // CSS compiler module — versioned CSS specification support.
 //

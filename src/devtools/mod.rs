@@ -1,8 +1,8 @@
-// canvasx-runtime/src/devtools/mod.rs
+// openrender-runtime/src/devtools/mod.rs
 //
-// Built-in developer tools for CanvasX Runtime.
+// Built-in developer tools for OpenRender Runtime.
 // Provides an Elements panel (DOM tree view), Console (logs/errors),
-// GPU info, and Network panel. Activated by clicking the "CanvasX"
+// GPU info, and Network panel. Activated by clicking the "OpenRender"
 // watermark badge in the bottom-left corner.
 
 pub mod overlay;
@@ -133,7 +133,7 @@ impl DevTools {
         (x, y, w, h)
     }
 
-    /// Check if a click at (x, y) hits the CanvasX watermark badge.
+    /// Check if a click at (x, y) hits the OpenRender watermark badge.
     pub fn hit_test_badge(&self, x: f32, y: f32, viewport_width: f32, viewport_height: f32) -> bool {
         let (bx, by, bw, bh) = self.badge_rect(viewport_width, viewport_height);
         x >= bx && x <= bx + bw && y >= by && y <= by + bh
@@ -238,7 +238,7 @@ impl DevTools {
     ) -> Vec<DevToolsTextEntry> {
         let mut entries = Vec::new();
 
-        // Badge text "CanvasX"
+        // Badge text "OpenRender"
         let (bx, by, bw, bh) = self.badge_rect(viewport_width, viewport_height);
         let is_vertical = self.badge_rotation == 90 || self.badge_rotation == 270;
         let badge_color = Color::new(0.45, 0.45, 0.50, 0.5);
@@ -247,10 +247,10 @@ impl DevTools {
             // Vertical text: render each character stacked on its own line.
             let label = if self.badge_rotation == 270 {
                 // 270°: read top-to-bottom (reversed so first char is at top)
-                "CanvasX".to_string()
+                "OpenRender".to_string()
             } else {
                 // 90°: read bottom-to-top
-                "CanvasX".chars().rev().collect::<String>()
+                "OpenRender".chars().rev().collect::<String>()
             };
             let char_text = label.chars()
                 .map(|c| c.to_string())
@@ -273,9 +273,9 @@ impl DevTools {
         } else {
             // Horizontal text (0° or 180°).
             let label = if self.badge_rotation == 180 {
-                "CanvasX".chars().rev().collect::<String>()
+                "OpenRender".chars().rev().collect::<String>()
             } else {
-                "CanvasX".to_string()
+                "OpenRender".to_string()
             };
             entries.push(DevToolsTextEntry {
                 text: label,

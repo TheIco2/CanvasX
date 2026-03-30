@@ -1,4 +1,4 @@
-// canvasx-runtime/src/devtools/debug_server.rs
+// openrender-runtime/src/devtools/debug_server.rs
 //
 // Minimal HTTP debug server that serves the current page's HTML/CSS
 // in a standard browser for visual comparison. Runs on a background
@@ -34,7 +34,7 @@ impl DebugServer {
             content: Arc::new(Mutex::new(DebugContent {
                 html: String::new(),
                 css: String::new(),
-                title: String::from("CanvasX Debug"),
+                title: String::from("OpenRender Debug"),
             })),
         }
     }
@@ -76,7 +76,7 @@ impl DebugServer {
 
         let title = html_path.file_stem()
             .map(|s| s.to_string_lossy().to_string())
-            .unwrap_or_else(|| "CanvasX Debug".to_string());
+            .unwrap_or_else(|| "OpenRender Debug".to_string());
 
         if let Ok(mut content) = self.content.lock() {
             content.html = flattened_html;
@@ -172,10 +172,10 @@ fn build_html_response(content: &Arc<Mutex<DebugContent>>) -> String {
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{title} — CanvasX Debug</title>
+    <title>{title} — OpenRender Debug</title>
     <link rel="stylesheet" href="/style.css">
     <style>
-        /* Reset to approximate CanvasX defaults */
+        /* Reset to approximate OpenRender defaults */
         *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
         body {{ background: #1a1a2e; color: #ffffff; font-family: 'Segoe UI', sans-serif; font-size: 14px; }}
     </style>
@@ -183,13 +183,13 @@ fn build_html_response(content: &Arc<Mutex<DebugContent>>) -> String {
 <body>
 {body}
 <script>
-    // Handle data-navigate clicks (CanvasX SPA navigation).
+    // Handle data-navigate clicks (OpenRender SPA navigation).
     document.addEventListener('click', function(e) {{
         var target = e.target.closest('[data-navigate]');
         if (target) {{
             e.preventDefault();
             var page = target.getAttribute('data-navigate');
-            console.log('[CanvasX Debug] Navigate to:', page);
+            console.log('[OpenRender Debug] Navigate to:', page);
             // Show/hide page-content sections.
             document.querySelectorAll('[data-page-id]').forEach(function(el) {{
                 el.style.display = el.getAttribute('data-page-id') === page ? '' : 'none';

@@ -1,4 +1,4 @@
-// canvasx-runtime/src/layout/engine.rs
+// openrender-runtime/src/layout/engine.rs
 //
 // Top-level layout engine — traverses the CXRD node tree and
 // computes layout positions for each node using block flow or flexbox.

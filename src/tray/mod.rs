@@ -1,6 +1,6 @@
-// canvasx-runtime/src/tray/mod.rs
+// openrender-runtime/src/tray/mod.rs
 //
-// System tray integration for CanvasX Runtime.
+// System tray integration for OpenRender Runtime.
 // Provides a tray icon with double-click to show/hide window and a
 // configurable right-click menu with built-in Exit and Reload options.
 
@@ -16,7 +16,7 @@ pub struct TrayConfig {
     /// Whether the system tray is enabled.
     pub enabled: bool,
     /// Optional path to a custom tray icon (.png, 32-bit RGBA).
-    /// If `None`, uses a built-in CanvasX icon.
+    /// If `None`, uses a built-in OpenRender icon.
     pub icon_path: Option<PathBuf>,
     /// Optional inline RGBA icon data (bytes, width, height).
     /// Takes priority over `icon_path` when set.
@@ -33,7 +33,7 @@ impl Default for TrayConfig {
             enabled: false,
             icon_path: None,
             icon_rgba: None,
-            tooltip: "CanvasX".to_string(),
+            tooltip: "OpenRender".to_string(),
             menu: TrayMenu::default(),
         }
     }
@@ -64,8 +64,32 @@ pub enum TrayMenuEntry {
     Item(TrayMenuItem),
     /// A group of items displayed together (e.g., side-by-side in CSS-rendered menus).
     ItemStack(TrayItemStack),
+    /// A submenu containing nested entries.
+    Submenu(TraySubmenu),
     /// A visual separator line.
     Separator,
+}
+
+/// A submenu with a label and nested menu entries.
+#[derive(Debug, Clone)]
+pub struct TraySubmenu {
+    /// Display label for the submenu.
+    pub label: String,
+    /// Whether this submenu is enabled.
+    pub enabled: bool,
+    /// Nested menu entries.
+    pub items: Vec<TrayMenuEntry>,
+}
+
+impl TraySubmenu {
+    /// Create a new submenu with the given label and items.
+    pub fn new(label: impl Into<String>, items: Vec<TrayMenuEntry>) -> Self {
+        Self {
+            label: label.into(),
+            enabled: true,
+            items,
+        }
+    }
 }
 
 /// A single tray menu item.
@@ -211,7 +235,7 @@ pub enum TrayEvent {
 /// Manages the system tray icon and menu.
 pub struct SystemTray {
     /// The tray_icon handle — kept alive so the tray icon stays visible.
-    _tray_icon: Option<tray_icon::TrayIcon>,
+    tray_icon: Option<tray_icon::TrayIcon>,
     /// Maps MenuId → TrayMenuAction for lookup on menu click.
     menu_actions: Vec<(tray_icon::menu::MenuId, TrayMenuAction)>,
 }
@@ -221,7 +245,7 @@ impl SystemTray {
     pub fn new(config: &TrayConfig) -> Self {
         if !config.enabled {
             return Self {
-                _tray_icon: None,
+                tray_icon: None,
                 menu_actions: Vec::new(),
             };
         }
@@ -231,7 +255,7 @@ impl SystemTray {
             Err(e) => {
                 log::error!("Failed to create system tray: {}", e);
                 Self {
-                    _tray_icon: None,
+                    tray_icon: None,
                     menu_actions: Vec::new(),
                 }
             }
@@ -246,26 +270,7 @@ impl SystemTray {
         let mut menu_actions: Vec<(tray_icon::menu::MenuId, TrayMenuAction)> = Vec::new();
 
         // Add user-defined items first.
-        for entry in &config.menu.items {
-            match entry {
-                TrayMenuEntry::Item(item) => {
-                    let mi = MenuItem::new(&item.label, item.enabled, None);
-                    menu_actions.push((mi.id().clone(), item.action.clone()));
-                    menu.append(&mi)?;
-                }
-                TrayMenuEntry::ItemStack(stack) => {
-                    // In native menus, item-stacks are flattened into individual items.
-                    for item in &stack.items {
-                        let mi = MenuItem::new(&item.label, item.enabled, None);
-                        menu_actions.push((mi.id().clone(), item.action.clone()));
-                        menu.append(&mi)?;
-                    }
-                }
-                TrayMenuEntry::Separator => {
-                    menu.append(&PredefinedMenuItem::separator())?;
-                }
-            }
-        }
+        Self::append_entries(&menu, &config.menu.items, &mut menu_actions)?;
 
         // Separator before built-in items (if user items exist).
         if !config.menu.items.is_empty() {
@@ -297,16 +302,117 @@ impl SystemTray {
             .build()?;
 
         Ok(Self {
-            _tray_icon: Some(tray_icon),
+            tray_icon: Some(tray_icon),
             menu_actions,
         })
+    }
+
+    /// Recursively append menu entries (including submenus) to a menu-like container.
+    fn append_entries(
+        menu: &tray_icon::menu::Menu,
+        entries: &[TrayMenuEntry],
+        actions: &mut Vec<(tray_icon::menu::MenuId, TrayMenuAction)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use tray_icon::menu::{MenuItem, PredefinedMenuItem, Submenu};
+
+        for entry in entries {
+            match entry {
+                TrayMenuEntry::Item(item) => {
+                    let mi = MenuItem::new(&item.label, item.enabled, None);
+                    actions.push((mi.id().clone(), item.action.clone()));
+                    menu.append(&mi)?;
+                }
+                TrayMenuEntry::ItemStack(stack) => {
+                    for item in &stack.items {
+                        let mi = MenuItem::new(&item.label, item.enabled, None);
+                        actions.push((mi.id().clone(), item.action.clone()));
+                        menu.append(&mi)?;
+                    }
+                }
+                TrayMenuEntry::Submenu(sub) => {
+                    let submenu = Submenu::new(&sub.label, sub.enabled);
+                    Self::append_entries_to_submenu(&submenu, &sub.items, actions)?;
+                    menu.append(&submenu)?;
+                }
+                TrayMenuEntry::Separator => {
+                    menu.append(&PredefinedMenuItem::separator())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Recursively append menu entries to a Submenu.
+    fn append_entries_to_submenu(
+        submenu: &tray_icon::menu::Submenu,
+        entries: &[TrayMenuEntry],
+        actions: &mut Vec<(tray_icon::menu::MenuId, TrayMenuAction)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use tray_icon::menu::{MenuItem, PredefinedMenuItem, Submenu};
+
+        for entry in entries {
+            match entry {
+                TrayMenuEntry::Item(item) => {
+                    let mi = MenuItem::new(&item.label, item.enabled, None);
+                    actions.push((mi.id().clone(), item.action.clone()));
+                    submenu.append(&mi)?;
+                }
+                TrayMenuEntry::ItemStack(stack) => {
+                    for item in &stack.items {
+                        let mi = MenuItem::new(&item.label, item.enabled, None);
+                        actions.push((mi.id().clone(), item.action.clone()));
+                        submenu.append(&mi)?;
+                    }
+                }
+                TrayMenuEntry::Submenu(sub) => {
+                    let nested = Submenu::new(&sub.label, sub.enabled);
+                    Self::append_entries_to_submenu(&nested, &sub.items, actions)?;
+                    submenu.append(&nested)?;
+                }
+                TrayMenuEntry::Separator => {
+                    submenu.append(&PredefinedMenuItem::separator())?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Update the tray menu with new entries. Preserves built-in Reload/Exit items.
+    pub fn update_menu(&mut self, items: &[TrayMenuEntry]) {
+        use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
+
+        let Some(ref tray) = self.tray_icon else { return };
+
+        let menu = Menu::new();
+        let mut new_actions: Vec<(tray_icon::menu::MenuId, TrayMenuAction)> = Vec::new();
+
+        if let Err(e) = Self::append_entries(&menu, items, &mut new_actions) {
+            log::error!("Failed to build updated tray menu: {}", e);
+            return;
+        }
+
+        if !items.is_empty() {
+            let _ = menu.append(&PredefinedMenuItem::separator());
+        }
+
+        let reload_item = MenuItem::new("Reload", true, None);
+        new_actions.push((reload_item.id().clone(), TrayMenuAction::Reload));
+        let _ = menu.append(&reload_item);
+
+        let exit_item = MenuItem::new("Exit", true, None);
+        new_actions.push((exit_item.id().clone(), TrayMenuAction::Exit));
+        let _ = menu.append(&exit_item);
+
+        tray.set_menu(Some(Box::new(menu)));
+        self.menu_actions = new_actions;
+        log::info!("Tray menu updated");
     }
 
     /// Poll for tray events. Should be called once per frame.
     pub fn poll_events(&self) -> Vec<TrayEvent> {
         let mut events = Vec::new();
 
-        if self._tray_icon.is_none() {
+        if self.tray_icon.is_none() {
             return events;
         }
 
@@ -337,7 +443,7 @@ impl SystemTray {
 
     /// Check if the tray is active.
     pub fn is_active(&self) -> bool {
-        self._tray_icon.is_some()
+        self.tray_icon.is_some()
     }
 }
 
@@ -349,7 +455,7 @@ fn load_icon_from_file(path: &std::path::Path) -> Result<tray_icon::Icon, Box<dy
     Ok(tray_icon::Icon::from_rgba(rgba, w, h)?)
 }
 
-/// Create a simple 32×32 CanvasX-branded icon (indigo gradient square).
+/// Create a simple 32×32 OpenRender-branded icon (indigo gradient square).
 fn create_default_icon() -> tray_icon::Icon {
     const SIZE: u32 = 32;
     let mut rgba = vec![0u8; (SIZE * SIZE * 4) as usize];

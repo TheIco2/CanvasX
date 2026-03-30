@@ -1,6 +1,6 @@
-// canvasx-runtime/src/ipc/protocol.rs
+// openrender-runtime/src/ipc/protocol.rs
 //
-// Wire protocol types for the CanvasX IPC format.
+// Wire protocol types for the OpenRender IPC format.
 // Any host application implementing this protocol can communicate with the runtime.
 
 use serde::{Serialize, Deserialize};

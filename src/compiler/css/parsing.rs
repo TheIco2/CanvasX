@@ -1,4 +1,4 @@
-// canvasx-runtime/src/compiler/css/parsing.rs
+// openrender-runtime/src/compiler/css/parsing.rs
 //
 // Shared CSS value parsing utilities used across all CSS versions.
 // Contains parsers for dimensions, colors, gradients, grid tracks,

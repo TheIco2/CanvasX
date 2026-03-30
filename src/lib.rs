@@ -1,7 +1,7 @@
-// canvasx-runtime — GPU-native deterministic UI runtime for CanvasX
+// OpenRender-runtime — GPU-native deterministic UI runtime for OpenRender
 //
 // Architecture:
-//   HTML/CSS/JS → Compiler → CXRD (CanvasX Runtime Document) → GPU Renderer
+//   HTML/CSS/JS → Compiler → ORD (OpenRender Runtime Document) → GPU Renderer
 //
 // Supports: Vulkan, DirectX 12, DirectX 11 (via wgpu backends)
 //
@@ -33,8 +33,8 @@ pub use cxrl::loader::LoadedLibrary;
 pub use gpu::context::GpuContext;
 pub use scene::graph::SceneGraph;
 pub use scene::input_handler::{InputHandler, RawInputEvent, UiEvent};
-pub use scene::app_host::{AppHost, AppEvent, SentinelAppBuilder};
+pub use scene::app_host::{AppHost, AppEvent, OpenDesktopAppBuilder};
 pub use compiler::editable::EditableContext;
 pub use devtools::DevTools;
 pub use capabilities::{CapabilitySet, NetworkAccess, StorageAccess, IpcAccess, SystemInfo, FileSystemAccess, DeviceAccess, TrayAccess};
-pub use tray::{SystemTray, TrayConfig, TrayMenu, TrayMenuEntry, TrayMenuItem, TrayItemStack, TrayMenuAction, TrayEvent};
+pub use tray::{SystemTray, TrayConfig, TrayMenu, TrayMenuEntry, TrayMenuItem, TrayItemStack, TraySubmenu, TrayMenuAction, TrayEvent};

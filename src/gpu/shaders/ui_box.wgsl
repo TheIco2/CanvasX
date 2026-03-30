@@ -1,4 +1,4 @@
-// canvasx-runtime/src/gpu/shaders/ui_box.wgsl
+// openrender-runtime/src/gpu/shaders/ui_box.wgsl
 //
 // SDF-based UI box renderer.
 // Renders rounded rectangles with borders, backgrounds, and optional textures.

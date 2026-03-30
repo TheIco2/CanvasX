@@ -1,4 +1,4 @@
-// canvasx-runtime/src/cxrd/document.rs
+// openrender-runtime/src/cxrd/document.rs
 //
 // The top-level CXRD document — a complete, self-contained renderable scene.
 // This is what gets cached to disk and loaded by the runtime.
@@ -15,7 +15,7 @@ pub const CXRD_MAGIC: &[u8; 4] = b"CXR\x01";
 /// The version of the CXRD format.
 pub const CXRD_VERSION: u32 = 1;
 
-/// A complete CanvasX Runtime Document.
+/// A complete OpenRender Runtime Document.
 ///
 /// Contains everything needed to render a scene:
 /// - Node tree (the scene graph)

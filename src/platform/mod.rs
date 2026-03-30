@@ -1,4 +1,4 @@
-// canvasx-runtime/src/platform/mod.rs
+// openrender-runtime/src/platform/mod.rs
 //
 // Platform-specific code for Windows.
 // Monitor enumeration, WorkerW desktop embedding, DPI handling.

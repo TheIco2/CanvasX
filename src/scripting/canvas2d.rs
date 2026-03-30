@@ -1,4 +1,4 @@
-// canvasx-runtime/src/scripting/canvas2d.rs
+// openrender-runtime/src/scripting/canvas2d.rs
 //
 // Canvas 2D rendering context backed by tiny-skia.
 // Each canvas element in the DOM gets a CanvasBuffer which holds a pixel buffer.

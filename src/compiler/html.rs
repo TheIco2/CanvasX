@@ -1,6 +1,6 @@
-// canvasx-runtime/src/compiler/html.rs
+// openrender-runtime/src/compiler/html.rs
 //
-// HTML subset parser for the CanvasX Runtime.
+// HTML subset parser for the OpenRender Runtime.
 // Converts restricted HTML into CXRD nodes.
 //
 // Supported elements:
@@ -489,7 +489,7 @@ fn extract_inline_styles(html: &str) -> String {
 
 /// Extract document background color from body/html/:root CSS rules.
 ///
-/// The sentinel.default wallpaper uses `background: var(--bg-color)` on body,
+/// The od.default wallpaper uses `background: var(--bg-color)` on body,
 /// which resolves to a hex color. We check body, html, and :root rules in
 /// order, taking the last match (highest specificity).
 fn extract_document_background(
@@ -930,7 +930,7 @@ fn add_node_recursive(
             style.display = Display::InlineBlock;
             style.font_weight = FontWeight(700);
         }
-        // Inline + italic (note: we store italic as weight 0 sentinel; see text painter)
+        // Inline + italic (note: we store italic as weight 0 marker; see text painter)
         "em" | "i" => {
             style.display = Display::InlineBlock;
             // Italic handled via tag check in text painter; no weight change.

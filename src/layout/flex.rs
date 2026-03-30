@@ -1,4 +1,4 @@
-// canvasx-runtime/src/layout/flex.rs
+// openrender-runtime/src/layout/flex.rs
 //
 // Simplified flexbox layout algorithm.
 //

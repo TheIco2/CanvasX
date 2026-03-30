@@ -1,4 +1,4 @@
-// canvasx-runtime — main entry point
+// openrender-runtime — main entry point
 //
 // This wires together every subsystem:
 //   1. Parse CLI args (scene type, source path, target monitor)
@@ -8,7 +8,7 @@
 //   5. Start IPC client (background thread polling host application)
 //   6. Enter render loop: layout → animate → paint → submit → present
 //
-// Binary name: canvasx-rt
+// Binary name: openrender-rt
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -23,23 +23,23 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use canvasx_runtime::compiler::html::compile_html;
-use canvasx_runtime::compiler::css::CssRule;
-use canvasx_runtime::compiler::html::ScriptBlock;
-use canvasx_runtime::gpu::context::GpuContext;
-use canvasx_runtime::gpu::renderer::Renderer;
-use canvasx_runtime::ipc::client::IpcClient;
-use canvasx_runtime::platform::monitor::enumerate_monitors;
-use canvasx_runtime::scene::graph::SceneGraph;
-use canvasx_runtime::scene::input_handler::{
+use openrender_runtime::compiler::html::compile_html;
+use openrender_runtime::compiler::css::CssRule;
+use openrender_runtime::compiler::html::ScriptBlock;
+use openrender_runtime::gpu::context::GpuContext;
+use openrender_runtime::gpu::renderer::Renderer;
+use openrender_runtime::ipc::client::IpcClient;
+use openrender_runtime::platform::monitor::enumerate_monitors;
+use openrender_runtime::scene::graph::SceneGraph;
+use openrender_runtime::scene::input_handler::{
     InputHandler, RawInputEvent, KeyCode, Modifiers, MouseButton as CxMouseButton,
 };
-use canvasx_runtime::cxrd::document::{SceneType, CxrdDocument};
-use canvasx_runtime::cxrd::node::NodeId;
-use canvasx_runtime::scripting::JsRuntime;
-use canvasx_runtime::gpu::vertex::UiInstance;
-use canvasx_runtime::tray::{SystemTray, TrayConfig, TrayEvent};
-use canvasx_runtime::devtools::context_menu::ContextAction;
+use openrender_runtime::cxrd::document::{SceneType, CxrdDocument};
+use openrender_runtime::cxrd::node::NodeId;
+use openrender_runtime::scripting::JsRuntime;
+use openrender_runtime::gpu::vertex::UiInstance;
+use openrender_runtime::tray::{SystemTray, TrayConfig, TrayEvent};
+use openrender_runtime::devtools::context_menu::ContextAction;
 
 // ---------------------------------------------------------------------------
 // CLI arguments
@@ -152,8 +152,8 @@ struct App {
     fps_timer: Instant,
     /// Current modifier key state (tracked via ModifiersChanged).
     current_modifiers: winit::keyboard::ModifiersState,
-    /// Built-in DevTools (CanvasX badge + developer panel).
-    devtools: canvasx_runtime::devtools::DevTools,
+    /// Built-in DevTools (OpenRender badge + developer panel).
+    devtools: openrender_runtime::devtools::DevTools,
     /// System tray icon and menu.
     system_tray: Option<SystemTray>,
     /// Whether the window is currently visible (for tray hide/show).
@@ -182,7 +182,7 @@ impl App {
             frame_count: 0,
             fps_timer: Instant::now(),
             current_modifiers: winit::keyboard::ModifiersState::empty(),
-            devtools: canvasx_runtime::devtools::DevTools::new(),
+            devtools: openrender_runtime::devtools::DevTools::new(),
             system_tray: None,
             window_visible: true,
             exit_requested: false,
@@ -259,7 +259,7 @@ impl ApplicationHandler for App {
             return; // Already initialised.
         }
 
-        log::info!("Initialising CanvasX Runtime...");
+        log::info!("Initialising OpenRender Runtime...");
 
         // Enumerate monitors.
         let monitors = enumerate_monitors();
@@ -281,7 +281,7 @@ impl ApplicationHandler for App {
         );
 
         // Window attributes.
-        let mut attrs = WindowAttributes::default().with_title("CanvasX Runtime");
+        let mut attrs = WindowAttributes::default().with_title("OpenRender Runtime");
 
         if let Some(mon) = target_monitor {
             attrs = attrs
@@ -328,7 +328,7 @@ impl ApplicationHandler for App {
                 if let winit::raw_window_handle::RawWindowHandle::Win32(h) = handle.as_raw() {
                     let hwnd =
                         windows::Win32::Foundation::HWND(h.hwnd.get() as *mut std::ffi::c_void);
-                    if canvasx_runtime::platform::desktop::embed_in_desktop(hwnd) {
+                    if openrender_runtime::platform::desktop::embed_in_desktop(hwnd) {
                         log::info!("Embedded render window in desktop WorkerW layer");
                     } else {
                         log::warn!("Failed to embed in WorkerW — rendering as overlay");
@@ -426,8 +426,8 @@ impl ApplicationHandler for App {
         // document.addEventListener('DOMContentLoaded', ...) actually run.
         js_rt.execute(
             r#"(function(){
-                if(typeof __cx_globalListeners==='object' && __cx_globalListeners['DOMContentLoaded']){
-                    var fns=__cx_globalListeners['DOMContentLoaded'].slice();
+                if(typeof __or_globalListeners==='object' && __or_globalListeners['DOMContentLoaded']){
+                    var fns=__or_globalListeners['DOMContentLoaded'].slice();
                     for(var i=0;i<fns.length;i++){try{fns[i]({type:'DOMContentLoaded'});}catch(e){console.error('DOMContentLoaded handler error:',e);}}
                 }
             })();"#,
@@ -441,7 +441,7 @@ impl ApplicationHandler for App {
         if self.args.enable_tray {
             let tray_config = TrayConfig {
                 enabled: true,
-                tooltip: format!("CanvasX — {}", self.args.source.file_stem()
+                tooltip: format!("OpenRender — {}", self.args.source.file_stem()
                     .and_then(|s| s.to_str()).unwrap_or("scene")),
                 ..TrayConfig::default()
             };
@@ -753,8 +753,8 @@ impl App {
 
                 js_rt.execute(
                     r#"(function(){
-                        if(typeof __cx_globalListeners==='object' && __cx_globalListeners['DOMContentLoaded']){
-                            var fns=__cx_globalListeners['DOMContentLoaded'].slice();
+                        if(typeof __or_globalListeners==='object' && __or_globalListeners['DOMContentLoaded']){
+                            var fns=__or_globalListeners['DOMContentLoaded'].slice();
                             for(var i=0;i<fns.length;i++){try{fns[i]({type:'DOMContentLoaded'});}catch(e){console.error('DOMContentLoaded handler error:',e);}}
                         }
                     })();"#,
@@ -785,22 +785,22 @@ impl App {
 
         for event in ui_events {
             match event {
-                canvasx_runtime::scene::input_handler::UiEvent::NavigateRequest { scene_id } => {
+                openrender_runtime::scene::input_handler::UiEvent::NavigateRequest { scene_id } => {
                     log::info!("Navigate request: {}", scene_id);
                 }
-                canvasx_runtime::scene::input_handler::UiEvent::IpcCommand { ns, cmd, args } => {
+                openrender_runtime::scene::input_handler::UiEvent::IpcCommand { ns, cmd, args } => {
                     log::info!("IPC command: {}.{} args={:?}", ns, cmd, args);
                 }
-                canvasx_runtime::scene::input_handler::UiEvent::OpenExternal { url } => {
+                openrender_runtime::scene::input_handler::UiEvent::OpenExternal { url } => {
                     log::info!("Open external: {}", url);
                     #[cfg(target_os = "windows")]
                     { let _ = std::process::Command::new("cmd").args(["/C", "start", &url]).spawn(); }
                 }
-                canvasx_runtime::scene::input_handler::UiEvent::Click { node_id } => {
+                openrender_runtime::scene::input_handler::UiEvent::Click { node_id } => {
                     click_node_ids.push(node_id);
                 }
-                canvasx_runtime::scene::input_handler::UiEvent::Action(ref action) => {
-                    use canvasx_runtime::cxrd::node::EventAction;
+                openrender_runtime::scene::input_handler::UiEvent::Action(ref action) => {
+                    use openrender_runtime::cxrd::node::EventAction;
                     match action {
                         EventAction::WindowClose => {
                             self.exit_requested = true;
@@ -856,7 +856,7 @@ impl App {
         // If a class was toggled, re-apply CSS rules so styles reflect the new class.
         if self.input_handler.class_dirty {
             self.input_handler.class_dirty = false;
-            canvasx_runtime::compiler::html::reapply_all_styles(
+            openrender_runtime::compiler::html::reapply_all_styles(
                 &mut scene.document,
                 &self.compiled_css_rules,
             );
@@ -866,13 +866,13 @@ impl App {
         // Apply updated cursor icon.
         if let Some(ref w) = self.window {
             let winit_cursor = match self.input_handler.cursor {
-                canvasx_runtime::scene::input_handler::CursorIcon::Default     => winit::window::CursorIcon::Default,
-                canvasx_runtime::scene::input_handler::CursorIcon::Pointer     => winit::window::CursorIcon::Pointer,
-                canvasx_runtime::scene::input_handler::CursorIcon::Text        => winit::window::CursorIcon::Text,
-                canvasx_runtime::scene::input_handler::CursorIcon::Move        => winit::window::CursorIcon::Move,
-                canvasx_runtime::scene::input_handler::CursorIcon::NotAllowed  => winit::window::CursorIcon::NotAllowed,
-                canvasx_runtime::scene::input_handler::CursorIcon::ResizeNS    => winit::window::CursorIcon::NsResize,
-                canvasx_runtime::scene::input_handler::CursorIcon::ResizeEW    => winit::window::CursorIcon::EwResize,
+                openrender_runtime::scene::input_handler::CursorIcon::Default     => winit::window::CursorIcon::Default,
+                openrender_runtime::scene::input_handler::CursorIcon::Pointer     => winit::window::CursorIcon::Pointer,
+                openrender_runtime::scene::input_handler::CursorIcon::Text        => winit::window::CursorIcon::Text,
+                openrender_runtime::scene::input_handler::CursorIcon::Move        => winit::window::CursorIcon::Move,
+                openrender_runtime::scene::input_handler::CursorIcon::NotAllowed  => winit::window::CursorIcon::NotAllowed,
+                openrender_runtime::scene::input_handler::CursorIcon::ResizeNS    => winit::window::CursorIcon::NsResize,
+                openrender_runtime::scene::input_handler::CursorIcon::ResizeEW    => winit::window::CursorIcon::EwResize,
             };
             w.set_cursor(winit::window::Cursor::Icon(winit_cursor));
         }
@@ -931,8 +931,8 @@ impl App {
                             js_rt.execute(
                                 &format!(
                                     r#"(function(){{
-                                        if(typeof __cx_globalListeners==='object' && __cx_globalListeners['trayaction']){{
-                                            var fns=__cx_globalListeners['trayaction'].slice();
+                                        if(typeof __or_globalListeners==='object' && __or_globalListeners['trayaction']){{
+                                            var fns=__or_globalListeners['trayaction'].slice();
                                             for(var i=0;i<fns.length;i++){{try{{fns[i]({{type:'trayaction',id:'{}'}});}}catch(e){{}}}}
                                         }}
                                     }})()"#,
@@ -955,10 +955,10 @@ impl App {
             // Drain JS console messages into DevTools.
             for (level, msg) in js_rt.drain_console() {
                 let log_level = match level {
-                    0 => canvasx_runtime::devtools::console::LogLevel::Log,
-                    2 => canvasx_runtime::devtools::console::LogLevel::Warn,
-                    3 => canvasx_runtime::devtools::console::LogLevel::Error,
-                    _ => canvasx_runtime::devtools::console::LogLevel::Info,
+                    0 => openrender_runtime::devtools::console::LogLevel::Log,
+                    2 => openrender_runtime::devtools::console::LogLevel::Warn,
+                    3 => openrender_runtime::devtools::console::LogLevel::Error,
+                    _ => openrender_runtime::devtools::console::LogLevel::Info,
                 };
                 self.devtools.console.log(log_level, msg);
             }
@@ -1039,7 +1039,7 @@ impl App {
         // Build patched list only if canvas textures exist (avoid copy when not needed).
         let has_canvas_patches = instances.iter().any(|inst| {
             inst.texture_index <= -2
-                && (inst.flags & canvasx_runtime::gpu::vertex::UiInstance::FLAG_HAS_TEXTURE) != 0
+                && (inst.flags & openrender_runtime::gpu::vertex::UiInstance::FLAG_HAS_TEXTURE) != 0
         });
 
         let patched_instances;
@@ -1047,7 +1047,7 @@ impl App {
         let final_instances: &[UiInstance] = if has_canvas_patches {
             patched_instances = instances.iter().map(|inst| {
                 if inst.texture_index <= -2
-                    && (inst.flags & canvasx_runtime::gpu::vertex::UiInstance::FLAG_HAS_TEXTURE) != 0
+                    && (inst.flags & openrender_runtime::gpu::vertex::UiInstance::FLAG_HAS_TEXTURE) != 0
                 {
                     let node_id = (-inst.texture_index - 2) as u32;
                     if let Some(&slot) = self.node_canvas_map.get(&node_id) {
@@ -1145,7 +1145,7 @@ impl App {
 }
 
 // ---------------------------------------------------------------------------
-// Winit key → CanvasX KeyCode translation
+// Winit key → OpenRender KeyCode translation
 // ---------------------------------------------------------------------------
 
 fn winit_key_to_cx(key: &winit::keyboard::Key) -> KeyCode {
@@ -1184,13 +1184,13 @@ fn winit_key_to_cx(key: &winit::keyboard::Key) -> KeyCode {
 // ---------------------------------------------------------------------------
 
 fn main() {
-    // Initialise file-based logger (~/.Sentinel/logs/CanvasX.log).
+    // Initialise file-based logger (~/ProjectOpen/OpenDesktop/logs/OpenRender.log).
     // Pass `true` for debug-level output, or `false` for warn-and-above only.
-    canvasx_runtime::logging::init(cfg!(debug_assertions));
+    openrender_runtime::logging::init("OpenRender", "Runtime", cfg!(debug_assertions));
 
     let args = CliArgs::from_env();
     log::info!(
-        "CanvasX Runtime v{} — scene: {:?}, source: {}",
+        "OpenRender Runtime v{} — scene: {:?}, source: {}",
         env!("CARGO_PKG_VERSION"),
         args.scene_type,
         args.source.display(),

@@ -1,6 +1,6 @@
-// canvasx-runtime/src/devtools/overlay.rs
+// openrender-runtime/src/devtools/overlay.rs
 //
-// Paints the CanvasX badge and DevTools panel as GPU instances.
+// Paints the OpenRender badge and DevTools panel as GPU instances.
 
 use crate::cxrd::document::CxrdDocument;
 use crate::cxrd::value::Color;
@@ -49,7 +49,7 @@ fn make_rect_instance(
     }
 }
 
-/// Paint the "CanvasX" badge in the bottom-left corner.
+/// Paint the "OpenRender" badge in the bottom-left corner.
 /// Renders as dim text only — no background or border.
 pub fn paint_badge(
     _out: &mut Vec<UiInstance>,

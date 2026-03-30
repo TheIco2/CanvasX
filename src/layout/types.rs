@@ -1,4 +1,4 @@
-// canvasx-runtime/src/layout/types.rs
+// openrender-runtime/src/layout/types.rs
 //
 // Layout computation types — intermediate results during layout.
 

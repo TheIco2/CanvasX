@@ -1,4 +1,4 @@
-// canvasx-runtime/src/cxrd/asset.rs
+// openrender-runtime/src/cxrd/asset.rs
 //
 // Asset table for bundled resources within a CXRD document.
 // All assets are embedded — no network fetches at runtime.

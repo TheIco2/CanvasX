@@ -1,4 +1,4 @@
-// canvasx-runtime/src/animate/interpolate.rs
+// openrender-runtime/src/animate/interpolate.rs
 //
 // Property interpolation for animated values.
 

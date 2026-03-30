@@ -1,4 +1,4 @@
-// canvasx-runtime/src/devtools/context_menu.rs
+// openrender-runtime/src/devtools/context_menu.rs
 //
 // In-window right-click context menu rendered as a GPU overlay.
 // Provides access to DevTools, Reload, and Exit without a system tray.

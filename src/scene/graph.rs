@@ -1,4 +1,4 @@
-// canvasx-runtime/src/scene/graph.rs
+// openrender-runtime/src/scene/graph.rs
 //
 // The SceneGraph is the top-level coordinator: it owns a CXRD document,
 // runs layout, generates paint calls, and manages text buffers.

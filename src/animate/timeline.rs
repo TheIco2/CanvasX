@@ -1,4 +1,4 @@
-// canvasx-runtime/src/animate/timeline.rs
+// openrender-runtime/src/animate/timeline.rs
 //
 // Animation timeline — manages active animations and advances them each frame.
 

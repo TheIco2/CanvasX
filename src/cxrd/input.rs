@@ -1,4 +1,4 @@
-// canvasx-runtime/src/cxrd/input.rs
+// openrender-runtime/src/cxrd/input.rs
 //
 // Interactive input node types for building usable app windows.
 // These extend the base NodeKind with interactive widgets that
@@ -7,7 +7,7 @@
 use serde::{Serialize, Deserialize};
 use crate::cxrd::value::Color;
 
-/// Input widget types that can be used in CanvasX documents.
+/// Input widget types that can be used in OpenRender documents.
 /// These provide the interactive primitives needed to build full app UIs.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub enum InputKind {

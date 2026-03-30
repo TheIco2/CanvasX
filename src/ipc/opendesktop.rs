@@ -1,17 +1,17 @@
-// canvasx-runtime/src/ipc/sentinel.rs
+// OpenDesktop-runtime/src/ipc/OpenDesktop.rs
 //
-// Sentinel IPC Bridge — high-level integration module for connecting
-// CanvasX scenes to the Sentinel backend.
+// OpenDesktop IPC Bridge — high-level integration module for connecting
+// OpenDesktop scenes to the OpenDesktop backend.
 //
-// This module speaks Sentinel's exact protocol format (`{ns, cmd, args}`
-// over `\\.\pipe\sentinel`) and provides convenient Rust APIs for:
+// This module speaks OpenDesktop's exact protocol format (`{ns, cmd, args}`
+// over `\\.\pipe\OpenDesktop`) and provides convenient Rust APIs for:
 //   - Fetching system data (CPU, GPU, RAM, etc.)
 //   - Reading the addon/asset registry
 //   - Controlling the backend (polling rates, tracking demands)
 //   - Sending heartbeats
 //
-// This module is optional — CanvasX works standalone without it.
-// It is enabled when the host application is Sentinel.
+// This module is optional — OpenDesktop works standalone without it.
+// It is enabled when the host application is OpenDesktop.
 
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex, atomic::{AtomicBool, AtomicU64, Ordering}};
@@ -22,14 +22,14 @@ use serde_json::{json, Value};
 use crate::ipc::client::{send_ipc_request_to, flatten_json_to_map};
 use crate::ipc::protocol::{IpcRequest, IpcResponse};
 
-/// The Sentinel pipe name.
-pub const SENTINEL_PIPE: &str = r"\\.\pipe\sentinel";
+/// The OpenDesktop pipe name.
+pub const OPEN_DESKTOP_PIPE: &str = r"\\.\pipe\opendesktop";
 
-/// A high-level Sentinel IPC client.
+/// A high-level OpenDesktop IPC client.
 ///
-/// Connects to sentinel-core's named pipe server and provides structured
+/// Connects to OpenDesktop-core's named pipe server and provides structured
 /// access to system data, registry, and backend controls.
-pub struct SentinelBridge {
+pub struct OpenDesktopBridge {
     /// The pipe name to connect to.
     pipe_name: String,
 
@@ -61,23 +61,23 @@ pub struct SentinelBridge {
     _thread: Option<thread::JoinHandle<()>>,
 }
 
-/// Configuration for the Sentinel bridge.
+/// Configuration for the OpenDesktop bridge.
 #[derive(Clone)]
-pub struct SentinelBridgeConfig {
-    /// Pipe name (default: `\\.\pipe\sentinel`).
+pub struct OpenDesktopBridgeConfig {
+    /// Pipe name (default: `\\.\pipe\opendesktop`).
     pub pipe_name: String,
     /// Which data sections to track (e.g., "cpu", "gpu", "ram", "time", etc.).
     pub tracking_demands: Vec<String>,
-    /// Polling interval in ms (default: 50, matching sentinel's fast pull).
+    /// Polling interval in ms (default: 50, matching OpenDesktop's fast pull).
     pub poll_interval_ms: u64,
     /// Whether to send UI heartbeats (keeps backend data alive).
     pub send_heartbeats: bool,
 }
 
-impl Default for SentinelBridgeConfig {
+impl Default for OpenDesktopBridgeConfig {
     fn default() -> Self {
         Self {
-            pipe_name: SENTINEL_PIPE.into(),
+            pipe_name: OPEN_DESKTOP_PIPE.into(),
             tracking_demands: vec![
                 "time", "cpu", "gpu", "ram", "storage", "displays",
                 "network", "wifi", "bluetooth", "audio", "keyboard",
@@ -89,14 +89,14 @@ impl Default for SentinelBridgeConfig {
     }
 }
 
-impl SentinelBridge {
-    /// Create and start a new Sentinel bridge with default config.
+impl OpenDesktopBridge {
+    /// Create and start a new OpenDesktop bridge with default config.
     pub fn start() -> Self {
-        Self::with_config(SentinelBridgeConfig::default())
+        Self::with_config(OpenDesktopBridgeConfig::default())
     }
 
     /// Create and start with custom config.
-    pub fn with_config(config: SentinelBridgeConfig) -> Self {
+    pub fn with_config(config: OpenDesktopBridgeConfig) -> Self {
         let sysdata = Arc::new(Mutex::new(HashMap::new()));
         let sysdata_raw = Arc::new(Mutex::new(Value::Null));
         let appdata_raw = Arc::new(Mutex::new(Value::Null));
@@ -120,7 +120,7 @@ impl SentinelBridge {
         };
 
         let handle = thread::spawn(move || {
-            sentinel_poll_loop(thread_state);
+            opendesktop_poll_loop(thread_state);
         });
 
         Self {
@@ -137,7 +137,7 @@ impl SentinelBridge {
         }
     }
 
-    /// Check if the bridge is connected to sentinel-core.
+    /// Check if the bridge is connected to OpenDesktop-core.
     pub fn is_connected(&self) -> bool {
         self.connected.load(Ordering::Relaxed)
     }
@@ -185,7 +185,7 @@ impl SentinelBridge {
 
     // --- One-shot IPC commands ---
 
-    /// Send a raw IPC request to sentinel-core.
+    /// Send a raw IPC request to OpenDesktop-core.
     pub fn send_request(&self, ns: &str, cmd: &str, args: Option<Value>) -> Result<IpcResponse, String> {
         let request = match args {
             Some(a) => IpcRequest::with_args(ns, cmd, a),
@@ -242,7 +242,7 @@ impl SentinelBridge {
         self.send_request("backend", "set_pull_paused", Some(json!({ "paused": paused })))
     }
 
-    /// Send a UI heartbeat (tells sentinel-core the UI is active).
+    /// Send a UI heartbeat (tells OpenDesktop-core the UI is active).
     pub fn ui_heartbeat(&self) -> Result<IpcResponse, String> {
         self.send_request("backend", "ui_heartbeat", None)
     }
@@ -269,8 +269,8 @@ struct BridgeThreadState {
     send_heartbeats: bool,
 }
 
-fn sentinel_poll_loop(state: BridgeThreadState) {
-    log::info!("Sentinel bridge: starting (pipe: {})", state.pipe_name);
+fn opendesktop_poll_loop(state: BridgeThreadState) {
+    log::info!("OpenDesktop bridge: starting (pipe: {})", state.pipe_name);
 
     let mut heartbeat_timer = Instant::now();
     let mut last_demands_sent: Option<Vec<String>> = None;
@@ -307,7 +307,7 @@ fn sentinel_poll_loop(state: BridgeThreadState) {
         match send_ipc_request_to(&state.pipe_name, request) {
             Ok(resp) if resp.ok => {
                 if !state.connected.load(Ordering::Relaxed) {
-                    log::info!("Sentinel bridge: connected");
+                    log::info!("OpenDesktop bridge: connected");
                 }
                 state.connected.store(true, Ordering::Relaxed);
 
@@ -329,7 +329,7 @@ fn sentinel_poll_loop(state: BridgeThreadState) {
             }
             Err(e) => {
                 if state.connected.load(Ordering::Relaxed) {
-                    log::warn!("Sentinel bridge: connection lost ({})", e);
+                    log::warn!("OpenDesktop bridge: connection lost ({})", e);
                 }
                 state.connected.store(false, Ordering::Relaxed);
                 // Re-send demands on reconnect.
@@ -351,16 +351,16 @@ fn sentinel_poll_loop(state: BridgeThreadState) {
         thread::sleep(Duration::from_millis(interval));
     }
 
-    log::info!("Sentinel bridge: stopped");
+    log::info!("OpenDesktop bridge: stopped");
 }
 
-impl Drop for SentinelBridge {
+impl Drop for OpenDesktopBridge {
     fn drop(&mut self) {
         // Stop polling loop and request background thread exit.
         self.shutdown.store(true, Ordering::Relaxed);
         self.polling_active.store(false, Ordering::Relaxed);
 
-        // Best-effort clear of explicit tracking demands so sentinel-core can idle.
+        // Best-effort clear of explicit tracking demands so OpenDesktop-core can idle.
         let _ = send_ipc_request_to(
             &self.pipe_name,
             IpcRequest::with_args("backend", "set_tracking_demands", json!({ "sections": Vec::<String>::new() })),

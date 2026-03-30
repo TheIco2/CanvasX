@@ -1,15 +1,15 @@
-// canvasx-runtime/src/scene/app_host.rs
+// openrender-runtime/src/scene/app_host.rs
 //
-// App Host — manages a CanvasX-powered application window with interactive
+// App Host — manages a OpenRender-powered application window with interactive
 // multi-page navigation, sidebar, tabs, and document embedding.
 //
-// This replaces the wry/WebView2 config UI shell in Sentinel Core by providing
+// This replaces the wry/WebView2 config UI shell in OpenDesktop Core by providing
 // native scene-graph equivalents of:
 //   - Window chrome (title bar, close/min/max buttons)
 //   - Sidebar navigation
 //   - Tabbed document areas
 //   - Embedded sub-documents (analogous to iframes)
-//   - Custom protocol routing (e.g. sentinel:// → local filesystem)
+//   - Custom protocol routing (e.g. opendesktop:// → local filesystem)
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -59,21 +59,21 @@ pub enum PageSource {
     HtmlFile(PathBuf),
     /// Inline HTML string.
     Inline(String),
-    /// Custom protocol URI (e.g. sentinel://wallpaper/options/options.html).
+    /// Custom protocol URI (e.g. opendesktop://wallpaper/options/options.html).
     ProtocolUri(String),
     /// External URL (opened in system browser, not embedded).
     External(String),
 }
 
-/// Protocol handler for custom URI schemes (e.g. sentinel://).
+/// Protocol handler for custom URI schemes (e.g. opendesktop://).
 pub trait ProtocolHandler: Send + Sync {
     /// Resolve a protocol URI to a local file path.
     fn resolve(&self, uri: &str) -> Option<PathBuf>;
 }
 
 /// A simple protocol handler that maps a scheme to a base directory.
-/// e.g., `sentinel://wallpaper/options/options.html`
-///        → `~/.Sentinel/Assets/wallpaper/options/options.html`
+/// e.g., `opendesktop://wallpaper/options/options.html`
+///        → `~/ProjectOpen/OpenDesktop/Assets/wallpaper/options/options.html`
 pub struct FileSystemProtocol {
     pub scheme: String,
     pub base_dir: PathBuf,
@@ -140,11 +140,11 @@ pub struct AppHost {
     pub title: String,
     /// Pending UI events from user interaction.
     pending_events: Vec<AppEvent>,
-    /// Data shared across all pages (e.g., from Sentinel IPC).
+    /// Data shared across all pages (e.g., from OpenDesktop IPC).
     shared_data: Arc<Mutex<HashMap<String, String>>>,
     /// Declared runtime capabilities for this application.
     pub capabilities: CapabilitySet,
-    /// Built-in DevTools (CanvasX badge + developer panel + context menu).
+    /// Built-in DevTools (OpenRender badge + developer panel + context menu).
     pub devtools: DevTools,
     /// JavaScript runtime (shared, reinitialised on page navigation).
     js_runtime: Option<JsRuntime>,
@@ -206,6 +206,9 @@ pub enum AppEvent {
     TrayAction(String),
     /// Content was swapped inside a `<page-content>` container.
     ContentSwap { page: PageId, content_id: String },
+    /// A content fragment was swapped inside `<page-content>`.
+    /// Emitted after the swap completes so consuming apps can populate data.
+    ContentSwapped { content_id: String },
     /// The active page was reloaded (HTML/CSS recompiled, JS runtime dropped).
     /// Consumer should call `init_js_for_active_page()`.
     PageReloaded(PageId),
@@ -257,7 +260,7 @@ impl AppHost {
         self.routes.extend(routes);
     }
 
-    /// Register a custom protocol handler (e.g., for sentinel://).
+    /// Register a custom protocol handler (e.g., for opendesktop://).
     pub fn add_protocol_handler(&mut self, handler: Box<dyn ProtocolHandler>) {
         self.protocol_handlers.push(handler);
     }
@@ -343,6 +346,30 @@ impl AppHost {
         self.pending_events.push(AppEvent::NavigateTo(page_id.to_string()));
 
         log::info!("AppHost: navigated to '{}'", page_id);
+    }
+
+    /// Request a content swap inside the active page's `<page-content>` container.
+    ///
+    /// This loads a fragment HTML file (e.g. `device_edit.html`) and replaces
+    /// the children of the `<page-content>` node — analogous to what happens
+    /// when a sidebar `data-navigate` click targets a non-route ID.
+    ///
+    /// Returns `false` if there is no active page or it lacks a `<page-content>`.
+    pub fn request_content_swap(&mut self, content_id: &str) -> bool {
+        let page_id = match self.active_page.clone() {
+            Some(id) => id,
+            None => return false,
+        };
+        if let Some(page) = self.pages.get(&page_id) {
+            if page.scene.document.find_page_content_node().is_some() {
+                self.pending_events.push(AppEvent::ContentSwap {
+                    page: page_id,
+                    content_id: content_id.to_string(),
+                });
+                return true;
+            }
+        }
+        false
     }
 
     /// Navigate back.
@@ -720,7 +747,9 @@ impl AppHost {
                 let page_id = page.clone();
                 let target = content_id.clone();
                 self.swap_page_content(&page_id, &target);
-                events.remove(i);
+                // Replace the internal ContentSwap with a public ContentSwapped
+                // so consuming apps can react (e.g. populate data).
+                events[i] = AppEvent::ContentSwapped { content_id: target };
             } else {
                 i += 1;
             }
@@ -787,6 +816,13 @@ impl AppHost {
         log::info!("System tray created for '{}'", tooltip);
     }
 
+    /// Update the tray menu items dynamically (preserves built-in Reload/Exit).
+    pub fn update_tray_menu(&mut self, items: &[crate::tray::TrayMenuEntry]) {
+        if let Some(ref mut tray) = self.system_tray {
+            tray.update_menu(items);
+        }
+    }
+
     /// Initialise the JS runtime for the current active page.
     /// Call this once after window creation and after each navigation.
     pub fn init_js_for_active_page(&mut self, viewport_width: u32, viewport_height: u32) {
@@ -834,8 +870,8 @@ impl AppHost {
         // Fire DOMContentLoaded.
         js_rt.execute(
             r#"(function(){
-                if(typeof __cx_globalListeners==='object' && __cx_globalListeners['DOMContentLoaded']){
-                    var fns=__cx_globalListeners['DOMContentLoaded'].slice();
+                if(typeof __or_globalListeners==='object' && __or_globalListeners['DOMContentLoaded']){
+                    var fns=__or_globalListeners['DOMContentLoaded'].slice();
                     for(var i=0;i<fns.length;i++){try{fns[i]({type:'DOMContentLoaded'});}catch(e){console.error('DOMContentLoaded handler error:',e);}}
                 }
             })();"#,
@@ -969,6 +1005,57 @@ impl AppHost {
         self.devtools.draw_calls = combined.len() as u32;
 
         (combined, clear_color)
+    }
+
+    /// Return scene instances (with title bar) and DevTools instances separately,
+    /// along with the clear color. This enables the consumer to render them in
+    /// separate layers for correct text z-ordering.
+    pub fn split_instances(
+        &mut self,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> (Vec<UiInstance>, Vec<UiInstance>, Color) {
+        let (scene_instances, clear_color): (Vec<UiInstance>, Color) = if let Some(scene) = self.active_scene() {
+            let instances = scene.cached_instances.clone();
+            let bg = scene.document.background;
+            (instances, bg)
+        } else {
+            (Vec::new(), Color::BLACK)
+        };
+
+        // Patch canvas instances with GPU texture slot.
+        let patched: Vec<UiInstance> = scene_instances.iter().map(|inst| {
+            if inst.texture_index <= -2
+                && (inst.flags & UiInstance::FLAG_HAS_TEXTURE) != 0
+            {
+                let node_id = (-inst.texture_index - 2) as u32;
+                if let Some(&slot) = self.node_canvas_map.get(&node_id) {
+                    let mut p = *inst;
+                    p.texture_index = slot as i32;
+                    return p;
+                }
+            }
+            *inst
+        }).collect();
+
+        self.devtools.instance_count = patched.len() as u32;
+
+        let doc_for_devtools = if let Some(scene) = self.active_scene() {
+            scene.document.clone()
+        } else {
+            CxrdDocument::new("empty", SceneType::ConfigPanel)
+        };
+
+        let devtools_instances = self.devtools.paint(&doc_for_devtools, viewport_width, viewport_height);
+
+        let mut scene = patched;
+        if let Some(ref tb) = self.title_bar {
+            scene.extend(tb.scene.cached_instances.iter().cloned());
+        }
+
+        self.devtools.draw_calls = (scene.len() + devtools_instances.len()) as u32;
+
+        (scene, devtools_instances, clear_color)
     }
 
     /// Get DevTools text entries for rendering alongside scene text.
@@ -1330,31 +1417,31 @@ fn load_html_document_full(
         .map_err(|e| e.to_string())
 }
 
-/// Builder for constructing an AppHost with a common Sentinel-style layout
+/// Builder for constructing an AppHost with a common OpenDesktop-style layout
 /// (sidebar + content area, with routes for each addon's options page).
-pub struct SentinelAppBuilder {
+pub struct OpenDesktopAppBuilder {
     host: AppHost,
-    sentinel_base: Option<PathBuf>,
+    opendesktop_base: Option<PathBuf>,
 }
 
-impl SentinelAppBuilder {
-    /// Create a new Sentinel app builder.
+impl OpenDesktopAppBuilder {
+    /// Create a new OpenDesktop app builder.
     pub fn new(title: impl Into<String>) -> Self {
         Self {
             host: AppHost::new(title),
-            sentinel_base: None,
+            opendesktop_base: None,
         }
     }
 
-    /// Set the Sentinel base directory (e.g., `~/.Sentinel`).
-    pub fn sentinel_base(mut self, path: impl Into<PathBuf>) -> Self {
+    /// Set the OpenDesktop base directory (e.g., `~/ProjectOpen/OpenDesktop`).
+    pub fn opendesktop_base(mut self, path: impl Into<PathBuf>) -> Self {
         let base: PathBuf = path.into();
-        // Register sentinel:// protocol handler.
+        // Register opendesktop:// protocol handler.
         self.host.add_protocol_handler(Box::new(FileSystemProtocol {
-            scheme: "sentinel".into(),
+            scheme: "opendesktop".into(),
             base_dir: base.clone(),
         }));
-        self.sentinel_base = Some(base);
+        self.opendesktop_base = Some(base);
         self
     }
 
@@ -1394,9 +1481,9 @@ impl SentinelAppBuilder {
         self
     }
 
-    /// Auto-discover addon options pages from the Sentinel assets directory.
+    /// Auto-discover addon options pages from the OpenDesktop assets directory.
     pub fn discover_addon_options(mut self) -> Self {
-        if let Some(ref base) = self.sentinel_base {
+        if let Some(ref base) = self.opendesktop_base {
             let addons_dir = base.join("Assets");
             if addons_dir.exists() {
                 if let Ok(entries) = std::fs::read_dir(&addons_dir) {

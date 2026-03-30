@@ -1,6 +1,6 @@
-// canvasx-runtime/src/capabilities.rs
+// OpenRender-runtime/src/capabilities.rs
 //
-// Runtime capability declarations for CanvasX applications.
+// Runtime capability declarations for OpenRender applications.
 //
 // Apps import specific capabilities to declare what system resources they need.
 // This enables the runtime to conditionally show relevant DevTools panels
@@ -8,9 +8,9 @@
 // a permission model.
 //
 // Usage in consuming crates:
-//   use canvasx_runtime::capabilities::{NetworkAccess, StorageAccess};
+//   use OpenRender_runtime::capabilities::{NetworkAccess, StorageAccess};
 
-/// Marker trait for all CanvasX runtime capabilities.
+/// Marker trait for all OpenRender runtime capabilities.
 pub trait Capability: Send + Sync + 'static {
     /// Human-readable name of this capability.
     fn name(&self) -> &'static str;
@@ -35,7 +35,7 @@ impl Capability for StorageAccess {
     fn description(&self) -> &'static str { "Allows the application to read and write local persistent storage." }
 }
 
-/// IPC communication capability (already implicit for Sentinel apps).
+/// IPC communication capability (already implicit for OpenDesktop apps).
 pub struct IpcAccess;
 
 impl Capability for IpcAccess {
@@ -117,7 +117,7 @@ pub enum MultiInstanceRouting {
     FirstLaunched,
 }
 
-/// A set of declared capabilities for a CanvasX application.
+/// A set of declared capabilities for a OpenRender application.
 pub struct CapabilitySet {
     capabilities: Vec<Box<dyn Capability>>,
 }

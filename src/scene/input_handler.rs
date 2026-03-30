@@ -1,7 +1,7 @@
-// canvasx-runtime/src/scene/input_handler.rs
+// openrender-runtime/src/scene/input_handler.rs
 //
 // Input event processing — mouse hit-testing, keyboard input routing,
-// focus management, and event dispatch. This makes CanvasX documents
+// focus management, and event dispatch. This makes OpenRender documents
 // actually interactive and usable as app windows.
 
 use std::collections::HashMap;

@@ -1,4 +1,4 @@
-// canvasx-runtime/src/cxrp/loader.rs
+// openrender-runtime/src/cxrp/loader.rs
 //
 // Package loader — reads .cxrp archives and extracts documents and assets.
 // A .cxrp is a ZIP archive with a manifest.json at the root.
@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use crate::cxrd::document::CxrdDocument;
 use crate::cxrp::manifest::PackageManifest;
 
-/// A loaded CanvasX Runtime Package.
+/// A loaded OpenRender Runtime Package.
 pub struct LoadedPackage {
     /// The package manifest.
     pub manifest: PackageManifest,

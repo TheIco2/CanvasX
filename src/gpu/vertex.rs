@@ -1,4 +1,4 @@
-// canvasx-runtime/src/gpu/vertex.rs
+// openrender-runtime/src/gpu/vertex.rs
 //
 // Vertex and per-instance data structures for the GPU renderer.
 // We use instanced rendering: one quad per UI element with per-instance

@@ -1,4 +1,4 @@
-// canvasx-runtime/src/gpu/renderer.rs
+// openrender-runtime/src/gpu/renderer.rs
 //
 // The main renderer — takes a scene graph's paint output (list of UiInstance)
 // and submits draw calls to the GPU. Also manages text rendering via glyphon.
@@ -12,7 +12,7 @@ use crate::gpu::texture::TextureManager;
 use crate::gpu::vertex::{UiInstance, QUAD_VERTICES, QUAD_INDICES};
 use crate::cxrd::value::Color;
 
-/// The main renderer for the CanvasX Runtime.
+/// The main renderer for the OpenRender Runtime.
 pub struct Renderer {
     pub pipelines: UiPipelines,
     pub texture_manager: TextureManager,
@@ -38,7 +38,12 @@ pub struct Renderer {
     pub text_cache: glyphon::Cache,
     pub text_viewport: glyphon::Viewport,
 
-    // Overlay text renderer (separate atlas to avoid eviction issues)
+    // Middle-layer text renderer (DevTools — above scene, below overlay)
+    mid_text_renderer: glyphon::TextRenderer,
+    mid_text_atlas: glyphon::TextAtlas,
+    mid_text_viewport: glyphon::Viewport,
+
+    // Overlay text renderer (context menu — topmost)
     overlay_text_renderer: glyphon::TextRenderer,
     overlay_text_atlas: glyphon::TextAtlas,
     overlay_text_viewport: glyphon::Viewport,
@@ -129,7 +134,17 @@ impl Renderer {
             None,
         );
 
-        // Overlay text (separate atlas so prepare() doesn't evict scene glyphs).
+        // Middle-layer text (DevTools panel — above scene, below context menu).
+        let mid_text_viewport = glyphon::Viewport::new(device, &text_cache);
+        let mut mid_text_atlas = glyphon::TextAtlas::with_color_mode(device, queue, &text_cache, ctx.surface_format, glyphon::ColorMode::Web);
+        let mid_text_renderer = glyphon::TextRenderer::new(
+            &mut mid_text_atlas,
+            device,
+            wgpu::MultisampleState::default(),
+            None,
+        );
+
+        // Overlay text (context menu — topmost layer).
         let overlay_text_viewport = glyphon::Viewport::new(device, &text_cache);
         let mut overlay_text_atlas = glyphon::TextAtlas::with_color_mode(device, queue, &text_cache, ctx.surface_format, glyphon::ColorMode::Web);
         let overlay_text_renderer = glyphon::TextRenderer::new(
@@ -157,6 +172,9 @@ impl Renderer {
             text_atlas,
             text_cache,
             text_viewport,
+            mid_text_renderer,
+            mid_text_atlas,
+            mid_text_viewport,
             overlay_text_renderer,
             overlay_text_atlas,
             overlay_text_viewport,
@@ -358,6 +376,228 @@ impl Renderer {
         self.frame_count = self.frame_count.wrapping_add(1);
         if self.frame_count & 0x3F == 0 {
             self.text_atlas.trim();
+            self.mid_text_atlas.trim();
+            self.overlay_text_atlas.trim();
+        }
+
+        Ok(())
+    }
+
+    /// Triple-layered render: scene → mid-layer (DevTools) → overlay (context menu).
+    ///
+    /// Draw order (back → front):
+    ///   1. Scene instances
+    ///   2. Scene text
+    ///   3. Mid-layer instances (DevTools rects)
+    ///   4. Mid-layer text (DevTools text)
+    ///   5. Overlay instances (context menu rects)
+    ///   6. Overlay text (context menu text)
+    pub fn render_triple_layered(
+        &mut self,
+        ctx: &GpuContext,
+        scene_instances: &[UiInstance],
+        scene_text: Vec<glyphon::TextArea<'_>>,
+        mid_instances: &[UiInstance],
+        mid_text: Vec<glyphon::TextArea<'_>>,
+        overlay_instances: &[UiInstance],
+        overlay_text: Vec<glyphon::TextArea<'_>>,
+        clear_color: Color,
+    ) -> Result<(), wgpu::SurfaceError> {
+        let output = ctx.current_texture()?;
+        let view = output.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+        // Combine all instances into one buffer: [scene | mid | overlay].
+        let scene_count = scene_instances.len();
+        let mid_count = mid_instances.len();
+        let has_mid = !mid_instances.is_empty() || !mid_text.is_empty();
+        let has_mid_text = !mid_text.is_empty();
+        let has_overlay = !overlay_instances.is_empty() || !overlay_text.is_empty();
+        let has_overlay_text = !overlay_text.is_empty();
+
+        let mut all_instances = Vec::with_capacity(
+            scene_instances.len() + mid_instances.len() + overlay_instances.len(),
+        );
+        all_instances.extend_from_slice(scene_instances);
+        all_instances.extend_from_slice(mid_instances);
+        all_instances.extend_from_slice(overlay_instances);
+        self.upload_instances(&ctx.device, &ctx.queue, &all_instances);
+
+        // Update text viewport.
+        let vp_w = (ctx.size.0 as f32 / self.scale_factor) as u32;
+        let vp_h = (ctx.size.1 as f32 / self.scale_factor) as u32;
+        let resolution = glyphon::Resolution {
+            width: vp_w.max(1),
+            height: vp_h.max(1),
+        };
+        self.text_viewport.update(&ctx.queue, resolution);
+
+        // Prepare scene text.
+        self.text_renderer
+            .prepare(
+                &ctx.device, &ctx.queue, &mut self.font_system,
+                &mut self.text_atlas, &self.text_viewport,
+                scene_text, &mut self.swash_cache,
+            )
+            .ok();
+
+        // Prepare mid-layer text (DevTools).
+        if has_mid_text {
+            self.mid_text_viewport.update(&ctx.queue, resolution);
+            self.mid_text_renderer
+                .prepare(
+                    &ctx.device, &ctx.queue, &mut self.font_system,
+                    &mut self.mid_text_atlas, &self.mid_text_viewport,
+                    mid_text, &mut self.swash_cache,
+                )
+                .ok();
+        }
+
+        // Prepare overlay text (context menu).
+        if has_overlay_text {
+            self.overlay_text_viewport.update(&ctx.queue, resolution);
+            self.overlay_text_renderer
+                .prepare(
+                    &ctx.device, &ctx.queue, &mut self.font_system,
+                    &mut self.overlay_text_atlas, &self.overlay_text_viewport,
+                    overlay_text, &mut self.swash_cache,
+                )
+                .ok();
+        }
+
+        let mut encoder = ctx.device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+            label: Some("frame_encoder"),
+        });
+
+        let total = all_instances.len();
+
+        // Main pass: scene instances → scene text → mid instances.
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("ui_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Clear(wgpu::Color {
+                            r: clear_color.r as f64,
+                            g: clear_color.g as f64,
+                            b: clear_color.b as f64,
+                            a: clear_color.a as f64,
+                        }),
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+
+            if total > 0 {
+                pass.set_pipeline(&self.pipelines.box_pipeline);
+                pass.set_bind_group(0, &self.globals_bg, &[]);
+                pass.set_vertex_buffer(0, self.quad_vbo.slice(..));
+                pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+                pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+
+                // 1. Draw scene instances.
+                if scene_count > 0 {
+                    self.draw_instance_batches(&mut pass, &all_instances, 0, scene_count);
+                }
+            }
+
+            // 2. Draw scene text.
+            self.text_renderer.render(&self.text_atlas, &self.text_viewport, &mut pass).ok();
+
+            // 3. Draw mid-layer instances (DevTools rects).
+            if has_mid && mid_count > 0 {
+                pass.set_pipeline(&self.pipelines.box_pipeline);
+                pass.set_bind_group(0, &self.globals_bg, &[]);
+                pass.set_vertex_buffer(0, self.quad_vbo.slice(..));
+                pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+                pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+                self.draw_instance_batches(&mut pass, &all_instances, scene_count, scene_count + mid_count);
+            }
+        }
+
+        // Mid-layer text pass (DevTools text).
+        if has_mid_text {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("mid_text_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            self.mid_text_renderer.render(&self.mid_text_atlas, &self.mid_text_viewport, &mut pass).ok();
+
+            // 5. Draw overlay instances (context menu rects) after DevTools text.
+            if has_overlay && !overlay_instances.is_empty() {
+                let overlay_start = scene_count + mid_count;
+                pass.set_pipeline(&self.pipelines.box_pipeline);
+                pass.set_bind_group(0, &self.globals_bg, &[]);
+                pass.set_vertex_buffer(0, self.quad_vbo.slice(..));
+                pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+                pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+                self.draw_instance_batches(&mut pass, &all_instances, overlay_start, total);
+            }
+        } else if has_overlay && !overlay_instances.is_empty() {
+            // No mid text but we have overlay instances — draw them in a new pass.
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("overlay_inst_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            let overlay_start = scene_count + mid_count;
+            pass.set_pipeline(&self.pipelines.box_pipeline);
+            pass.set_bind_group(0, &self.globals_bg, &[]);
+            pass.set_vertex_buffer(0, self.quad_vbo.slice(..));
+            pass.set_vertex_buffer(1, self.instance_buffer.slice(..));
+            pass.set_index_buffer(self.quad_ibo.slice(..), wgpu::IndexFormat::Uint16);
+            self.draw_instance_batches(&mut pass, &all_instances, overlay_start, total);
+        }
+
+        // 6. Overlay text pass (context menu text).
+        if has_overlay_text {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("overlay_text_pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view,
+                    resolve_target: None,
+                    ops: wgpu::Operations {
+                        load: wgpu::LoadOp::Load,
+                        store: wgpu::StoreOp::Store,
+                    },
+                    depth_slice: None,
+                })],
+                depth_stencil_attachment: None,
+                ..Default::default()
+            });
+            self.overlay_text_renderer.render(&self.overlay_text_atlas, &self.overlay_text_viewport, &mut pass).ok();
+        }
+
+        ctx.queue.submit(std::iter::once(encoder.finish()));
+        output.present();
+
+        self.frame_count = self.frame_count.wrapping_add(1);
+        if self.frame_count & 0x3F == 0 {
+            self.text_atlas.trim();
+            self.mid_text_atlas.trim();
             self.overlay_text_atlas.trim();
         }
 

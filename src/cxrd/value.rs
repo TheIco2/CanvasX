@@ -1,4 +1,4 @@
-// canvasx-runtime/src/cxrd/value.rs
+// openrender-runtime/src/cxrd/value.rs
 //
 // Fundamental value types used across the CXRD format.
 

@@ -1,6 +1,6 @@
-// canvasx-runtime/src/devtools/elements.rs
+// openrender-runtime/src/devtools/elements.rs
 //
-// Elements panel for the CanvasX DevTools.
+// Elements panel for the OpenRender DevTools.
 // Renders a tree view of the CXRD document showing the DOM structure.
 
 use crate::cxrd::document::CxrdDocument;

@@ -1,4 +1,4 @@
-// canvasx-runtime/src/animate/easing.rs
+// openrender-runtime/src/animate/easing.rs
 //
 // Easing functions for animations and transitions.
 

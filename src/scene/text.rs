@@ -1,4 +1,4 @@
-// canvasx-runtime/src/scene/text.rs
+// openrender-runtime/src/scene/text.rs
 //
 // Text painting — extracts all text nodes from the CXRD tree and builds
 // glyphon TextArea entries for the text renderer.

@@ -1,7 +1,7 @@
-// canvasx-runtime/src/ipc/client.rs
+// openrender-runtime/src/ipc/client.rs
 //
 // Generic named-pipe IPC client — connects to any host application that
-// implements the CanvasX IPC protocol to exchange data and commands.
+// implements the OpenRender IPC protocol to exchange data and commands.
 //
 // The pipe name and polling behaviour are fully configurable.
 // No hard-coded dependency on any specific host application.
@@ -24,7 +24,7 @@ use windows::Win32::{
 use crate::ipc::protocol::{IpcRequest, IpcResponse};
 
 /// Default pipe name — host applications can override this.
-pub const DEFAULT_PIPE_NAME: &str = r"\\.\pipe\canvasx";
+pub const DEFAULT_PIPE_NAME: &str = r"\\.\pipe\openrender";
 const READ_CHUNK: usize = 64 * 1024;
 const DEFAULT_POLL_INTERVAL_MS: u64 = 250;
 
@@ -150,7 +150,7 @@ fn ipc_poll_loop(data: SharedData, config: IpcConfig) {
 }
 
 /// Send an IPC request over a named pipe (blocking).
-/// Public so that other modules (e.g. `ipc::sentinel`) can call it directly.
+/// Public so that other modules (e.g. `ipc::opendesktop`) can call it directly.
 pub fn send_ipc_request_to(pipe_name: &str, request: IpcRequest) -> Result<IpcResponse, String> {
     unsafe {
         let wide_name = to_wide(pipe_name);
@@ -247,7 +247,7 @@ pub fn send_ipc_request_with_timeout(
 }
 
 // ---------------------------------------------------------------------------
-// Utility — flatten JSON to dotted-path map (preserved from sentinel bridge)
+// Utility — flatten JSON to dotted-path map (preserved from opendesktop bridge)
 // ---------------------------------------------------------------------------
 
 /// Flatten a nested JSON object into dotted-path key-value pairs.

@@ -1,4 +1,4 @@
-// canvasx-runtime/src/scene/paint.rs
+// openrender-runtime/src/scene/paint.rs
 //
 // Paint pass — converts a laid-out CXRD tree into a flat list of UiInstance
 // draw calls for the GPU renderer. Depth-first traversal respects z-index
@@ -763,7 +763,7 @@ fn node_to_instance(node: &CxrdNode) -> UiInstance {
 
 /// Approximate CSS `backdrop-filter: blur(...)` for translucent panels.
 ///
-/// Native CanvasX doesn't blur the framebuffer yet, so we emulate the
+/// Native OpenRender doesn't blur the framebuffer yet, so we emulate the
 /// readability effect by slightly increasing alpha and lifting luminance.
 fn apply_backdrop_fallback(mut color: [f32; 4], backdrop_blur: f32) -> [f32; 4] {
     if backdrop_blur <= 0.0 || color[3] <= 0.0 || color[3] >= 1.0 {

@@ -1,4 +1,4 @@
-// canvasx-runtime/src/scene/mod.rs
+// openrender-runtime/src/scene/mod.rs
 //
 // Scene graph execution — traverses the CXRD, produces GPU draw calls
 // (UiInstance list) and text areas.

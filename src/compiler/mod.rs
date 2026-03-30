@@ -1,6 +1,6 @@
-// canvasx-runtime/src/compiler/mod.rs
+// openrender-runtime/src/compiler/mod.rs
 //
-// CanvasX HTML/CSS → CXRD compiler.
+// OpenRender HTML/CSS → CXRD compiler.
 // Converts a restricted subset of HTML+CSS into a compiled CXRD document.
 // This runs at load time (not per-frame), and the result is cached to disk.
 

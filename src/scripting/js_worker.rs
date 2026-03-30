@@ -1,4 +1,4 @@
-// canvasx-runtime/src/scripting/js_worker.rs
+// openrender-runtime/src/scripting/js_worker.rs
 //
 // Offloads JavaScript execution to a dedicated background thread.
 // The render thread stays free to present frames at sub-millisecond latency
@@ -27,7 +27,7 @@ pub enum JsCommand {
     Tick(f32),
     /// Re-apply CSS rules and return the updated document.
     Restyle,
-    /// Bulk-update data values (IPC system data → JS Sentinel.subscribe).
+    /// Bulk-update data values (IPC system data → JS OpenDesktop.subscribe).
     UpdateData(HashMap<String, String>),
     /// Stop the worker.
     Shutdown,
@@ -166,7 +166,7 @@ fn js_worker_main(
 
     js_rt.init_canvases(init.viewport_width, init.viewport_height);
 
-    // Execute scripts (sentinel.js, user scripts, etc.)
+    // Execute scripts (opendesktop.js, user scripts, etc.)
     for script in &init.scripts {
         if let Some(ref src) = script.src {
             let script_path = init.asset_dir.join(src);

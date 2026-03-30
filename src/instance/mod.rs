@@ -1,4 +1,4 @@
-// canvasx-runtime/src/instance/mod.rs
+// openrender-runtime/src/instance/mod.rs
 //
 // Single-instance enforcement and multi-instance coordination.
 //
@@ -79,8 +79,8 @@ impl Drop for InstanceGuard {
 /// - If an existing instance already holds the lock, sends it a "focus"
 ///   signal and returns `AlreadyRunning`.
 pub fn acquire_single_instance(app_name: &str) -> InstanceLockResult {
-    let mutex_name = format!("CanvasX_SingleInstance_{app_name}");
-    let pipe_name = format!(r"\\.\pipe\CanvasX_{app_name}");
+    let mutex_name = format!("OpenRender_SingleInstance_{app_name}");
+    let pipe_name = format!(r"\\.\pipe\OpenRender_{app_name}");
 
     let mutex_hs = HSTRING::from(&mutex_name);
 
@@ -115,7 +115,7 @@ pub fn acquire_single_instance(app_name: &str) -> InstanceLockResult {
     let listener_shutdown = shutdown.clone();
     let listener_pipe = pipe_name.clone();
     thread::Builder::new()
-        .name("canvasx-instance-listener".into())
+        .name("openrender-instance-listener".into())
         .spawn(move || {
             pipe_listener_thread(&listener_pipe, focus_tx, listener_shutdown);
         })
