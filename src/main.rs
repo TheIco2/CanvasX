@@ -348,7 +348,7 @@ impl ApplicationHandler for App {
         };
 
         // Renderer.
-        let renderer = match Renderer::new(&gpu_ctx) {
+        let mut renderer = match Renderer::new(&gpu_ctx) {
             Ok(r) => r,
             Err(e) => {
                 log::error!("Renderer init failed: {}", e);
@@ -366,6 +366,9 @@ impl ApplicationHandler for App {
                 (CxrdDocument::new("error", SceneType::ConfigPanel), Vec::new(), Vec::new())
             }
         };
+
+        // Load bundled image/font assets into GPU textures.
+        renderer.load_assets(&gpu_ctx.device, &gpu_ctx.queue, &doc.assets);
 
         let scene = SceneGraph::new(doc.clone());
 

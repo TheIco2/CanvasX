@@ -135,16 +135,19 @@ impl JsWorkerHandle {
 
     /// Block until the worker finishes initial setup and returns the
     /// document + uses_data_tags flag. Must be called exactly once,
-    /// immediately after `spawn()`.
-    pub fn wait_for_init(&self) -> (CxrdDocument, bool) {
-        match self.result_rx.recv() {
-            Ok(JsResult::InitDone { document, uses_data_tags }) => (document, uses_data_tags),
+    /// immediately after `spawn()`. Returns `None` if the worker
+    /// died or sent an unexpected result.
+    pub fn wait_for_init(&self) -> Option<(CxrdDocument, bool)> {
+        match self.result_rx.recv_timeout(std::time::Duration::from_secs(15)) {
+            Ok(JsResult::InitDone { document, uses_data_tags }) => Some((document, uses_data_tags)),
             Ok(_other) => {
                 log::error!("[JS-WORKER] Expected InitDone, got unexpected result");
-                // Push it back? Can't. Just panic.
-                panic!("JS worker sent unexpected result before InitDone");
+                None
             }
-            Err(_) => panic!("JS worker thread died during init"),
+            Err(e) => {
+                log::error!("[JS-WORKER] wait_for_init failed: {}", e);
+                None
+            }
         }
     }
 }

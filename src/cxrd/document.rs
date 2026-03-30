@@ -76,10 +76,13 @@ pub struct CxrdDocument {
 /// An icon declaration from `<include type="icon" target="..." src="..." />`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IconDecl {
-    /// "window", "system", or "" (both).
+    /// "window", "system", "app", or "" (both window+system).
     pub target: String,
     /// Resolved filesystem path to the icon file.
     pub path: String,
+    /// Asset index in the document's image bundle (set for target="app").
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub asset_index: Option<u32>,
 }
 
 /// Document metadata.

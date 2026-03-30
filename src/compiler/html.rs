@@ -291,7 +291,7 @@ fn extract_icons(html: &str) -> Vec<crate::cxrd::document::IconDecl> {
         if extract_attribute(tag_text, "name").as_deref() == Some("icon") {
             if let Some(path) = extract_attribute(tag_text, "content") {
                 let target = extract_attribute(tag_text, "data-target").unwrap_or_default();
-                icons.push(crate::cxrd::document::IconDecl { target, path });
+                icons.push(crate::cxrd::document::IconDecl { target, path, asset_index: None });
             }
         }
         search_pos = tag_end;
@@ -454,6 +454,35 @@ pub fn compile_html(
     //    (color, font-family, font-size, font-weight, line-height,
     //     letter-spacing, text-align) from parent to child nodes.
     propagate_inherited_styles(&mut doc);
+
+    // 7. Bundle assets from the asset directory and resolve <img src> references.
+    if let Some(dir) = asset_dir {
+        match crate::compiler::bundle::bundle_assets(&mut doc, dir) {
+            Ok(path_to_index) => {
+                crate::compiler::bundle::resolve_image_nodes(&mut doc, &path_to_index);
+            }
+            Err(e) => {
+                log::warn!("[COMPILE] Asset bundling failed for {}: {}", dir.display(), e);
+            }
+        }
+
+        // Load app-target icons into the asset bundle.
+        let app_icons: Vec<(usize, String)> = doc.icons.iter().enumerate()
+            .filter(|(_, icon)| icon.target == "app")
+            .map(|(i, icon)| (i, icon.path.clone()))
+            .collect();
+        for (idx, icon_path) in app_icons {
+            let p = std::path::Path::new(&icon_path);
+            match crate::compiler::bundle::load_image_asset(&mut doc, p) {
+                Ok(asset_idx) => {
+                    doc.icons[idx].asset_index = Some(asset_idx);
+                }
+                Err(e) => {
+                    log::warn!("[COMPILE] Failed to load app icon '{}': {}", icon_path, e);
+                }
+            }
+        }
+    }
 
     Ok((doc, scripts, rules))
 }

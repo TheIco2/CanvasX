@@ -78,6 +78,83 @@ fn get_reachable(st: &mut SharedState) -> Vec<bool> {
     reachable
 }
 
+/// Decode HTML character entities in a text string.
+/// Handles named entities (&amp;, &lt;, &gt;, &quot;, &apos;, &nbsp;, arrows, etc.)
+/// and numeric entities (&#NNN; and &#xHHH;).
+fn decode_html_entities(input: &str) -> String {
+    let mut result = String::with_capacity(input.len());
+    let mut chars = input.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '&' {
+            let mut entity = String::new();
+            let mut found_semi = false;
+            for _ in 0..10 {
+                match chars.peek() {
+                    Some(&';') => { chars.next(); found_semi = true; break; }
+                    Some(&ch) if ch.is_alphanumeric() || ch == '#' => { entity.push(ch); chars.next(); }
+                    _ => break,
+                }
+            }
+            if found_semi {
+                match entity.as_str() {
+                    "amp" => result.push('&'),
+                    "lt" => result.push('<'),
+                    "gt" => result.push('>'),
+                    "quot" => result.push('"'),
+                    "apos" => result.push('\''),
+                    "nbsp" => result.push('\u{00A0}'),
+                    "rsaquo" => result.push('\u{203A}'),
+                    "lsaquo" => result.push('\u{2039}'),
+                    "larr" => result.push('\u{2190}'),
+                    "rarr" => result.push('\u{2192}'),
+                    "uarr" => result.push('\u{2191}'),
+                    "darr" => result.push('\u{2193}'),
+                    "mdash" => result.push('\u{2014}'),
+                    "ndash" => result.push('\u{2013}'),
+                    "bull" => result.push('\u{2022}'),
+                    "hellip" => result.push('\u{2026}'),
+                    "copy" => result.push('\u{00A9}'),
+                    "reg" => result.push('\u{00AE}'),
+                    "trade" => result.push('\u{2122}'),
+                    "times" => result.push('\u{00D7}'),
+                    "divide" => result.push('\u{00F7}'),
+                    "laquo" => result.push('\u{00AB}'),
+                    "raquo" => result.push('\u{00BB}'),
+                    other => {
+                        // Numeric entity: &#NNN; or &#xHHH;
+                        if let Some(stripped) = other.strip_prefix('#') {
+                            let code = if let Some(hex) = stripped.strip_prefix('x') {
+                                u32::from_str_radix(hex, 16).ok()
+                            } else {
+                                stripped.parse::<u32>().ok()
+                            };
+                            if let Some(cp) = code {
+                                if let Some(ch) = char::from_u32(cp) {
+                                    result.push(ch);
+                                } else {
+                                    result.push_str(&format!("&{};", other));
+                                }
+                            } else {
+                                result.push_str(&format!("&{};", other));
+                            }
+                        } else {
+                            // Unknown named entity — pass through as-is
+                            result.push_str(&format!("&{};", other));
+                        }
+                    }
+                }
+            } else {
+                // No semicolon found — not a valid entity, emit as-is
+                result.push('&');
+                result.push_str(&entity);
+            }
+        } else {
+            result.push(c);
+        }
+    }
+    result
+}
+
 /// Shared mutable state accessible from both Rust and JS native functions.
 pub struct SharedState {
     pub document: CxrdDocument,
@@ -92,6 +169,8 @@ pub struct SharedState {
     pub canvas_node_map: HashMap<CanvasId, NodeId>,
     pub viewport_width: u32,
     pub viewport_height: u32,
+    /// Scripts deferred from innerHTML `<script>` blocks — executed after DOM update.
+    pub deferred_scripts: Vec<String>,
 }
 
 pub type StateRef = Rc<RefCell<SharedState>>;
@@ -177,6 +256,7 @@ impl JsRuntime {
             canvas_node_map: HashMap::new(),
             viewport_width: 1920,
             viewport_height: 1080,
+            deferred_scripts: Vec::new(),
         }));
 
         RUNTIME_STATE.with(|cell| {
@@ -764,10 +844,22 @@ fn cx_set_text_content(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallb
 fn cx_set_inner_html(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue<v8::Value>) {
     let nid = v8_i32(&args, scope, 0) as u32;
     let html = v8_str(scope, &args, 1);
-    with_state(|st| {
+    let scripts = with_state(|st| {
         log::info!("[OR][DOM] setInnerHTML: node={} html_len={}", nid, html.len());
         set_inner_html(st, nid, &html);
+        // Drain deferred scripts collected from <script> blocks inside innerHTML
+        std::mem::take(&mut st.deferred_scripts)
     });
+    // Execute deferred scripts in the current V8 context
+    for script_src in scripts {
+        let src = v8::String::new(scope, &script_src).unwrap();
+        let origin = v8::ScriptOrigin::new(scope, v8::String::new(scope, "<inline>").unwrap().into(), 0, 0, false, 0, None::<v8::Local<v8::Value>>, false, false, false, None);
+        if let Some(compiled) = v8::Script::compile(scope, src, Some(&origin)) {
+            if let None = compiled.run(scope) {
+                log::warn!("[OR][JS] Deferred script from innerHTML failed to execute");
+            }
+        }
+    }
 }
 
 fn cx_get_node_attribute(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue<v8::Value>) {
@@ -788,21 +880,27 @@ fn cx_set_node_attribute(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCal
     let name = v8_str(scope, &args, 1);
     let value = v8_str(scope, &args, 2);
     with_state(|st| {
+        let mut needs_restyle = false;
         if let Some(node) = st.document.get_node_mut(nid) {
             match name.as_str() {
                 "id" => {
                     node.html_id = if value.is_empty() { None } else { Some(value.clone()) };
                     node.attributes.insert(name, value);
+                    needs_restyle = true;
                 }
                 "class" => {
                     node.classes = value.split_whitespace().map(String::from).collect();
                     node.attributes.insert(name, value);
+                    needs_restyle = true;
                 }
                 _ => {
                     node.attributes.insert(name, value);
                 }
             }
             st.layout_dirty = true;
+        }
+        if needs_restyle {
+            restyle_node(st, nid);
         }
     });
 }
@@ -819,45 +917,48 @@ fn cx_class_list_op(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallback
     };
 
     let result = with_state(|st| {
-        if let Some(node) = st.document.get_node_mut(nid) {
+        let (result, changed) = if let Some(node) = st.document.get_node_mut(nid) {
             match op {
                 0 => { // add
-                    if !node.classes.contains(&class_name) {
+                    let changed = !node.classes.contains(&class_name);
+                    if changed {
                         node.classes.push(class_name.clone());
-                        st.layout_dirty = true;
                     }
-                    true
+                    (true, changed)
                 }
                 1 => { // remove
                     if let Some(pos) = node.classes.iter().position(|c| c == &class_name) {
                         node.classes.remove(pos);
-                        st.layout_dirty = true;
+                        (false, true)
+                    } else {
+                        (false, false)
                     }
-                    false
                 }
                 2 => { // toggle
                     let has = node.classes.contains(&class_name);
                     let should_add = force.unwrap_or(!has);
                     if should_add && !has {
                         node.classes.push(class_name.clone());
-                        st.layout_dirty = true;
-                        true
+                        (true, true)
                     } else if !should_add && has {
                         if let Some(pos) = node.classes.iter().position(|c| c == &class_name) {
                             node.classes.remove(pos);
-                            st.layout_dirty = true;
                         }
-                        false
+                        (false, true)
                     } else {
-                        has
+                        (has, false)
                     }
                 }
-                3 => node.classes.contains(&class_name), // contains
-                _ => false,
+                3 => (node.classes.contains(&class_name), false), // contains
+                _ => (false, false),
             }
         } else {
-            false
+            (false, false)
+        };
+        if changed {
+            restyle_node(st, nid);
         }
+        result
     });
     rv.set(v8::Boolean::new(scope, result).into());
 }
@@ -1595,6 +1696,7 @@ fn decode_data_url_image(src: &str) -> Option<(u32, u32, Vec<u8>)> {
 fn add_html_children(st: &mut SharedState, parent_id: NodeId, html: &str) {
     let bytes = html.as_bytes();
     let mut pos = 0usize;
+    let mut deferred_scripts: Vec<String> = Vec::new();
 
     let mut node_stack: Vec<NodeId> = vec![parent_id];
     let mut ancestor_stack: Vec<Vec<AncestorInfo>> = vec![collect_ancestor_chain(&st.document, parent_id)];
@@ -1615,6 +1717,47 @@ fn add_html_children(st: &mut SharedState, parent_id: NodeId, html: &str) {
                 if node_stack.len() > 1 {
                     node_stack.pop();
                     ancestor_stack.pop();
+                }
+                continue;
+            }
+
+            // Peek the tag name before consuming
+            let tag_peek_start = pos + 1;
+            let mut peek = tag_peek_start;
+            while peek < bytes.len() && !bytes[peek].is_ascii_whitespace() && bytes[peek] != b'>' && bytes[peek] != b'/' {
+                peek += 1;
+            }
+            let tag_peek = html[tag_peek_start..peek].trim().to_lowercase();
+
+            // Handle <style> — extract CSS, parse into rules, don't render as visible node.
+            if tag_peek == "style" {
+                // Skip past the opening <style ...> tag
+                while pos < bytes.len() && bytes[pos] != b'>' { pos += 1; }
+                if pos < bytes.len() { pos += 1; }
+                // Find matching </style>
+                let lower_rest = html[pos..].to_lowercase();
+                if let Some(end) = lower_rest.find("</style>") {
+                    let css_text = &html[pos..pos + end];
+                    let new_rules = crate::compiler::css::parse_css(css_text);
+                    st.css_rules.extend(new_rules);
+                    pos += end + 8; // skip past </style>
+                }
+                continue;
+            }
+
+            // Handle <script> — extract JS, queue for deferred execution.
+            if tag_peek == "script" {
+                // Skip past the opening <script ...> tag
+                while pos < bytes.len() && bytes[pos] != b'>' { pos += 1; }
+                if pos < bytes.len() { pos += 1; }
+                // Find matching </script>
+                let lower_rest = html[pos..].to_lowercase();
+                if let Some(end) = lower_rest.find("</script>") {
+                    let js_text = html[pos..pos + end].to_string();
+                    if !js_text.trim().is_empty() {
+                        deferred_scripts.push(js_text);
+                    }
+                    pos += end + 9; // skip past </script>
                 }
                 continue;
             }
@@ -1717,8 +1860,33 @@ fn add_html_children(st: &mut SharedState, parent_id: NodeId, html: &str) {
             let ancestors = ancestor_stack.last().cloned().unwrap_or_default();
             for rule in &st.css_rules {
                 if compound_selector_matches(&rule.compound_selectors, &node, &node.html_id, &ancestors) {
-                    for (prop, val) in &rule.declarations {
-                        apply_property(&mut node.style, prop, val, &st.css_variables);
+                    if let Some(ref pseudo) = rule.pseudo_class {
+                        let vars = &st.css_variables;
+                        match pseudo.as_str() {
+                            "hover" => {
+                                for (prop, val) in &rule.declarations {
+                                    let resolved = crate::compiler::css::resolve_var_pub(val, vars);
+                                    node.hover_style.push((prop.clone(), resolved));
+                                }
+                            }
+                            "active" => {
+                                for (prop, val) in &rule.declarations {
+                                    let resolved = crate::compiler::css::resolve_var_pub(val, vars);
+                                    node.active_style.push((prop.clone(), resolved));
+                                }
+                            }
+                            "focus" | "focus-visible" | "focus-within" => {
+                                for (prop, val) in &rule.declarations {
+                                    let resolved = crate::compiler::css::resolve_var_pub(val, vars);
+                                    node.focus_style.push((prop.clone(), resolved));
+                                }
+                            }
+                            _ => {}
+                        }
+                    } else {
+                        for (prop, val) in &rule.declarations {
+                            apply_property(&mut node.style, prop, val, &st.css_variables);
+                        }
                     }
                 }
             }
@@ -1774,11 +1942,12 @@ fn add_html_children(st: &mut SharedState, parent_id: NodeId, html: &str) {
         } else {
             let text_start = pos;
             while pos < bytes.len() && bytes[pos] != b'<' { pos += 1; }
-            let text = html[text_start..pos].trim();
-            if text.is_empty() { continue; }
+            let raw_text = html[text_start..pos].trim();
+            if raw_text.is_empty() { continue; }
+            let text = decode_html_entities(raw_text);
 
             let parent = *node_stack.last().unwrap_or(&parent_id);
-            let mut text_node = crate::cxrd::node::CxrdNode::text(0, text);
+            let mut text_node = crate::cxrd::node::CxrdNode::text(0, &text);
             if let Some(parent_node) = st.document.get_node(parent) {
                 text_node.style.color = parent_node.style.color;
                 text_node.style.font_size = parent_node.style.font_size;
@@ -1793,6 +1962,110 @@ fn add_html_children(st: &mut SharedState, parent_id: NodeId, html: &str) {
             st.document.add_child(parent, text_id);
         }
     }
+
+    // Execute deferred <script> blocks after all HTML has been added to the DOM.
+    if !deferred_scripts.is_empty() {
+        st.deferred_scripts.extend(deferred_scripts);
+    }
+}
+
+/// Re-apply CSS rules to a node after its classes have changed.
+/// Resets the node's style to defaults + tag defaults + parent inheritance,
+/// then re-evaluates all CSS rules (including pseudo-class rules).
+fn restyle_node(st: &mut SharedState, node_id: NodeId) {
+    use crate::cxrd::style::ComputedStyle;
+    use crate::compiler::css::resolve_var_pub;
+
+    let ancestors = collect_ancestor_chain(&st.document, node_id);
+
+    // Collect parent inherited styles
+    let parent_id = st.document.find_parent(node_id);
+    let (parent_color, parent_font_size, parent_font_family, parent_font_weight,
+         parent_letter_spacing, parent_line_height, parent_text_align, parent_text_transform) =
+        parent_id
+            .and_then(|pid| st.document.get_node(pid))
+            .map(|p| (
+                p.style.color,
+                p.style.font_size,
+                p.style.font_family.clone(),
+                p.style.font_weight,
+                p.style.letter_spacing,
+                p.style.line_height,
+                p.style.text_align,
+                p.style.text_transform,
+            ))
+            .unwrap_or_default();
+
+    // Collect inline style string before mutating
+    let inline_style = st.document.get_node(node_id)
+        .and_then(|n| n.attributes.get("style").cloned())
+        .unwrap_or_default();
+
+    if let Some(node) = st.document.get_node_mut(node_id) {
+        // Reset to defaults
+        node.style = ComputedStyle::default();
+        node.hover_style.clear();
+        node.active_style.clear();
+        node.focus_style.clear();
+
+        // Apply tag defaults
+        apply_dynamic_tag_defaults(node);
+
+        // Inherit from parent
+        node.style.color = parent_color;
+        node.style.font_size = parent_font_size;
+        node.style.font_family = parent_font_family;
+        node.style.font_weight = parent_font_weight;
+        node.style.letter_spacing = parent_letter_spacing;
+        node.style.line_height = parent_line_height;
+        node.style.text_align = parent_text_align;
+        node.style.text_transform = parent_text_transform;
+
+        // Re-apply all matching CSS rules (including pseudo-class rules)
+        for rule in &st.css_rules {
+            if compound_selector_matches(&rule.compound_selectors, node, &node.html_id.clone(), &ancestors) {
+                if let Some(ref pseudo) = rule.pseudo_class {
+                    match pseudo.as_str() {
+                        "hover" => {
+                            for (prop, val) in &rule.declarations {
+                                let resolved = resolve_var_pub(val, &st.css_variables);
+                                node.hover_style.push((prop.clone(), resolved));
+                            }
+                        }
+                        "active" => {
+                            for (prop, val) in &rule.declarations {
+                                let resolved = resolve_var_pub(val, &st.css_variables);
+                                node.active_style.push((prop.clone(), resolved));
+                            }
+                        }
+                        "focus" | "focus-visible" | "focus-within" => {
+                            for (prop, val) in &rule.declarations {
+                                let resolved = resolve_var_pub(val, &st.css_variables);
+                                node.focus_style.push((prop.clone(), resolved));
+                            }
+                        }
+                        _ => {}
+                    }
+                } else {
+                    for (prop, val) in &rule.declarations {
+                        apply_property(&mut node.style, prop, val, &st.css_variables);
+                    }
+                }
+            }
+        }
+
+        // Re-apply inline styles (highest priority)
+        if !inline_style.is_empty() {
+            for decl in inline_style.split(';') {
+                let decl = decl.trim();
+                if let Some((prop, val)) = decl.split_once(':') {
+                    apply_property(&mut node.style, prop.trim(), val.trim(), &st.css_variables);
+                }
+            }
+        }
+    }
+
+    st.layout_dirty = true;
 }
 
 fn collect_ancestor_chain(doc: &CxrdDocument, node_id: NodeId) -> Vec<AncestorInfo> {
