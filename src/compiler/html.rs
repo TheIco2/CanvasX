@@ -1442,17 +1442,24 @@ fn determine_node_kind(parsed: &ParsedNode, _variables: &HashMap<String, String>
         // ── Interactive elements ────────────────────────────────────
 
         "button" => {
-            let label = extract_text_content(parsed);
-            let disabled = parsed.attributes.contains_key("disabled");
-            let variant = match parsed.attributes.get("data-variant").map(|s| s.as_str()) {
-                Some("primary") => ButtonVariant::Primary,
-                Some("secondary") => ButtonVariant::Secondary,
-                Some("danger") => ButtonVariant::Danger,
-                Some("ghost") => ButtonVariant::Ghost,
-                Some("link") => ButtonVariant::Link,
-                _ => ButtonVariant::Primary,
-            };
-            NodeKind::Input(InputKind::Button { label, disabled, variant })
+            // If the button has non-text children (e.g. SVG icons), treat it
+            // as a plain container so the children are rendered normally.
+            let has_complex_children = parsed.children.iter().any(|c| c.tag != "#text");
+            if has_complex_children {
+                NodeKind::Container
+            } else {
+                let label = extract_text_content(parsed);
+                let disabled = parsed.attributes.contains_key("disabled");
+                let variant = match parsed.attributes.get("data-variant").map(|s| s.as_str()) {
+                    Some("primary") => ButtonVariant::Primary,
+                    Some("secondary") => ButtonVariant::Secondary,
+                    Some("danger") => ButtonVariant::Danger,
+                    Some("ghost") => ButtonVariant::Ghost,
+                    Some("link") => ButtonVariant::Link,
+                    _ => ButtonVariant::Primary,
+                };
+                NodeKind::Input(InputKind::Button { label, disabled, variant })
+            }
         }
 
         "input" => {
