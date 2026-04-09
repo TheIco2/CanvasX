@@ -433,13 +433,20 @@ fn layout_grid_children(
         let border = cs.border_width;
 
         // Child width/height: use explicit if set, else fill cell.
+        // For content-box, add padding+border to get the outer rect size.
         let w = if !cs.width.is_auto() {
-            resolve(cs.width, cell_w)
+            let raw = resolve(cs.width, cell_w);
+            if matches!(cs.box_sizing, crate::cxrd::style::BoxSizing::ContentBox) {
+                raw + padding.horizontal() + border.horizontal()
+            } else { raw }
         } else {
             (cell_w - margin.horizontal()).max(0.0)
         };
         let h = if !cs.height.is_auto() {
-            resolve(cs.height, cell_h)
+            let raw = resolve(cs.height, cell_h);
+            if matches!(cs.box_sizing, crate::cxrd::style::BoxSizing::ContentBox) {
+                raw + padding.vertical() + border.vertical()
+            } else { raw }
         } else {
             (cell_h - margin.vertical()).max(0.0)
         };
@@ -921,12 +928,22 @@ fn layout_flex_children(
             (margin.top, margin.bottom, margin.left, margin.right)
         };
 
+        let is_content_box = matches!(cs.box_sizing, crate::cxrd::style::BoxSizing::ContentBox);
+        let cb_main_extra = if is_content_box {
+            if is_row { padding.horizontal() + border.horizontal() }
+            else { padding.vertical() + border.vertical() }
+        } else { 0.0 };
+        let cb_cross_extra = if is_content_box {
+            if is_row { padding.vertical() + border.vertical() }
+            else { padding.horizontal() + border.horizontal() }
+        } else { 0.0 };
+
         let basis = if !cs.flex_basis.is_auto() {
-            resolve(cs.flex_basis, main_size)
+            resolve(cs.flex_basis, main_size) + cb_main_extra
         } else if is_row && !cs.width.is_auto() {
-            resolve(cs.width, container_rect.width)
+            resolve(cs.width, container_rect.width) + cb_main_extra
         } else if !is_row && !cs.height.is_auto() {
-            resolve(cs.height, container_rect.height)
+            resolve(cs.height, container_rect.height) + cb_main_extra
         } else {
             // Auto basis: use intrinsic content size.
             if !is_row {
@@ -937,9 +954,9 @@ fn layout_flex_children(
         };
 
         let cross = if is_row && !cs.height.is_auto() {
-            resolve(cs.height, container_rect.height)
+            resolve(cs.height, container_rect.height) + cb_cross_extra
         } else if !is_row && !cs.width.is_auto() {
-            resolve(cs.width, container_rect.width)
+            resolve(cs.width, container_rect.width) + cb_cross_extra
         } else {
             0.0
         };
@@ -956,10 +973,21 @@ fn layout_flex_children(
             parent_style.align_items
         };
 
+        // CSS spec: default min-main for flex items is min-content, not 0.
+        // This prevents items from shrinking below their minimum content size.
         let min_main = if is_row {
-            if cs.min_width.is_auto() { 0.0 } else { resolve(cs.min_width, container_rect.width) }
+            if cs.min_width.is_auto() {
+                // Approximate min-content: use a small fraction of intrinsic width
+                // to prevent total collapse while still allowing meaningful shrink.
+                let intrinsic = estimate_content_width(doc, cid, &inner_constraints);
+                // Use the smaller of intrinsic width or 20% of container as min-content heuristic
+                intrinsic.min(container_rect.width * 0.2).max(0.0)
+            } else { resolve(cs.min_width, container_rect.width) }
         } else {
-            if cs.min_height.is_auto() { 0.0 } else { resolve(cs.min_height, container_rect.height) }
+            if cs.min_height.is_auto() {
+                let intrinsic = estimate_content_height(doc, cid, &inner_constraints);
+                intrinsic.min(container_rect.height * 0.2).max(0.0)
+            } else { resolve(cs.min_height, container_rect.height) }
         };
         let max_main = if is_row {
             if cs.max_width.is_auto() { f32::INFINITY } else { resolve(cs.max_width, container_rect.width) }
@@ -1194,13 +1222,25 @@ fn layout_block_children(
         let border = cs.border_width;
 
         let w = if !cs.width.is_auto() {
-            resolve(cs.width, container_rect.width)
+            let raw = resolve(cs.width, container_rect.width);
+            // box-sizing: content-box means width specifies content area only;
+            // add padding+border to get the outer (border-box) rect width.
+            if matches!(cs.box_sizing, crate::cxrd::style::BoxSizing::ContentBox) {
+                raw + padding.horizontal() + border.horizontal()
+            } else {
+                raw
+            }
         } else {
             container_rect.width - margin.horizontal()
         };
 
         let h = if !cs.height.is_auto() {
-            resolve(cs.height, container_rect.height)
+            let raw = resolve(cs.height, container_rect.height);
+            if matches!(cs.box_sizing, crate::cxrd::style::BoxSizing::ContentBox) {
+                raw + padding.vertical() + border.vertical()
+            } else {
+                raw
+            }
         } else {
             // Auto height: estimate from content.
             // For containers with children, estimate recursively.
@@ -1211,20 +1251,32 @@ fn layout_block_children(
 
         y_cursor += margin.top;
 
+        // Handle auto margins for horizontal centering in block layout.
+        // When both margin-left and margin-right are auto and width is explicit,
+        // distribute remaining space equally to center the element.
+        let x = if cs.margin.left.is_auto() && cs.margin.right.is_auto() && !cs.width.is_auto() {
+            let remaining = (container_rect.width - w).max(0.0);
+            container_rect.x + remaining / 2.0
+        } else if cs.margin.left.is_auto() && !cs.width.is_auto() {
+            let remaining = (container_rect.width - w - margin.right).max(0.0);
+            container_rect.x + remaining
+        } else {
+            container_rect.x + margin.left
+        };
+
         log::trace!(
-            "[layout] block child {cid} at ({:.1},{y_cursor:.1}) {w:.1}×{h:.1}",
-            container_rect.x + margin.left,
+            "[layout] block child {cid} at ({x:.1},{y_cursor:.1}) {w:.1}×{h:.1}",
         );
 
         let node = &mut doc.nodes[cid as usize];
         node.layout.rect = Rect {
-            x: container_rect.x + margin.left,
+            x,
             y: y_cursor,
             width: w,
             height: h,
         };
         node.layout.content_rect = Rect {
-            x: container_rect.x + margin.left + padding.left + border.left,
+            x: x + padding.left + border.left,
             y: y_cursor + padding.top + border.top,
             width: (w - padding.horizontal() - border.horizontal()).max(0.0),
             height: (h - padding.vertical() - border.vertical()).max(0.0),
@@ -1260,9 +1312,13 @@ fn layout_absolute_child(
     };
     let border = cs.border_width;
 
+    let is_content_box = matches!(cs.box_sizing, crate::cxrd::style::BoxSizing::ContentBox);
+
     // Width: explicit > opposing insets > right-anchor intrinsic > shrink-to-fit
     let (w, shrink_w) = if !cs.width.is_auto() {
-        (resolve(cs.width, containing.width), false)
+        let raw = resolve(cs.width, containing.width);
+        let outer = if is_content_box { raw + padding.horizontal() + border.horizontal() } else { raw };
+        (outer, false)
     } else if !cs.left.is_auto() && !cs.right.is_auto() {
         let l = resolve(cs.left, containing.width);
         let r = resolve(cs.right, containing.width);
@@ -1279,7 +1335,9 @@ fn layout_absolute_child(
 
     // Height: explicit > opposing insets > bottom-anchor intrinsic > shrink-to-fit
     let (h, shrink_h) = if !cs.height.is_auto() {
-        (resolve(cs.height, containing.height), false)
+        let raw = resolve(cs.height, containing.height);
+        let outer = if is_content_box { raw + padding.vertical() + border.vertical() } else { raw };
+        (outer, false)
     } else if !cs.top.is_auto() && !cs.bottom.is_auto() {
         let t = resolve(cs.top, containing.height);
         let b = resolve(cs.bottom, containing.height);

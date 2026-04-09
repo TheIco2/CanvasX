@@ -173,7 +173,9 @@ fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, gr
     if should_paint(node) {
         // Check for gradient backgrounds — use cached rasterization if available.
         // Larger gradient sizes (up to 2048x2048) provide better quality.
-        match &node.style.background {
+        // Use effective_style so pseudo-class overrides (hover/active) are respected.
+        let paint_style = effective_style(node);
+        match &paint_style.background {
             Background::LinearGradient { angle_deg, stops } if !stops.is_empty() => {
                 let r = &node.layout.rect;
                 if r.width > 0.0 && r.height > 0.0 {
@@ -225,21 +227,21 @@ fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, gr
                         .unwrap_or([0.0, 0.0, 99999.0, 99999.0]);
                     let mut flags = UiInstance::FLAG_HAS_BACKGROUND | UiInstance::FLAG_HAS_TEXTURE;
                     if node.layout.clip.is_some() { flags |= UiInstance::FLAG_HAS_CLIP; }
-                    let has_border = node.style.border_width.top > 0.0
-                        || node.style.border_width.right > 0.0
-                        || node.style.border_width.bottom > 0.0
-                        || node.style.border_width.left > 0.0;
+                    let has_border = paint_style.border_width.top > 0.0
+                        || paint_style.border_width.right > 0.0
+                        || paint_style.border_width.bottom > 0.0
+                        || paint_style.border_width.left > 0.0;
                     if has_border { flags |= UiInstance::FLAG_HAS_BORDER; }
                     out.push(UiInstance {
                         rect: r.to_array(),
                         bg_color: [0.0, 0.0, 0.0, 0.0],
-                        border_color: node.style.border_color.to_array(),
-                        border_width: [node.style.border_width.top, node.style.border_width.right,
-                                       node.style.border_width.bottom, node.style.border_width.left],
-                        border_radius: node.style.border_radius.to_array(),
+                        border_color: paint_style.border_color.to_array(),
+                        border_width: [paint_style.border_width.top, paint_style.border_width.right,
+                                       paint_style.border_width.bottom, paint_style.border_width.left],
+                        border_radius: paint_style.border_radius.to_array(),
                         clip_rect: clip,
                         texture_index: slot as i32,
-                        opacity: node.style.opacity,
+                        opacity: paint_style.opacity,
                         flags,
                         _pad: 0,
                     });
@@ -295,13 +297,13 @@ fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, gr
                     out.push(UiInstance {
                         rect: r.to_array(),
                         bg_color: [0.0, 0.0, 0.0, 0.0],
-                        border_color: node.style.border_color.to_array(),
-                        border_width: [node.style.border_width.top, node.style.border_width.right,
-                                       node.style.border_width.bottom, node.style.border_width.left],
-                        border_radius: node.style.border_radius.to_array(),
+                        border_color: paint_style.border_color.to_array(),
+                        border_width: [paint_style.border_width.top, paint_style.border_width.right,
+                                       paint_style.border_width.bottom, paint_style.border_width.left],
+                        border_radius: paint_style.border_radius.to_array(),
                         clip_rect: clip,
                         texture_index: slot as i32,
-                        opacity: node.style.opacity,
+                        opacity: paint_style.opacity,
                         flags,
                         _pad: 0,
                     });
@@ -309,6 +311,54 @@ fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, gr
             }
             _ => {
                 out.push(node_to_instance(node));
+            }
+        }
+    }
+
+    // Emit inset box-shadow quads AFTER the background (on top of it, inside the element).
+    if !node.style.box_shadow.is_empty() {
+        let r = &node.layout.rect;
+        // Clip inset shadows to the node's own rect so they don't bleed outside.
+        let inset_clip = [r.x, r.y, r.x + r.width, r.y + r.height];
+        for shadow in &node.style.box_shadow {
+            if !shadow.inset { continue; }
+            let c = shadow.color.to_array();
+            let spread = shadow.spread_radius.max(0.0);
+            let blur = shadow.blur_radius.max(0.0);
+
+            // Inset shadow: shrink inward by spread, offset, then draw inner edges.
+            // We approximate with layered rects inside the element.
+            let inner_x = r.x + spread + shadow.offset_x.max(0.0);
+            let inner_y = r.y + spread + shadow.offset_y.max(0.0);
+            let inner_w = (r.width - spread * 2.0 - shadow.offset_x.abs()).max(0.0);
+            let inner_h = (r.height - spread * 2.0 - shadow.offset_y.abs()).max(0.0);
+
+            // Base inset body — covers the inset region with shadow color.
+            let base_alpha = c[3] * 0.18;
+            let layers = blur.ceil().clamp(1.0, 3.0) as usize;
+            for layer in 0..layers {
+                let t = layer as f32 / layers as f32;
+                let shrink = spread + blur * t;
+                let alpha = base_alpha * (1.0 - t * 0.6);
+                if alpha <= 0.001 { continue; }
+
+                let sx = r.x + shrink + shadow.offset_x.max(0.0);
+                let sy = r.y + shrink + shadow.offset_y.max(0.0);
+                let sw = (r.width - shrink * 2.0 - shadow.offset_x.abs()).max(0.0);
+                let sh = (r.height - shrink * 2.0 - shadow.offset_y.abs()).max(0.0);
+
+                out.push(filled_rect(
+                    sx, sy, sw, sh,
+                    [c[0], c[1], c[2], alpha],
+                    [
+                        (node.style.border_radius.top_left - shrink).max(0.0),
+                        (node.style.border_radius.top_right - shrink).max(0.0),
+                        (node.style.border_radius.bottom_right - shrink).max(0.0),
+                        (node.style.border_radius.bottom_left - shrink).max(0.0),
+                    ],
+                    inset_clip,
+                    node.style.opacity,
+                ));
             }
         }
     }
@@ -395,11 +445,12 @@ fn should_paint(node: &CxrdNode) -> bool {
     // Has background?
     let has_bg = !matches!(s.background, Background::None);
 
-    // Has border?
-    let has_border = s.border_width.top > 0.0
+    // Has border? Must check both style and width (matching node_to_instance logic).
+    let has_border = !matches!(s.border_style, BorderStyle::None | BorderStyle::Hidden)
+        && (s.border_width.top > 0.0
         || s.border_width.right > 0.0
         || s.border_width.bottom > 0.0
-        || s.border_width.left > 0.0;
+        || s.border_width.left > 0.0);
 
     // Has box shadow? (TODO: separate pass for shadows)
     let has_shadow = !s.box_shadow.is_empty();
@@ -409,7 +460,8 @@ fn should_paint(node: &CxrdNode) -> bool {
         let check = |styles: &[(String, String)]| styles.iter().any(|(p, _)| {
             matches!(p.as_str(), "background" | "background-color" | "border" | "border-color"
                 | "border-width" | "border-top-width" | "border-right-width"
-                | "border-bottom-width" | "border-left-width")
+                | "border-bottom-width" | "border-left-width"
+                | "box-shadow" | "outline" | "outline-width" | "outline-color")
         });
         (node.hovered && check(&node.hover_style))
             || (node.active && check(&node.active_style))

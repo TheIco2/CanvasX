@@ -160,6 +160,8 @@ struct App {
     window_visible: bool,
     /// Set to `true` when the app should exit at the next event-loop iteration.
     exit_requested: bool,
+    /// Debug server for viewing the page in a browser.
+    debug_server: Option<openrender_runtime::devtools::debug_server::DebugServer>,
 }
 
 impl App {
@@ -186,6 +188,7 @@ impl App {
             system_tray: None,
             window_visible: true,
             exit_requested: false,
+            debug_server: None,
         }
     }
 
@@ -519,6 +522,19 @@ impl ApplicationHandler for App {
                 let y = position.y as f32 / scale;
                 // Update context menu hover state.
                 self.devtools.context_menu.update_hover(x, y);
+
+                // Panel resize dragging.
+                let vh = self.window.as_ref()
+                    .map(|w| w.inner_size().height as f32 / w.scale_factor() as f32)
+                    .unwrap_or(600.0);
+                if self.devtools.resizing {
+                    let new_h = (vh - y).clamp(100.0, vh * 0.8);
+                    self.devtools.panel_height = new_h;
+                }
+
+                // Elements hover tracking.
+                self.devtools.update_elements_hover(y, vh);
+
                 self.dispatch_input(RawInputEvent::MouseMove { x, y });
             }
 
@@ -555,6 +571,11 @@ impl ApplicationHandler for App {
                         self.devtools.toggle();
                         return;
                     }
+                    // Check resize handle (top edge of panel)
+                    if self.devtools.hit_test_resize_handle(x, y, vh) {
+                        self.devtools.resizing = true;
+                        return;
+                    }
                     // Check tab click (if panel is open)
                     if let Some(tab) = self.devtools.hit_test_tab(x, y, vw, vh) {
                         self.devtools.active_tab = tab;
@@ -562,6 +583,17 @@ impl ApplicationHandler for App {
                     }
                     // Block clicks from reaching the scene if inside the panel
                     if self.devtools.hit_test_panel(x, y, vh) {
+                        // Handle console filter click
+                        if self.devtools.handle_console_filter_click(y, vh) {
+                            return;
+                        }
+                        // Handle elements panel click (select / expand/collapse)
+                        if let Some(ref scene) = self.scene {
+                            let doc = &scene.document;
+                            if self.devtools.handle_elements_click(x, y, vh, doc) {
+                                return;
+                            }
+                        }
                         return;
                     }
                 }
@@ -582,7 +614,11 @@ impl ApplicationHandler for App {
 
                 let raw = match state {
                     winit::event::ElementState::Pressed  => RawInputEvent::MouseDown { x, y, button: btn },
-                    winit::event::ElementState::Released => RawInputEvent::MouseUp   { x, y, button: btn },
+                    winit::event::ElementState::Released => {
+                        // Stop resize drag on any mouse release.
+                        self.devtools.resizing = false;
+                        RawInputEvent::MouseUp { x, y, button: btn }
+                    }
                 };
                 self.dispatch_input(raw);
             }
@@ -616,6 +652,40 @@ impl ApplicationHandler for App {
                             self.devtools.context_menu.hide();
                             return;
                         }
+                    }
+
+                    // F12 — Toggle DevTools.
+                    if matches!(event.logical_key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::F12)) {
+                        self.devtools.toggle();
+                        return;
+                    }
+
+                    // Ctrl+Shift+I — Toggle DevTools (Chrome-style).
+                    if self.current_modifiers.control_key()
+                        && self.current_modifiers.shift_key()
+                        && matches!(event.logical_key, winit::keyboard::Key::Character(ref c) if c.as_str().eq_ignore_ascii_case("i"))
+                    {
+                        self.devtools.toggle();
+                        return;
+                    }
+
+                    // Ctrl+Shift+C — Inspect Element (switch to Elements tab).
+                    if self.current_modifiers.control_key()
+                        && self.current_modifiers.shift_key()
+                        && matches!(event.logical_key, winit::keyboard::Key::Character(ref c) if c.as_str().eq_ignore_ascii_case("c"))
+                    {
+                        self.devtools.open = true;
+                        self.devtools.active_tab = openrender_runtime::devtools::DevToolsTab::Elements;
+                        return;
+                    }
+
+                    // Ctrl+R — Reload.
+                    if self.current_modifiers.control_key()
+                        && !self.current_modifiers.shift_key()
+                        && matches!(event.logical_key, winit::keyboard::Key::Character(ref c) if c.as_str().eq_ignore_ascii_case("r"))
+                    {
+                        self.reload_scene();
+                        return;
                     }
 
                     let mods = Modifiers {
@@ -694,6 +764,44 @@ impl ApplicationHandler for App {
     }
 }
 
+/// Find the deepest node at a given (x, y) coordinate (for Inspect Element).
+fn find_node_at(x: f32, y: f32, doc: &CxrdDocument) -> Option<NodeId> {
+    fn walk(doc: &CxrdDocument, nid: NodeId, x: f32, y: f32, best: &mut Option<NodeId>) {
+        if let Some(node) = doc.get_node(nid) {
+            let r = &node.layout.rect;
+            if x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height {
+                *best = Some(nid);
+                for &child in &node.children {
+                    walk(doc, child, x, y, best);
+                }
+            }
+        }
+    }
+    let mut best = None;
+    walk(doc, doc.root, x, y, &mut best);
+    best
+}
+
+/// Expand all ancestors of a node in the devtools tree.
+fn expand_ancestors(nid: NodeId, doc: &CxrdDocument, expanded: &mut std::collections::HashSet<NodeId>) {
+    // Walk from root, expanding any node that is an ancestor of `nid`.
+    fn mark_path(doc: &CxrdDocument, current: NodeId, target: NodeId, expanded: &mut std::collections::HashSet<NodeId>) -> bool {
+        if current == target {
+            return true;
+        }
+        if let Some(node) = doc.get_node(current) {
+            for &child in &node.children {
+                if mark_path(doc, child, target, expanded) {
+                    expanded.insert(current);
+                    return true;
+                }
+            }
+        }
+        false
+    }
+    mark_path(doc, doc.root, nid, expanded);
+}
+
 impl App {
     /// Handle a context menu action.
     fn handle_context_action(&mut self, action: ContextAction, event_loop: &ActiveEventLoop) {
@@ -701,8 +809,37 @@ impl App {
             ContextAction::ToggleDevTools => {
                 self.devtools.toggle();
             }
+            ContextAction::InspectElement => {
+                // Open devtools to Elements tab and select the node under cursor.
+                self.devtools.open = true;
+                self.devtools.active_tab = openrender_runtime::devtools::DevToolsTab::Elements;
+                // Try to find the node under the current mouse position.
+                let (mx, my) = self.input_handler.mouse_pos;
+                if let Some(ref scene) = self.scene {
+                    let doc = &scene.document;
+                    if let Some(nid) = find_node_at(mx, my, doc) {
+                        self.devtools.selected_node = Some(nid);
+                        self.devtools.expanded_nodes.insert(nid);
+                        expand_ancestors(nid, doc, &mut self.devtools.expanded_nodes);
+                    }
+                }
+            }
             ContextAction::DebugServer => {
-                log::info!("Debug server not available in single-scene mode.");
+                if self.debug_server.is_none() {
+                    self.debug_server = Some(openrender_runtime::devtools::debug_server::DebugServer::new());
+                }
+                if let Some(ref mut srv) = self.debug_server {
+                    if srv.is_running() {
+                        srv.stop();
+                        log::info!("Debug server stopped.");
+                    } else {
+                        srv.update_content(&self.args.source);
+                        let port = srv.start();
+                        if port > 0 {
+                            log::info!("Debug server running at http://127.0.0.1:{}", port);
+                        }
+                    }
+                }
             }
             ContextAction::Reload => {
                 self.reload_scene();
@@ -885,6 +1022,12 @@ impl App {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
+
+        // Record frame time for GPU tab sparkline.
+        self.devtools.record_frame_stats(self.devtools.fps, dt);
+
+        // Auto-scroll console to bottom when new entries arrive.
+        self.devtools.auto_scroll_console();
 
         // FPS counter (lightweight — only check every 128 frames).
         self.frame_count += 1;
@@ -1126,7 +1269,7 @@ impl App {
 
         // Begin frame → render → present.
         renderer.begin_frame(ctx, dt, scale);
-        self.devtools.draw_calls = final_instances.len() as u32;
+        self.devtools.draw_calls = 1;
         match renderer.render(ctx, final_instances, all_text_areas, clear_color) {
             Ok(()) => {}
             Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {

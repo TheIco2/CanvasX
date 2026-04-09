@@ -169,6 +169,8 @@ pub struct AppHost {
     /// Single-instance guard (holds mutex + pipe listener). Only present when
     /// `SingleInstance` capability is declared and the lock was acquired.
     instance_guard: Option<InstanceGuard>,
+    /// Set when new image assets need uploading to the GPU (e.g. dynamic SVGs).
+    assets_dirty: bool,
 }
 
 /// A compiled custom title bar scene.
@@ -247,6 +249,7 @@ impl AppHost {
             title_bar: None,
             has_custom_title_bar: false,
             instance_guard: None,
+            assets_dirty: false,
         }
     }
 
@@ -395,6 +398,21 @@ impl AppHost {
     /// Get the active page ID.
     pub fn active_page(&self) -> Option<&str> {
         self.active_page.as_deref()
+    }
+
+    /// Check and clear the assets_dirty flag.  When true, the caller should
+    /// call `active_scene_assets()` and upload the bundle to the GPU.
+    pub fn take_assets_dirty(&mut self) -> bool {
+        let dirty = self.assets_dirty;
+        self.assets_dirty = false;
+        dirty
+    }
+
+    /// Get the asset bundle from the active page's scene document.
+    pub fn active_scene_assets(&self) -> Option<&crate::cxrd::asset::AssetBundle> {
+        self.active_page.as_ref()
+            .and_then(|pid| self.pages.get(pid))
+            .map(|page| &page.scene.document.assets)
     }
 
     /// Get icon declarations from the active page's document.
@@ -672,6 +690,9 @@ impl AppHost {
                 ContextAction::Exit => {
                     self.pending_events.push(AppEvent::CloseRequested);
                 }
+                ContextAction::InspectElement => {
+                    // Handled in main.rs where we have cursor position context
+                }
             }
         }
 
@@ -709,6 +730,12 @@ impl AppHost {
                         );
                     }
                 }
+            }
+
+            // If JS created new image assets (e.g. SVG via innerHTML),
+            // mark them for GPU upload.
+            if js_rt.take_assets_dirty() {
+                self.assets_dirty = true;
             }
         }
 
@@ -1337,6 +1364,7 @@ impl AppHost {
             }
         };
 
+        let has_assets = !doc.assets.images.is_empty();
         let scene = SceneGraph::new(doc.clone());
         let input_handler = InputHandler::new();
 
@@ -1344,6 +1372,11 @@ impl AppHost {
         if let Some(ref t) = doc.title {
             self.title = t.clone();
             self.pending_events.push(AppEvent::SetTitle(t.clone()));
+        }
+
+        // Mark assets dirty so the render loop uploads textures to GPU.
+        if has_assets {
+            self.assets_dirty = true;
         }
 
         self.pages.insert(route.id.clone(), PageInstance {

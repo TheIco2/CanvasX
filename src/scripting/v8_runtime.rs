@@ -171,6 +171,9 @@ pub struct SharedState {
     pub viewport_height: u32,
     /// Scripts deferred from innerHTML `<script>` blocks — executed after DOM update.
     pub deferred_scripts: Vec<String>,
+    /// Set when new image assets are added dynamically (e.g. SVG rasterization
+    /// via innerHTML) and need to be uploaded to the GPU.
+    pub assets_dirty: bool,
 }
 
 pub type StateRef = Rc<RefCell<SharedState>>;
@@ -257,6 +260,7 @@ impl JsRuntime {
             viewport_width: 1920,
             viewport_height: 1080,
             deferred_scripts: Vec::new(),
+            assets_dirty: false,
         }));
 
         RUNTIME_STATE.with(|cell| {
@@ -520,6 +524,15 @@ impl JsRuntime {
         let mut state = self.state.borrow_mut();
         let dirty = state.layout_dirty;
         state.layout_dirty = false;
+        dirty
+    }
+
+    /// Check and clear the assets_dirty flag (set when innerHTML adds new
+    /// image textures that need uploading to the GPU).
+    pub fn take_assets_dirty(&mut self) -> bool {
+        let mut state = self.state.borrow_mut();
+        let dirty = state.assets_dirty;
+        state.assets_dirty = false;
         dirty
     }
 
@@ -818,10 +831,18 @@ fn cx_set_text_content(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallb
             None => return,
         };
 
+        // Free all descendant nodes so they don't remain orphaned in the
+        // document arena (this was missing and caused old content to layer
+        // on top of new content).
+        free_descendants(st, nid);
+
         // Clear existing children.
         if let Some(node) = st.document.get_node_mut(nid) {
             node.children.clear();
         }
+
+        // Invalidate the reachable-node cache since the tree changed.
+        st.reachable_cache = None;
 
         // Create a new text child that inherits the parent's inheritable styles.
         let mut text_node = crate::cxrd::node::CxrdNode::text(0, text);
@@ -1693,6 +1714,34 @@ fn decode_data_url_image(src: &str) -> Option<(u32, u32, Vec<u8>)> {
     Some((w, h, pixels))
 }
 
+/// Extract an attribute value from raw SVG markup by name.
+fn extract_svg_attr<'a>(svg: &'a str, attr: &str) -> Option<&'a str> {
+    let pattern = format!("{}=\"", attr);
+    let start = svg.find(&pattern)? + pattern.len();
+    let end = start + svg[start..].find('"')?;
+    Some(&svg[start..end])
+}
+
+/// Extract width and height from an SVG viewBox attribute.
+fn extract_svg_viewbox(svg: &str) -> (u32, u32) {
+    // Try both casings since original SVG may have camelCase viewBox.
+    let vb = extract_svg_attr(svg, "viewBox")
+        .or_else(|| extract_svg_attr(svg, "viewbox"));
+    match vb {
+        Some(val) => {
+            let parts: Vec<f32> = val.split_whitespace()
+                .filter_map(|s| s.parse().ok())
+                .collect();
+            if parts.len() == 4 {
+                (parts[2].ceil() as u32, parts[3].ceil() as u32)
+            } else {
+                (0, 0)
+            }
+        }
+        None => (0, 0),
+    }
+}
+
 fn add_html_children(st: &mut SharedState, parent_id: NodeId, html: &str) {
     let bytes = html.as_bytes();
     let mut pos = 0usize;
@@ -1760,6 +1809,85 @@ fn add_html_children(st: &mut SharedState, parent_id: NodeId, html: &str) {
                     pos += end + 9; // skip past </script>
                 }
                 continue;
+            }
+
+            // Handle <svg> — capture raw markup and rasterize to image.
+            if tag_peek == "svg" {
+                // Find the start of the `<svg` tag in the original HTML.
+                let svg_start = pos - tag_peek.len() - 1;
+                let lower_rest = html[pos..].to_lowercase();
+                if let Some(end) = lower_rest.find("</svg>") {
+                    let svg_end = pos + end + 6;
+                    let raw_svg = &html[svg_start..svg_end];
+
+                    // Ensure xmlns is present for resvg.
+                    let svg_markup = if !raw_svg.contains("xmlns") {
+                        raw_svg.replacen("<svg", "<svg xmlns=\"http://www.w3.org/2000/svg\"", 1)
+                    } else {
+                        raw_svg.to_string()
+                    };
+
+                    // Resolve currentColor from the parent node.
+                    let current_color = node_stack.last()
+                        .and_then(|pid| st.document.get_node(*pid))
+                        .map(|n| n.style.color)
+                        .unwrap_or(crate::cxrd::value::Color::WHITE);
+                    let color_hex = current_color.to_hex_string();
+                    let svg_markup = svg_markup.replace("currentColor", &color_hex);
+
+                    // Parse width/height attributes for layout sizing.
+                    let target_w = extract_svg_attr(&svg_markup, "width");
+                    let target_h = extract_svg_attr(&svg_markup, "height");
+                    let tw: u32 = target_w.and_then(|v| v.parse().ok()).unwrap_or(0);
+                    let th: u32 = target_h.and_then(|v| v.parse().ok()).unwrap_or(0);
+
+                    // Parse viewBox as fallback dimensions.
+                    let (vb_w, vb_h) = extract_svg_viewbox(&svg_markup);
+
+                    let scale = 2u32;
+                    let raster_w = if tw > 0 { tw * scale } else if vb_w > 0 { vb_w * scale } else { 64 };
+                    let raster_h = if th > 0 { th * scale } else if vb_h > 0 { vb_h * scale } else { 64 };
+
+                    if let Some((rgba, w, h)) = crate::compiler::html::rasterize_svg(&svg_markup, raster_w, raster_h) {
+                        let name = format!("svg_dyn_{}", st.document.assets.images.len());
+                        let asset_idx = st.document.assets.add_raw_image(name, w, h, rgba);
+
+                        let mut node = crate::cxrd::node::CxrdNode::container(0);
+                        node.tag = Some("svg".to_string());
+                        node.kind = NodeKind::Image {
+                            asset_index: asset_idx,
+                            fit: crate::cxrd::node::ImageFit::Contain,
+                        };
+                        node.style.display = crate::cxrd::style::Display::InlineBlock;
+                        node.style.background = crate::cxrd::style::Background::Image { asset_index: asset_idx };
+
+                        // Set dimensions from attributes or viewBox.
+                        let dim_w = if tw > 0 { tw } else { vb_w };
+                        let dim_h = if th > 0 { th } else { vb_h };
+                        if dim_w > 0 {
+                            node.style.width = crate::cxrd::value::Dimension::Px(dim_w as f32);
+                        }
+                        if dim_h > 0 {
+                            node.style.height = crate::cxrd::value::Dimension::Px(dim_h as f32);
+                        }
+
+                        // Inherit styles from parent.
+                        if let Some(parent_node) = node_stack.last().and_then(|pid| st.document.get_node(*pid)) {
+                            node.style.color = parent_node.style.color;
+                            node.style.font_size = parent_node.style.font_size;
+                            node.style.font_family = parent_node.style.font_family.clone();
+                            node.style.font_weight = parent_node.style.font_weight;
+                        }
+
+                        let parent = *node_stack.last().unwrap_or(&parent_id);
+                        let child_id = st.document.add_node(node);
+                        st.document.add_child(parent, child_id);
+                        st.assets_dirty = true;
+                    }
+
+                    pos = svg_end;
+                    continue;
+                }
             }
 
             pos += 1;
@@ -2065,7 +2193,113 @@ fn restyle_node(st: &mut SharedState, node_id: NodeId) {
         }
     }
 
+    // Recursively restyle descendants so that descendant selectors
+    // (e.g. `.parent.active .child`) are re-evaluated when the parent's
+    // classes change.
+    let children: Vec<NodeId> = st.document.get_node(node_id)
+        .map(|n| n.children.clone())
+        .unwrap_or_default();
+    for child_id in children {
+        restyle_subtree(st, child_id);
+    }
+
     st.layout_dirty = true;
+}
+
+/// Recursively restyle a node and all its descendants. Used after a parent
+/// class change to ensure descendant selectors are re-evaluated.
+fn restyle_subtree(st: &mut SharedState, node_id: NodeId) {
+    use crate::cxrd::style::ComputedStyle;
+    use crate::compiler::css::resolve_var_pub;
+
+    let ancestors = collect_ancestor_chain(&st.document, node_id);
+
+    let parent_id = st.document.find_parent(node_id);
+    let (parent_color, parent_font_size, parent_font_family, parent_font_weight,
+         parent_letter_spacing, parent_line_height, parent_text_align, parent_text_transform) =
+        parent_id
+            .and_then(|pid| st.document.get_node(pid))
+            .map(|p| (
+                p.style.color,
+                p.style.font_size,
+                p.style.font_family.clone(),
+                p.style.font_weight,
+                p.style.letter_spacing,
+                p.style.line_height,
+                p.style.text_align,
+                p.style.text_transform,
+            ))
+            .unwrap_or_default();
+
+    let inline_style = st.document.get_node(node_id)
+        .and_then(|n| n.attributes.get("style").cloned())
+        .unwrap_or_default();
+
+    if let Some(node) = st.document.get_node_mut(node_id) {
+        node.style = ComputedStyle::default();
+        node.hover_style.clear();
+        node.active_style.clear();
+        node.focus_style.clear();
+
+        apply_dynamic_tag_defaults(node);
+
+        node.style.color = parent_color;
+        node.style.font_size = parent_font_size;
+        node.style.font_family = parent_font_family;
+        node.style.font_weight = parent_font_weight;
+        node.style.letter_spacing = parent_letter_spacing;
+        node.style.line_height = parent_line_height;
+        node.style.text_align = parent_text_align;
+        node.style.text_transform = parent_text_transform;
+
+        for rule in &st.css_rules {
+            if compound_selector_matches(&rule.compound_selectors, node, &node.html_id.clone(), &ancestors) {
+                if let Some(ref pseudo) = rule.pseudo_class {
+                    match pseudo.as_str() {
+                        "hover" => {
+                            for (prop, val) in &rule.declarations {
+                                let resolved = resolve_var_pub(val, &st.css_variables);
+                                node.hover_style.push((prop.clone(), resolved));
+                            }
+                        }
+                        "active" => {
+                            for (prop, val) in &rule.declarations {
+                                let resolved = resolve_var_pub(val, &st.css_variables);
+                                node.active_style.push((prop.clone(), resolved));
+                            }
+                        }
+                        "focus" | "focus-visible" | "focus-within" => {
+                            for (prop, val) in &rule.declarations {
+                                let resolved = resolve_var_pub(val, &st.css_variables);
+                                node.focus_style.push((prop.clone(), resolved));
+                            }
+                        }
+                        _ => {}
+                    }
+                } else {
+                    for (prop, val) in &rule.declarations {
+                        apply_property(&mut node.style, prop, val, &st.css_variables);
+                    }
+                }
+            }
+        }
+
+        if !inline_style.is_empty() {
+            for decl in inline_style.split(';') {
+                let decl = decl.trim();
+                if let Some((prop, val)) = decl.split_once(':') {
+                    apply_property(&mut node.style, prop.trim(), val.trim(), &st.css_variables);
+                }
+            }
+        }
+    }
+
+    let children: Vec<NodeId> = st.document.get_node(node_id)
+        .map(|n| n.children.clone())
+        .unwrap_or_default();
+    for child_id in children {
+        restyle_subtree(st, child_id);
+    }
 }
 
 fn collect_ancestor_chain(doc: &CxrdDocument, node_id: NodeId) -> Vec<AncestorInfo> {

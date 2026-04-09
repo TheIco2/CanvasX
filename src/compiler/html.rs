@@ -972,6 +972,25 @@ fn add_node_recursive(
                 style.height = Dimension::Px(h);
             }
 
+            // Fallback to viewBox dimensions when width/height are not specified.
+            if matches!(style.width, Dimension::Auto) || matches!(style.height, Dimension::Auto) {
+                let vb = parsed.attributes.get("viewBox")
+                    .or_else(|| parsed.attributes.get("viewbox"));
+                if let Some(vb_str) = vb {
+                    let parts: Vec<f32> = vb_str.split_whitespace()
+                        .filter_map(|s| s.parse().ok())
+                        .collect();
+                    if parts.len() == 4 {
+                        if matches!(style.width, Dimension::Auto) {
+                            style.width = Dimension::Px(parts[2]);
+                        }
+                        if matches!(style.height, Dimension::Auto) {
+                            style.height = Dimension::Px(parts[3]);
+                        }
+                    }
+                }
+            }
+
             // Wire the rasterized image into style.background so the
             // paint system actually renders the texture.
             style.background = Background::Image { asset_index: asset_idx };
@@ -1008,6 +1027,12 @@ fn add_node_recursive(
                         apply_property(&mut node.style, prop.trim(), val.trim(), variables);
                     }
                 }
+            }
+
+            // Restore the rasterized image background if CSS overwrote it
+            // with a solid color (e.g. `background: transparent`).
+            if !matches!(node.style.background, Background::Image { .. }) {
+                node.style.background = Background::Image { asset_index: asset_idx };
             }
 
             return doc.add_node(node);
@@ -1334,7 +1359,7 @@ fn reconstruct_svg_element(out: &mut String, node: &ParsedNode) {
 
 /// Rasterize an SVG string to RGBA pixels using resvg.
 /// Returns (rgba_bytes, width, height) on success.
-fn rasterize_svg(svg_markup: &str, target_w: u32, target_h: u32) -> Option<(Vec<u8>, u32, u32)> {
+pub fn rasterize_svg(svg_markup: &str, target_w: u32, target_h: u32) -> Option<(Vec<u8>, u32, u32)> {
     let options = resvg::usvg::Options::default();
     let tree = match resvg::usvg::Tree::from_str(svg_markup, &options) {
         Ok(t) => t,
@@ -1364,16 +1389,10 @@ fn rasterize_svg(svg_markup: &str, target_w: u32, target_h: u32) -> Option<(Vec<
     let transform = resvg::tiny_skia::Transform::from_scale(scale_x, scale_y);
     resvg::render(&tree, transform, &mut pixmap.as_mut());
 
-    // resvg outputs premultiplied RGBA; convert to straight alpha for GPU.
-    let mut rgba = pixmap.take();
-    for chunk in rgba.chunks_exact_mut(4) {
-        let a = chunk[3] as f32 / 255.0;
-        if a > 0.0 && a < 1.0 {
-            chunk[0] = (chunk[0] as f32 / a).min(255.0) as u8;
-            chunk[1] = (chunk[1] as f32 / a).min(255.0) as u8;
-            chunk[2] = (chunk[2] as f32 / a).min(255.0) as u8;
-        }
-    }
+    // resvg outputs premultiplied RGBA — keep it as-is since the GPU
+    // pipeline uses PREMULTIPLIED_ALPHA_BLENDING. Converting to straight
+    // alpha here would cause over-bright fringes on semi-transparent edges.
+    let rgba = pixmap.take();
 
     Some((rgba, render_w, render_h))
 }

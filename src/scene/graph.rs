@@ -131,6 +131,23 @@ impl SceneGraph {
         our.variables = js_doc.variables.clone();
         our.background = js_doc.background;
 
+        // Sync assets — JS may have added new images (e.g. SVG rasterization).
+        if js_doc.assets.images.len() > our.assets.images.len() {
+            our.assets = js_doc.assets.clone();
+        }
+
+        // Clear stale runtime flags on freed node slots so that reused
+        // indices don't carry over hover/active/focused state from their
+        // previous occupant.
+        let freed_ids: Vec<u32> = our.free_list.clone();
+        for freed_id in freed_ids {
+            if let Some(node) = our.get_node_mut(freed_id) {
+                node.hovered = false;
+                node.active = false;
+                node.focused = false;
+            }
+        }
+
         self.layout_dirty = true;
         self.paint_dirty = true;
         self.data_bound_dirty = true;

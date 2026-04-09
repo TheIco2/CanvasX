@@ -8,7 +8,7 @@ use crate::gpu::vertex::UiInstance;
 use super::DevToolsTextEntry;
 
 // Visual constants.
-const MENU_WIDTH: f32 = 180.0;
+const MENU_WIDTH: f32 = 220.0;
 const ITEM_HEIGHT: f32 = 28.0;
 const SEPARATOR_HEIGHT: f32 = 9.0;
 const MENU_PADDING: f32 = 4.0;
@@ -27,6 +27,7 @@ const ACCENT: Color = Color { r: 0.39, g: 0.40, b: 0.95, a: 1.0 };
 pub enum ContextMenuEntry {
     Item {
         label: String,
+        shortcut: Option<String>,
         action: ContextAction,
         enabled: bool,
     },
@@ -37,6 +38,7 @@ pub enum ContextMenuEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContextAction {
     ToggleDevTools,
+    InspectElement,
     DebugServer,
     Reload,
     Exit,
@@ -69,23 +71,33 @@ impl ContextMenu {
     fn default_entries() -> Vec<ContextMenuEntry> {
         vec![
             ContextMenuEntry::Item {
+                label: "Inspect Element".to_string(),
+                shortcut: Some("Ctrl+Shift+C".to_string()),
+                action: ContextAction::InspectElement,
+                enabled: true,
+            },
+            ContextMenuEntry::Item {
                 label: "DevTools".to_string(),
+                shortcut: Some("F12".to_string()),
                 action: ContextAction::ToggleDevTools,
                 enabled: true,
             },
             ContextMenuEntry::Item {
                 label: "Debug Server".to_string(),
+                shortcut: None,
                 action: ContextAction::DebugServer,
                 enabled: true,
             },
             ContextMenuEntry::Separator,
             ContextMenuEntry::Item {
                 label: "Reload".to_string(),
+                shortcut: Some("Ctrl+R".to_string()),
                 action: ContextAction::Reload,
                 enabled: true,
             },
             ContextMenuEntry::Item {
                 label: "Exit".to_string(),
+                shortcut: None,
                 action: ContextAction::Exit,
                 enabled: true,
             },
@@ -242,7 +254,7 @@ impl ContextMenu {
 
         for (i, entry) in self.entries.iter().enumerate() {
             match entry {
-                ContextMenuEntry::Item { label, enabled, action } => {
+                ContextMenuEntry::Item { label, shortcut, enabled, action } => {
                     let color = if !enabled {
                         TEXT_DISABLED
                     } else if self.hovered == Some(i) {
@@ -257,8 +269,24 @@ impl ContextMenu {
                         width: MENU_WIDTH - 28.0,
                         font_size: 12.0,
                         color,
-                        bold: matches!(action, ContextAction::ToggleDevTools) && self.hovered == Some(i),
+                        bold: matches!(action, ContextAction::InspectElement) && self.hovered == Some(i),
                     });
+                    // Shortcut hint (right-aligned, dimmer)
+                    if let Some(sc) = shortcut {
+                        entries.push(DevToolsTextEntry {
+                            text: sc.clone(),
+                            x: self.x + MENU_WIDTH - 90.0,
+                            y: y + 6.0,
+                            width: 76.0,
+                            font_size: 10.0,
+                            color: if self.hovered == Some(i) {
+                                Color::new(0.6, 0.6, 0.7, 1.0)
+                            } else {
+                                TEXT_DISABLED
+                            },
+                            bold: false,
+                        });
+                    }
                     y += ITEM_HEIGHT;
                 }
                 ContextMenuEntry::Separator => {
