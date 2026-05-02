@@ -1,12 +1,12 @@
-// openrender-runtime/src/scene/text.rs
+// prism-runtime/src/scene/text.rs
 //
-// Text painting — extracts all text nodes from the CXRD tree and builds
+// Text painting — extracts all text nodes from the PRD tree and builds
 // glyphon TextArea entries for the text renderer.
 
-use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::node::{NodeId, NodeKind};
-use crate::cxrd::input::InputKind;
-use crate::cxrd::style::{Display, FontStyle, TextAlign, TextTransform, WhiteSpace};
+use crate::prd::document::PrdDocument;
+use crate::prd::node::{NodeId, NodeKind};
+use crate::prd::input::InputKind;
+use crate::prd::style::{Display, FontStyle, TextAlign, TextTransform, WhiteSpace};
 use glyphon::{Attrs, Buffer, Color as GlyphonColor, Family, Metrics, Shaping, TextArea, TextBounds, Weight};
 use glyphon::cosmic_text::Align;
 use std::collections::HashMap;
@@ -31,15 +31,20 @@ impl TextPainter {
     /// Prepare text buffers for all text nodes in the document.
     /// Call this after layout and before rendering.
     /// Only recreates buffers when text content or style has changed.
+    ///
+    /// `scale_factor` is the device pixel ratio. Text is shaped at
+    /// `font_size * scale_factor` so glyphs rasterize at physical pixel
+    /// resolution and stay crisp on high-DPI displays.
     pub fn prepare(
         &mut self,
-        doc: &CxrdDocument,
+        doc: &PrdDocument,
         font_system: &mut glyphon::FontSystem,
         data_values: &HashMap<String, String>,
+        scale_factor: f32,
     ) {
         // Collect live node IDs so we can prune stale buffers
         let mut live_ids = Vec::new();
-        self.prepare_node(doc, doc.root, font_system, data_values, &mut live_ids);
+        self.prepare_node(doc, doc.root, font_system, data_values, &mut live_ids, scale_factor);
         // Remove buffers for nodes that no longer exist
         self.buffers.retain(|k, _| live_ids.contains(k));
         self.buffer_keys.retain(|k, _| live_ids.contains(k));
@@ -47,11 +52,12 @@ impl TextPainter {
 
     fn prepare_node(
         &mut self,
-        doc: &CxrdDocument,
+        doc: &PrdDocument,
         node_id: NodeId,
         font_system: &mut glyphon::FontSystem,
         data_values: &HashMap<String, String>,
         live_ids: &mut Vec<u32>,
+        scale_factor: f32,
     ) {
         let node = match doc.get_node(node_id) {
             Some(n) => n,
@@ -110,6 +116,7 @@ impl TextPainter {
                     std::mem::discriminant(&style.text_align).hash(&mut hasher);
                     style.line_height.to_bits().hash(&mut hasher);
                     style.letter_spacing.to_bits().hash(&mut hasher);
+                    scale_factor.to_bits().hash(&mut hasher);
                     hasher.finish()
                 };
 
@@ -118,7 +125,7 @@ impl TextPainter {
                     if existing_key == cache_key && self.buffers.contains_key(&node.id) {
                         // Buffer is still valid
                         for &child_id in &node.children {
-                            self.prepare_node(doc, child_id, font_system, data_values, live_ids);
+                            self.prepare_node(doc, child_id, font_system, data_values, live_ids, scale_factor);
                         }
                         return;
                     }
@@ -126,7 +133,8 @@ impl TextPainter {
 
                 let font_size = style.font_size;
                 let line_height = style.line_height * font_size;
-                let metrics = Metrics::new(font_size, line_height);
+                // Shape at physical pixel metrics so glyphs are crisp.
+                let metrics = Metrics::new(font_size * scale_factor, line_height * scale_factor);
 
                 let mut buffer = Buffer::new(font_system, metrics);
 
@@ -155,9 +163,10 @@ impl TextPainter {
 
                 // Add 1px to buffer width so glyphs at the trailing edge are not
                 // clipped due to font metrics extending past the em-square.
+                // Width is in physical pixels because metrics are physical.
                 let buf_width = match style.white_space {
                     WhiteSpace::NoWrap | WhiteSpace::Pre => f32::MAX,
-                    _ => rect.width + 1.0,
+                    _ => (rect.width + 1.0) * scale_factor,
                 };
                 buffer.set_size(font_system, Some(buf_width), None);
                 buffer.set_text(font_system, &content, &attrs, Shaping::Advanced, alignment);
@@ -226,7 +235,7 @@ impl TextPainter {
                     if let Some(&existing_key) = self.buffer_keys.get(&node.id) {
                         if existing_key == cache_key && self.buffers.contains_key(&node.id) {
                             for &child_id in &node.children {
-                                self.prepare_node(doc, child_id, font_system, data_values, live_ids);
+                                self.prepare_node(doc, child_id, font_system, data_values, live_ids, scale_factor);
                             }
                             return;
                         }
@@ -234,7 +243,7 @@ impl TextPainter {
 
                     let font_size = style.font_size;
                     let line_height = style.line_height * font_size;
-                    let metrics = glyphon::Metrics::new(font_size, line_height);
+                    let metrics = glyphon::Metrics::new(font_size * scale_factor, line_height * scale_factor);
                     let mut buffer = glyphon::Buffer::new(font_system, metrics);
 
                     let family = if style.font_family.is_empty() {
@@ -255,7 +264,7 @@ impl TextPainter {
                         None
                     };
 
-                    buffer.set_size(font_system, Some(rect.width), None);
+                    buffer.set_size(font_system, Some(rect.width * scale_factor), None);
                     buffer.set_text(font_system, &label_text, &attrs, glyphon::Shaping::Advanced, alignment);
                     buffer.shape_until_scroll(font_system, false);
 
@@ -266,13 +275,13 @@ impl TextPainter {
         }
 
         for &child_id in &node.children {
-            self.prepare_node(doc, child_id, font_system, data_values, live_ids);
+            self.prepare_node(doc, child_id, font_system, data_values, live_ids, scale_factor);
         }
     }
 
     /// Build TextArea references for the renderer.
     /// The returned Vec borrows from `self.buffers`, so `self` must outlive the render call.
-    pub fn text_areas<'a>(&'a self, doc: &'a CxrdDocument) -> Vec<TextArea<'a>> {
+    pub fn text_areas<'a>(&'a self, doc: &'a PrdDocument) -> Vec<TextArea<'a>> {
         let mut areas = Vec::new();
 
         for (node_id, buffer) in &self.buffers {
@@ -505,3 +514,4 @@ fn format_uptime(raw: &str) -> String {
     s += &format!("{}m", m);
     s
 }
+

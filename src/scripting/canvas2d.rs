@@ -1,4 +1,4 @@
-// openrender-runtime/src/scripting/canvas2d.rs
+﻿// prism-runtime/src/scripting/canvas2d.rs
 //
 // Canvas 2D rendering context backed by tiny-skia.
 // Each canvas element in the DOM gets a CanvasBuffer which holds a pixel buffer.
@@ -55,6 +55,9 @@ struct SavedState {
     text_align: String,
     text_baseline: String,
     clip_path: Option<tiny_skia::Path>,
+    line_cap: tiny_skia::LineCap,
+    line_join: tiny_skia::LineJoin,
+    miter_limit: f32,
 }
 
 /// A single canvas pixel buffer with full Canvas 2D state machine.
@@ -76,6 +79,9 @@ pub struct CanvasBuffer {
     pub text_align: String,
     pub text_baseline: String,
     clip_path: Option<tiny_skia::Path>,
+    line_cap: tiny_skia::LineCap,
+    line_join: tiny_skia::LineJoin,
+    miter_limit: f32,
 
     // Path building
     path_builder: Option<tiny_skia::PathBuilder>,
@@ -104,6 +110,9 @@ impl CanvasBuffer {
             text_align: "start".into(),
             text_baseline: "alphabetic".into(),
             clip_path: None,
+            line_cap: tiny_skia::LineCap::Butt,
+            line_join: tiny_skia::LineJoin::Miter,
+            miter_limit: 10.0,
             path_builder: None,
             state_stack: Vec::new(),
         }
@@ -197,22 +206,31 @@ impl CanvasBuffer {
         }
     }
 
-    pub fn arc(&mut self, x: f32, y: f32, radius: f32, start_angle: f32, end_angle: f32, _anticlockwise: bool) {
+    pub fn arc(&mut self, x: f32, y: f32, radius: f32, start_angle: f32, end_angle: f32, anticlockwise: bool) {
         if let Some(ref mut pb) = self.path_builder {
+            // Determine sweep direction
+            let (sa, ea) = if anticlockwise {
+                if end_angle < start_angle {
+                    (start_angle, end_angle)
+                } else {
+                    (start_angle, end_angle - std::f32::consts::TAU)
+                }
+            } else {
+                if end_angle > start_angle {
+                    (start_angle, end_angle)
+                } else {
+                    (start_angle, end_angle + std::f32::consts::TAU)
+                }
+            };
             // Approximate arc with line segments (tiny-skia doesn't have native arc)
-            let steps = ((end_angle - start_angle).abs() / (std::f32::consts::PI / 16.0)).ceil() as usize;
+            let steps = ((ea - sa).abs() / (std::f32::consts::PI / 16.0)).ceil() as usize;
             let steps = steps.max(4).min(128);
             for i in 0..=steps {
                 let t = i as f32 / steps as f32;
-                let angle = start_angle + t * (end_angle - start_angle);
+                let angle = sa + t * (ea - sa);
                 let px = x + radius * angle.cos();
                 let py = y + radius * angle.sin();
-                if i == 0 {
-                    // If path has previous points, lineTo; otherwise moveTo
-                    pb.line_to(px, py);
-                } else {
-                    pb.line_to(px, py);
-                }
+                pb.line_to(px, py);
             }
         }
     }
@@ -272,6 +290,9 @@ impl CanvasBuffer {
             text_align: self.text_align.clone(),
             text_baseline: self.text_baseline.clone(),
             clip_path: self.clip_path.clone(),
+            line_cap: self.line_cap,
+            line_join: self.line_join,
+            miter_limit: self.miter_limit,
         });
     }
 
@@ -288,6 +309,9 @@ impl CanvasBuffer {
             self.text_align = saved.text_align;
             self.text_baseline = saved.text_baseline;
             self.clip_path = saved.clip_path;
+            self.line_cap = saved.line_cap;
+            self.line_join = saved.line_join;
+            self.miter_limit = saved.miter_limit;
         }
     }
 
@@ -661,7 +685,30 @@ impl CanvasBuffer {
     fn make_stroke(&self) -> tiny_skia::Stroke {
         let mut stroke = tiny_skia::Stroke::default();
         stroke.width = self.line_width;
+        stroke.line_cap = self.line_cap;
+        stroke.line_join = self.line_join;
+        stroke.miter_limit = self.miter_limit;
         stroke
+    }
+
+    pub fn set_line_cap(&mut self, cap: &str) {
+        self.line_cap = match cap {
+            "round" => tiny_skia::LineCap::Round,
+            "square" => tiny_skia::LineCap::Square,
+            _ => tiny_skia::LineCap::Butt,
+        };
+    }
+
+    pub fn set_line_join(&mut self, join: &str) {
+        self.line_join = match join {
+            "round" => tiny_skia::LineJoin::Round,
+            "bevel" => tiny_skia::LineJoin::Bevel,
+            _ => tiny_skia::LineJoin::Miter,
+        };
+    }
+
+    pub fn set_miter_limit(&mut self, limit: f32) {
+        self.miter_limit = limit;
     }
 }
 
@@ -1218,7 +1265,7 @@ pub fn parse_css_color(s: &str) -> Option<tiny_skia::Color> {
         }
     }
 
-    // Named colors (subset)
+    // Named colors (extended subset)
     match s {
         "black" => tiny_skia::Color::from_rgba(0.0, 0.0, 0.0, 1.0),
         "white" => tiny_skia::Color::from_rgba(1.0, 1.0, 1.0, 1.0),
@@ -1226,6 +1273,95 @@ pub fn parse_css_color(s: &str) -> Option<tiny_skia::Color> {
         "green" => tiny_skia::Color::from_rgba(0.0, 0.502, 0.0, 1.0),
         "blue" => tiny_skia::Color::from_rgba(0.0, 0.0, 1.0, 1.0),
         "transparent" => tiny_skia::Color::from_rgba(0.0, 0.0, 0.0, 0.0),
+        "yellow" => tiny_skia::Color::from_rgba(1.0, 1.0, 0.0, 1.0),
+        "cyan" | "aqua" => tiny_skia::Color::from_rgba(0.0, 1.0, 1.0, 1.0),
+        "magenta" | "fuchsia" => tiny_skia::Color::from_rgba(1.0, 0.0, 1.0, 1.0),
+        "orange" => tiny_skia::Color::from_rgba(1.0, 0.647, 0.0, 1.0),
+        "purple" => tiny_skia::Color::from_rgba(0.502, 0.0, 0.502, 1.0),
+        "pink" => tiny_skia::Color::from_rgba(1.0, 0.753, 0.796, 1.0),
+        "gray" | "grey" => tiny_skia::Color::from_rgba(0.502, 0.502, 0.502, 1.0),
+        "silver" => tiny_skia::Color::from_rgba(0.753, 0.753, 0.753, 1.0),
+        "maroon" => tiny_skia::Color::from_rgba(0.502, 0.0, 0.0, 1.0),
+        "olive" => tiny_skia::Color::from_rgba(0.502, 0.502, 0.0, 1.0),
+        "lime" => tiny_skia::Color::from_rgba(0.0, 1.0, 0.0, 1.0),
+        "teal" => tiny_skia::Color::from_rgba(0.0, 0.502, 0.502, 1.0),
+        "navy" => tiny_skia::Color::from_rgba(0.0, 0.0, 0.502, 1.0),
+        "coral" => tiny_skia::Color::from_rgba(1.0, 0.498, 0.314, 1.0),
+        "salmon" => tiny_skia::Color::from_rgba(0.980, 0.502, 0.447, 1.0),
+        "gold" => tiny_skia::Color::from_rgba(1.0, 0.843, 0.0, 1.0),
+        "indigo" => tiny_skia::Color::from_rgba(0.294, 0.0, 0.510, 1.0),
+        "violet" => tiny_skia::Color::from_rgba(0.933, 0.510, 0.933, 1.0),
+        "brown" => tiny_skia::Color::from_rgba(0.647, 0.165, 0.165, 1.0),
+        "tan" => tiny_skia::Color::from_rgba(0.824, 0.706, 0.549, 1.0),
+        "beige" => tiny_skia::Color::from_rgba(0.961, 0.961, 0.863, 1.0),
+        "ivory" => tiny_skia::Color::from_rgba(1.0, 1.0, 0.941, 1.0),
+        "khaki" => tiny_skia::Color::from_rgba(0.941, 0.902, 0.549, 1.0),
+        "crimson" => tiny_skia::Color::from_rgba(0.863, 0.078, 0.235, 1.0),
+        "tomato" => tiny_skia::Color::from_rgba(1.0, 0.388, 0.278, 1.0),
+        "turquoise" => tiny_skia::Color::from_rgba(0.251, 0.878, 0.816, 1.0),
+        "skyblue" => tiny_skia::Color::from_rgba(0.529, 0.808, 0.922, 1.0),
+        "steelblue" => tiny_skia::Color::from_rgba(0.275, 0.510, 0.706, 1.0),
+        "slategray" | "slategrey" => tiny_skia::Color::from_rgba(0.439, 0.502, 0.565, 1.0),
+        "darkgray" | "darkgrey" => tiny_skia::Color::from_rgba(0.663, 0.663, 0.663, 1.0),
+        "lightgray" | "lightgrey" => tiny_skia::Color::from_rgba(0.827, 0.827, 0.827, 1.0),
+        "dimgray" | "dimgrey" => tiny_skia::Color::from_rgba(0.412, 0.412, 0.412, 1.0),
+        "whitesmoke" => tiny_skia::Color::from_rgba(0.961, 0.961, 0.961, 1.0),
+        "snow" => tiny_skia::Color::from_rgba(1.0, 0.980, 0.980, 1.0),
+        "linen" => tiny_skia::Color::from_rgba(0.980, 0.941, 0.902, 1.0),
+        "dodgerblue" => tiny_skia::Color::from_rgba(0.118, 0.565, 1.0, 1.0),
+        "royalblue" => tiny_skia::Color::from_rgba(0.255, 0.412, 0.882, 1.0),
+        "cornflowerblue" => tiny_skia::Color::from_rgba(0.392, 0.584, 0.929, 1.0),
+        "midnightblue" => tiny_skia::Color::from_rgba(0.098, 0.098, 0.439, 1.0),
+        "darkblue" => tiny_skia::Color::from_rgba(0.0, 0.0, 0.545, 1.0),
+        "darkred" => tiny_skia::Color::from_rgba(0.545, 0.0, 0.0, 1.0),
+        "darkgreen" => tiny_skia::Color::from_rgba(0.0, 0.392, 0.0, 1.0),
+        "darkcyan" => tiny_skia::Color::from_rgba(0.0, 0.545, 0.545, 1.0),
+        "darkmagenta" => tiny_skia::Color::from_rgba(0.545, 0.0, 0.545, 1.0),
+        "darkorange" => tiny_skia::Color::from_rgba(1.0, 0.549, 0.0, 1.0),
+        "darkviolet" => tiny_skia::Color::from_rgba(0.580, 0.0, 0.827, 1.0),
+        "deeppink" => tiny_skia::Color::from_rgba(1.0, 0.078, 0.576, 1.0),
+        "deepskyblue" => tiny_skia::Color::from_rgba(0.0, 0.749, 1.0, 1.0),
+        "firebrick" => tiny_skia::Color::from_rgba(0.698, 0.133, 0.133, 1.0),
+        "forestgreen" => tiny_skia::Color::from_rgba(0.133, 0.545, 0.133, 1.0),
+        "limegreen" => tiny_skia::Color::from_rgba(0.196, 0.804, 0.196, 1.0),
+        "seagreen" => tiny_skia::Color::from_rgba(0.180, 0.545, 0.341, 1.0),
+        "springgreen" => tiny_skia::Color::from_rgba(0.0, 1.0, 0.498, 1.0),
+        "yellowgreen" => tiny_skia::Color::from_rgba(0.604, 0.804, 0.196, 1.0),
+        "chartreuse" => tiny_skia::Color::from_rgba(0.498, 1.0, 0.0, 1.0),
+        "hotpink" => tiny_skia::Color::from_rgba(1.0, 0.412, 0.706, 1.0),
+        "lightblue" => tiny_skia::Color::from_rgba(0.678, 0.847, 0.902, 1.0),
+        "lightgreen" => tiny_skia::Color::from_rgba(0.565, 0.933, 0.565, 1.0),
+        "lightyellow" => tiny_skia::Color::from_rgba(1.0, 1.0, 0.878, 1.0),
+        "lightcoral" => tiny_skia::Color::from_rgba(0.941, 0.502, 0.502, 1.0),
+        "lightsalmon" => tiny_skia::Color::from_rgba(1.0, 0.627, 0.478, 1.0),
+        "lightpink" => tiny_skia::Color::from_rgba(1.0, 0.714, 0.757, 1.0),
+        "lightcyan" => tiny_skia::Color::from_rgba(0.878, 1.0, 1.0, 1.0),
+        "lavender" => tiny_skia::Color::from_rgba(0.902, 0.902, 0.980, 1.0),
+        "plum" => tiny_skia::Color::from_rgba(0.867, 0.627, 0.867, 1.0),
+        "orchid" => tiny_skia::Color::from_rgba(0.855, 0.439, 0.839, 1.0),
+        "peru" => tiny_skia::Color::from_rgba(0.804, 0.522, 0.247, 1.0),
+        "sienna" => tiny_skia::Color::from_rgba(0.627, 0.322, 0.176, 1.0),
+        "chocolate" => tiny_skia::Color::from_rgba(0.824, 0.412, 0.118, 1.0),
+        "sandybrown" => tiny_skia::Color::from_rgba(0.957, 0.643, 0.376, 1.0),
+        "wheat" => tiny_skia::Color::from_rgba(0.961, 0.871, 0.702, 1.0),
+        "moccasin" => tiny_skia::Color::from_rgba(1.0, 0.894, 0.710, 1.0),
+        "papayawhip" => tiny_skia::Color::from_rgba(1.0, 0.937, 0.835, 1.0),
+        "peachpuff" => tiny_skia::Color::from_rgba(1.0, 0.855, 0.725, 1.0),
+        "mintcream" => tiny_skia::Color::from_rgba(0.961, 1.0, 0.980, 1.0),
+        "honeydew" => tiny_skia::Color::from_rgba(0.941, 1.0, 0.941, 1.0),
+        "ghostwhite" => tiny_skia::Color::from_rgba(0.973, 0.973, 1.0, 1.0),
+        "aliceblue" => tiny_skia::Color::from_rgba(0.941, 0.973, 1.0, 1.0),
+        "azure" => tiny_skia::Color::from_rgba(0.941, 1.0, 1.0, 1.0),
+        "seashell" => tiny_skia::Color::from_rgba(1.0, 0.961, 0.933, 1.0),
+        "oldlace" => tiny_skia::Color::from_rgba(0.992, 0.961, 0.902, 1.0),
+        "floralwhite" => tiny_skia::Color::from_rgba(1.0, 0.980, 0.941, 1.0),
+        "antiquewhite" => tiny_skia::Color::from_rgba(0.980, 0.922, 0.843, 1.0),
+        "blanchedalmond" => tiny_skia::Color::from_rgba(1.0, 0.922, 0.804, 1.0),
+        "bisque" => tiny_skia::Color::from_rgba(1.0, 0.894, 0.769, 1.0),
+        "navajowhite" => tiny_skia::Color::from_rgba(1.0, 0.871, 0.678, 1.0),
+        "cornsilk" => tiny_skia::Color::from_rgba(1.0, 0.973, 0.863, 1.0),
+        "lemonchiffon" => tiny_skia::Color::from_rgba(1.0, 0.980, 0.804, 1.0),
+        "mistyrose" => tiny_skia::Color::from_rgba(1.0, 0.894, 0.882, 1.0),
         _ => None,
     }
 }
@@ -1251,3 +1387,4 @@ fn hsl_to_rgb(h: f32, s: f32, l: f32) -> (f32, f32, f32) {
     };
     ((r1 + m).clamp(0.0, 1.0), (g1 + m).clamp(0.0, 1.0), (b1 + m).clamp(0.0, 1.0))
 }
+

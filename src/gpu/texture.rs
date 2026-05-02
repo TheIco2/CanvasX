@@ -1,4 +1,4 @@
-// openrender-runtime/src/gpu/texture.rs
+﻿// prism-runtime/src/gpu/texture.rs
 //
 // Texture management — loading images into GPU textures,
 // managing a texture atlas for small UI assets.
@@ -183,3 +183,4 @@ impl TextureManager {
         })
     }
 }
+

@@ -1,10 +1,10 @@
-// openrender-runtime/src/compiler/css/css.rs
+﻿// prism-runtime/src/compiler/css/css.rs
 //
 // CSS property database + property-application engine.
 // All value parsing lives in `super::parsing`.
 
-use crate::cxrd::style::*;
-use crate::cxrd::value::Dimension;
+use crate::prd::style::*;
+use crate::prd::value::Dimension;
 use std::collections::HashMap;
 use super::parsing::*;
 
@@ -175,6 +175,15 @@ pub static CSS_PSEUDO_CLASSES: &[&str] = &[
 
     // Time-based
     "current", "past", "future",
+
+    // Page
+    "first", "left", "right", "blank",
+
+    // Heading
+    "heading",
+
+    // Interest
+    "interest-source", "interest-target",
 ];
 
 pub static CSS_PSEUDO_ELEMENTS: &[&str] = &[
@@ -351,11 +360,12 @@ impl Css {
         "display" => {
             style.display = match value {
                 "flex" => Display::Flex,
+                "inline-flex" => Display::InlineFlex,
                 "grid" => Display::Grid,
-                "inline-grid" => Display::Grid,
+                "inline-grid" => Display::InlineGrid,
                 "block" => Display::Block,
+                "inline" => Display::Inline,
                 "inline-block" => Display::InlineBlock,
-                "inline" => Display::InlineBlock, // approximate
                 "none" => Display::None,
                 _ => style.display,
             };
@@ -363,37 +373,44 @@ impl Css {
         // ─────────────────────────── Position ─────────────────────────────
         "position" => {
             style.position = match value {
+                "static" => Position::Static,
                 "relative" => Position::Relative,
                 "absolute" => Position::Absolute,
                 "fixed" => Position::Fixed,
+                "sticky" => Position::Sticky,
                 _ => style.position,
             };
         }
         // ─────────────────────────── Overflow ─────────────────────────────
         "overflow" => {
-            style.overflow = match value {
-                "visible" => Overflow::Visible,
-                "hidden" => Overflow::Hidden,
-                "scroll" | "auto" => Overflow::Scroll,
-                _ => style.overflow,
-            };
-        }
-        "overflow-x" | "overflow-y" => {
             let ov = match value {
                 "visible" => Overflow::Visible,
                 "hidden" => Overflow::Hidden,
                 "scroll" | "auto" => Overflow::Scroll,
                 _ => style.overflow,
             };
-            match ov {
-                Overflow::Scroll => style.overflow = Overflow::Scroll,
-                Overflow::Hidden => {
-                    if !matches!(style.overflow, Overflow::Scroll) {
-                        style.overflow = Overflow::Hidden;
-                    }
-                }
-                Overflow::Visible => {}
-            }
+            style.overflow = ov;
+            style.overflow_x = ov;
+            style.overflow_y = ov;
+        }
+        "overflow-x" => {
+            style.overflow_x = match value {
+                "visible" => Overflow::Visible,
+                "hidden" => Overflow::Hidden,
+                "scroll" | "auto" => Overflow::Scroll,
+                _ => style.overflow_x,
+            };
+            // Update combined overflow to most restrictive
+            style.overflow = most_restrictive_overflow(style.overflow_x, style.overflow_y);
+        }
+        "overflow-y" => {
+            style.overflow_y = match value {
+                "visible" => Overflow::Visible,
+                "hidden" => Overflow::Hidden,
+                "scroll" | "auto" => Overflow::Scroll,
+                _ => style.overflow_y,
+            };
+            style.overflow = most_restrictive_overflow(style.overflow_x, style.overflow_y);
         }
         // ─────────────────────────── Dimensions ───────────────────────────
         "width" => {
@@ -690,7 +707,18 @@ impl Css {
                 "cover" => BackgroundSize::Cover,
                 "contain" => BackgroundSize::Contain,
                 "auto" => BackgroundSize::Auto,
-                _ => style.background_size,
+                _ => {
+                    let parts: Vec<&str> = value.split_whitespace().collect();
+                    if parts.len() == 2 {
+                        let w = parse_px(parts[0]).unwrap_or(0.0);
+                        let h = parse_px(parts[1]).unwrap_or(0.0);
+                        BackgroundSize::Explicit(w, h)
+                    } else if let Some(w) = parse_px(value) {
+                        BackgroundSize::Explicit(w, 0.0)
+                    } else {
+                        style.background_size
+                    }
+                }
             };
         }
         "background-position" => {
@@ -734,7 +762,7 @@ impl Css {
         "border" => {
             let parts: Vec<&str> = value.split_whitespace().collect();
             if let Some(width) = parts.first().and_then(|v| parse_px(v)) {
-                style.border_width = crate::cxrd::value::EdgeInsets::uniform(width);
+                style.border_width = crate::prd::value::EdgeInsets::uniform(width);
             }
             let color_start = value
                 .find("rgba(")
@@ -755,7 +783,7 @@ impl Css {
         }
         "border-width" => {
             if let Some(w) = parse_px(value) {
-                style.border_width = crate::cxrd::value::EdgeInsets::uniform(w);
+                style.border_width = crate::prd::value::EdgeInsets::uniform(w);
             }
         }
         "border-radius" => {
@@ -763,15 +791,36 @@ impl Css {
             match parts.len() {
                 1 => {
                     if let Some(v) = parse_px(&parts[0]) {
-                        style.border_radius = crate::cxrd::value::CornerRadii::uniform(v);
+                        style.border_radius = crate::prd::value::CornerRadii::uniform(v);
                     }
+                }
+                2 => {
+                    let tl_br = parse_px(&parts[0]).unwrap_or(0.0);
+                    let tr_bl = parse_px(&parts[1]).unwrap_or(0.0);
+                    style.border_radius = crate::prd::value::CornerRadii {
+                        top_left: tl_br,
+                        top_right: tr_bl,
+                        bottom_right: tl_br,
+                        bottom_left: tr_bl,
+                    };
+                }
+                3 => {
+                    let tl = parse_px(&parts[0]).unwrap_or(0.0);
+                    let tr_bl = parse_px(&parts[1]).unwrap_or(0.0);
+                    let br = parse_px(&parts[2]).unwrap_or(0.0);
+                    style.border_radius = crate::prd::value::CornerRadii {
+                        top_left: tl,
+                        top_right: tr_bl,
+                        bottom_right: br,
+                        bottom_left: tr_bl,
+                    };
                 }
                 4 => {
                     let tl = parse_px(&parts[0]).unwrap_or(0.0);
                     let tr = parse_px(&parts[1]).unwrap_or(0.0);
                     let br = parse_px(&parts[2]).unwrap_or(0.0);
                     let bl = parse_px(&parts[3]).unwrap_or(0.0);
-                    style.border_radius = crate::cxrd::value::CornerRadii {
+                    style.border_radius = crate::prd::value::CornerRadii {
                         top_left: tl,
                         top_right: tr,
                         bottom_right: br,
@@ -781,25 +830,25 @@ impl Css {
                 _ => {}
             }
         }
-        "border-style"
-        | "border-top-style"
-        | "border-right-style"
-        | "border-bottom-style"
-        | "border-left-style" => {
-            let parsed = match value {
-                "none" => BorderStyle::None,
-                "solid" => BorderStyle::Solid,
-                "dashed" => BorderStyle::Dashed,
-                "dotted" => BorderStyle::Dotted,
-                "double" => BorderStyle::Double,
-                "groove" => BorderStyle::Groove,
-                "ridge" => BorderStyle::Ridge,
-                "inset" => BorderStyle::Inset,
-                "outset" => BorderStyle::Outset,
-                "hidden" => BorderStyle::Hidden,
-                _ => BorderStyle::Solid,
-            };
+        "border-style" => {
+            let parsed = parse_border_style(value);
             style.border_style = parsed;
+            style.border_top_style = Some(parsed);
+            style.border_right_style = Some(parsed);
+            style.border_bottom_style = Some(parsed);
+            style.border_left_style = Some(parsed);
+        }
+        "border-top-style" => {
+            style.border_top_style = Some(parse_border_style(value));
+        }
+        "border-right-style" => {
+            style.border_right_style = Some(parse_border_style(value));
+        }
+        "border-bottom-style" => {
+            style.border_bottom_style = Some(parse_border_style(value));
+        }
+        "border-left-style" => {
+            style.border_left_style = Some(parse_border_style(value));
         }
         // ─────────────────────────── Per-side border ─────────────────────
         "border-top" => {
@@ -936,18 +985,14 @@ impl Css {
                 style.color = c;
             }
         }
-        "font-family" | "font" => {
-            if property == "font" {
-                // font shorthand: extract family from end, size if present
-                // Simplified: just grab the family
-                let first = value.split(',').next().unwrap_or(value);
-                let family = first.trim().trim_matches(|c: char| c == '"' || c == '\'');
-                style.font_family = family.to_string();
-            } else {
-                let first = value.split(',').next().unwrap_or(value);
-                let family = first.trim().trim_matches(|c: char| c == '"' || c == '\'');
-                style.font_family = family.to_string();
-            }
+        "font-family" => {
+            let first = value.split(',').next().unwrap_or(value);
+            let family = first.trim().trim_matches(|c: char| c == '"' || c == '\'');
+            style.font_family = family.to_string();
+        }
+        "font" => {
+            // font shorthand: [style] [variant] [weight] [stretch] size[/line-height] family
+            parse_font_shorthand(value, style);
         }
         "font-size" => {
             if let Some(v) = parse_px(value) {
@@ -1006,9 +1051,10 @@ impl Css {
         }
         "white-space" => {
             style.white_space = match value {
-                "nowrap" | "pre-line" => WhiteSpace::NoWrap,
+                "nowrap" => WhiteSpace::NoWrap,
                 "pre" => WhiteSpace::Pre,
                 "pre-wrap" => WhiteSpace::PreWrap,
+                "pre-line" => WhiteSpace::PreLine,
                 _ => WhiteSpace::Normal,
             };
         }
@@ -1028,8 +1074,20 @@ impl Css {
                 _ => style.text_overflow,
             };
         }
-        "word-break" | "word-wrap" | "overflow-wrap" => {
-            // Map to white_space wrapping behaviour (already default).
+        "word-break" => {
+            style.word_break = match value {
+                "break-all" => WordBreak::BreakAll,
+                "keep-all" => WordBreak::KeepAll,
+                "break-word" => WordBreak::BreakWord,
+                _ => WordBreak::Normal,
+            };
+        }
+        "word-wrap" | "overflow-wrap" => {
+            style.overflow_wrap = match value {
+                "break-word" => OverflowWrap::BreakWord,
+                "anywhere" => OverflowWrap::Anywhere,
+                _ => OverflowWrap::Normal,
+            };
         }
 
         // ─────────────────────────── Visual ───────────────────────────────
@@ -1044,8 +1102,15 @@ impl Css {
             }
         }
         "transform" => {
-            if let Some(scale) = parse_transform_scale(value) {
-                style.transform_scale = scale.max(0.01);
+            if value == "none" {
+                style.transforms.clear();
+                style.transform_scale = 1.0;
+            } else {
+                style.transforms = parse_transforms(value);
+                // Also update legacy transform_scale for backward compat
+                if let Some(scale) = parse_transform_scale(value) {
+                    style.transform_scale = scale.max(0.01);
+                }
             }
         }
         "z-index" => {
@@ -1095,9 +1160,12 @@ impl Css {
             };
         }
         "user-select" | "-webkit-user-select" => {
-            if value == "none" {
-                style.pointer_events = PointerEvents::None;
-            }
+            style.user_select = match value {
+                "none" => UserSelect::None,
+                "text" => UserSelect::Text,
+                "all" => UserSelect::All,
+                "auto" | _ => UserSelect::Auto,
+            };
         }
         // ─────────────────────────── Object-fit ───────────────────────────
         "object-fit" => {
@@ -1144,7 +1212,8 @@ impl Css {
             }
         }
         "outline-style" => {
-            if value == "none" {
+            style.outline_style = parse_border_style(value);
+            if matches!(style.outline_style, BorderStyle::None) {
                 style.outline_width = 0.0;
             }
         }
@@ -1188,32 +1257,47 @@ impl Css {
         "background-position-x" | "background-position-y" => {
             // Limited: individual axis positioning.
         }
-        "background-attachment"
-        | "background-blend-mode"
-        | "background-clip"
-        | "background-origin" => {
-            // Recognized but not rendered.
+        "background-attachment" => {
+            style.background_attachment = match value {
+                "scroll" => BackgroundAttachment::Scroll,
+                "fixed" => BackgroundAttachment::Fixed,
+                "local" => BackgroundAttachment::Local,
+                _ => style.background_attachment,
+            };
+        }
+        "background-blend-mode" => {
+            style.background_blend_mode = parse_blend_mode(value);
+        }
+        "background-clip" => {
+            style.background_clip = parse_background_box(value);
+        }
+        "background-origin" => {
+            style.background_origin = parse_background_box(value);
         }
 
         // ─────────────────────────── Place shorthands ─────────────────────
-        "place-items" => match value {
-            "center" => {
-                style.align_items = AlignItems::Center;
-                style.justify_content = JustifyContent::Center;
+        "place-items" => {
+            let parts: Vec<&str> = value.split_whitespace().collect();
+            let first = parts.first().copied().unwrap_or(value);
+            style.align_items = match first {
+                "center" => AlignItems::Center,
+                "start" | "flex-start" => AlignItems::FlexStart,
+                "end" | "flex-end" => AlignItems::FlexEnd,
+                "stretch" => AlignItems::Stretch,
+                "baseline" => AlignItems::Baseline,
+                _ => style.align_items,
+            };
+            if let Some(second) = parts.get(1) {
+                // place-items: <align-items> <justify-items>
+                // justify-items maps to justify_content for flex containers
+                style.justify_content = match *second {
+                    "center" => JustifyContent::Center,
+                    "start" | "flex-start" => JustifyContent::FlexStart,
+                    "end" | "flex-end" => JustifyContent::FlexEnd,
+                    _ => style.justify_content,
+                };
             }
-            "start" | "flex-start" => {
-                style.align_items = AlignItems::FlexStart;
-                style.justify_content = JustifyContent::FlexStart;
-            }
-            "end" | "flex-end" => {
-                style.align_items = AlignItems::FlexEnd;
-                style.justify_content = JustifyContent::FlexEnd;
-            }
-            "stretch" => {
-                style.align_items = AlignItems::Stretch;
-            }
-            _ => {}
-        },
+        }
         "place-content" => match value {
             "center" => {
                 style.align_content = AlignContent::Center;
@@ -1422,10 +1506,24 @@ impl Css {
         }
 
         // ─────────────────────────── Color scheme ─────────────────────────
-        "color-scheme"
-        | "accent-color"
-        | "caret-color"
-        | "caret-shape"
+        "color-scheme" => {
+            style.color_scheme = Some(value.to_string());
+        }
+        "accent-color" => {
+            if value == "auto" {
+                style.accent_color = None;
+            } else if let Some(c) = parse_color(value) {
+                style.accent_color = Some(c);
+            }
+        }
+        "caret-color" => {
+            if value == "auto" {
+                style.caret_color = None;
+            } else if let Some(c) = parse_color(value) {
+                style.caret_color = Some(c);
+            }
+        }
+        "caret-shape"
         | "caret"
         | "caret-animation"
         | "forced-color-adjust"
@@ -1434,8 +1532,10 @@ impl Css {
         }
 
         // ─────────────────────────── Scroll behavior ──────────────────────
-        "scroll-behavior"
-        | "scroll-snap-type"
+        "scroll-behavior" => {
+            style.scroll_behavior = Some(value.to_string());
+        }
+        "scroll-snap-type"
         | "scroll-snap-align"
         | "scroll-snap-stop"
         | "scroll-margin"
@@ -1478,44 +1578,181 @@ impl Css {
         }
 
         // ─────────────────────────── Animation / Transition ──────────────
-        "animation"
-        | "animation-name"
-        | "animation-duration"
-        | "animation-timing-function"
-        | "animation-delay"
-        | "animation-iteration-count"
-        | "animation-direction"
-        | "animation-fill-mode"
-        | "animation-play-state"
-        | "animation-composition"
+        "animation" => {
+            if let Some(anim) = parse_animation_shorthand(value) {
+                style.animations = vec![anim];
+            }
+        }
+        "animation-name" => {
+            if style.animations.is_empty() {
+                style.animations.push(default_animation_def(value));
+            } else {
+                style.animations[0].name = value.to_string();
+            }
+        }
+        "animation-duration" => {
+            let ms = parse_time_ms(value).unwrap_or(0.0);
+            if style.animations.is_empty() {
+                let mut def = default_animation_def("");
+                def.duration_ms = ms;
+                style.animations.push(def);
+            } else {
+                style.animations[0].duration_ms = ms;
+            }
+        }
+        "animation-timing-function" => {
+            let easing = parse_easing_function(value);
+            if !style.animations.is_empty() {
+                style.animations[0].easing = easing;
+            }
+        }
+        "animation-delay" => {
+            let ms = parse_time_ms(value).unwrap_or(0.0);
+            if !style.animations.is_empty() {
+                style.animations[0].delay_ms = ms;
+            }
+        }
+        "animation-iteration-count" => {
+            let count = if value == "infinite" {
+                AnimationIterationCount::Infinite
+            } else {
+                AnimationIterationCount::Number(value.parse().unwrap_or(1.0))
+            };
+            if !style.animations.is_empty() {
+                style.animations[0].iteration_count = count;
+            }
+        }
+        "animation-direction" => {
+            let dir = match value {
+                "reverse" => AnimationDirection::Reverse,
+                "alternate" => AnimationDirection::Alternate,
+                "alternate-reverse" => AnimationDirection::AlternateReverse,
+                _ => AnimationDirection::Normal,
+            };
+            if !style.animations.is_empty() {
+                style.animations[0].direction = dir;
+            }
+        }
+        "animation-fill-mode" => {
+            let fm = match value {
+                "forwards" => AnimationFillMode::Forwards,
+                "backwards" => AnimationFillMode::Backwards,
+                "both" => AnimationFillMode::Both,
+                _ => AnimationFillMode::None,
+            };
+            if !style.animations.is_empty() {
+                style.animations[0].fill_mode = fm;
+            }
+        }
+        "animation-play-state" => {
+            let ps = match value {
+                "paused" => AnimationPlayState::Paused,
+                _ => AnimationPlayState::Running,
+            };
+            if !style.animations.is_empty() {
+                style.animations[0].play_state = ps;
+            }
+        }
+        "animation-composition"
         | "animation-timeline"
         | "animation-range"
         | "animation-range-start"
-        | "animation-range-end"
-        | "transition-property"
+        | "animation-range-end" => {
+            // Recognized — advanced animation timeline properties.
+        }
+        "transition-property"
         | "transition-duration"
         | "transition-timing-function"
         | "transition-delay"
         | "transition-behavior" => {
-            // Recognized — animation/transition properties (require frame-based interpolation).
+            // Recognized — individual transition sub-properties.
         }
 
         // ─────────────────────────── Transform ────────────────────────────
-        "transform-origin"
-        | "transform-style"
-        | "transform-box"
-        | "backface-visibility"
-        | "perspective"
-        | "perspective-origin"
-        | "rotate"
-        | "scale"
-        | "translate" => {
-            // Recognized — advanced transform properties.
+        "transform-origin" => {
+            let parts: Vec<&str> = value.split_whitespace().collect();
+            let parse_pos = |s: &str| -> BackgroundPosition {
+                match s {
+                    "center" => BackgroundPosition::Center,
+                    "left" | "top" => BackgroundPosition::Percent(0.0),
+                    "right" | "bottom" => BackgroundPosition::Percent(100.0),
+                    _ => {
+                        if let Some(p) = s.strip_suffix('%') {
+                            BackgroundPosition::Percent(p.parse().unwrap_or(50.0))
+                        } else if let Some(v) = parse_px(s) {
+                            BackgroundPosition::Px(v)
+                        } else {
+                            BackgroundPosition::Center
+                        }
+                    }
+                }
+            };
+            match parts.len() {
+                1 => {
+                    let p = parse_pos(parts[0]);
+                    style.transform_origin = (p, BackgroundPosition::Center);
+                }
+                2 | 3 => {
+                    style.transform_origin = (parse_pos(parts[0]), parse_pos(parts[1]));
+                }
+                _ => {}
+            }
+        }
+        "backface-visibility" => {
+            style.backface_visibility = match value {
+                "hidden" => BackfaceVisibility::Hidden,
+                _ => BackfaceVisibility::Visible,
+            };
+        }
+        "perspective" => {
+            if value == "none" {
+                style.perspective = None;
+            } else if let Some(v) = parse_px(value) {
+                style.perspective = Some(v);
+            }
+        }
+        "rotate" => {
+            if let Some(deg) = parse_angle(value) {
+                // Individual rotate property -> add to transforms
+                style.transforms.retain(|t| !matches!(t, CssTransform::Rotate(_)));
+                style.transforms.push(CssTransform::Rotate(deg));
+            }
+        }
+        "scale" => {
+            let parts: Vec<&str> = value.split_whitespace().collect();
+            let sx = parts.first().and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0);
+            let sy = parts.get(1).and_then(|v| v.parse::<f32>().ok()).unwrap_or(sx);
+            style.transforms.retain(|t| !matches!(t, CssTransform::Scale(_, _)));
+            style.transforms.push(CssTransform::Scale(sx, sy));
+            style.transform_scale = sx;
+        }
+        "translate" => {
+            let parts: Vec<&str> = value.split_whitespace().collect();
+            let tx = parse_px(parts.first().copied().unwrap_or("0")).unwrap_or(0.0);
+            let ty = parts.get(1).and_then(|v| parse_px(v)).unwrap_or(0.0);
+            style.transforms.retain(|t| !matches!(t, CssTransform::Translate(_, _)));
+            style.transforms.push(CssTransform::Translate(tx, ty));
+        }
+        "transform-style" | "transform-box" | "perspective-origin" => {
+            // Recognized — advanced 3D transform properties.
         }
 
         // ─────────────────────────── Filter / Blend ───────────────────────
-        "filter" | "mix-blend-mode" | "isolation" => {
-            // Recognized — filter/blend (require shader pipeline changes).
+        "filter" => {
+            if value == "none" {
+                style.filters.clear();
+            } else {
+                style.filters = parse_filters(value);
+            }
+        }
+        "mix-blend-mode" => {
+            style.mix_blend_mode = parse_blend_mode(value);
+        }
+        "isolation" => {
+            style.isolation = match value {
+                "isolate" => Isolation::Isolate,
+                _ => Isolation::Auto,
+            };
         }
 
         // ─────────────────────────── Clip / Mask ──────────────────────────
@@ -1545,17 +1782,42 @@ impl Css {
         }
 
         // ─────────────────────────── Text (advanced) ──────────────────────
-        "text-shadow"
-        | "text-indent"
-        | "text-underline-offset"
-        | "text-underline-position"
-        | "text-decoration-color"
-        | "text-decoration-thickness"
-        | "text-decoration-style"
-        | "text-decoration-skip"
+        "text-decoration-color" => {
+            if let Some(c) = parse_color(value) {
+                style.text_decoration_color = Some(c);
+            }
+        }
+        "text-decoration-thickness" => {
+            if let Some(v) = parse_px(value) {
+                style.text_decoration_thickness = Some(v);
+            }
+        }
+        "text-decoration-style" => {
+            style.text_decoration_style = match value {
+                "solid" => TextDecorationStyle::Solid,
+                "double" => TextDecorationStyle::Double,
+                "dotted" => TextDecorationStyle::Dotted,
+                "dashed" => TextDecorationStyle::Dashed,
+                "wavy" => TextDecorationStyle::Wavy,
+                _ => style.text_decoration_style,
+            };
+        }
+        "text-decoration-skip"
         | "text-decoration-skip-ink"
-        | "text-decoration-inset"
-        | "text-emphasis"
+        | "text-decoration-inset" => {
+            // Recognized — ink skipping behavior.
+        }
+        "text-shadow" => {
+            // Recognized — text shadow (requires shader support).
+        }
+        "text-indent" => {
+            // Recognized — text indentation.
+        }
+        "text-underline-offset"
+        | "text-underline-position" => {
+            // Recognized — underline positioning.
+        }
+        "text-emphasis"
         | "text-emphasis-color"
         | "text-emphasis-position"
         | "text-emphasis-style"
@@ -1579,8 +1841,13 @@ impl Css {
         }
 
         // ─────────────────────────── Font (advanced) ──────────────────────
-        "font-variant"
-        | "font-variant-numeric"
+        "font-variant" => {
+            style.font_variant = if value == "normal" { None } else { Some(value.to_string()) };
+        }
+        "font-stretch" | "font-width" => {
+            style.font_stretch = if value == "normal" { None } else { Some(value.to_string()) };
+        }
+        "font-variant-numeric"
         | "font-variant-caps"
         | "font-variant-alternates"
         | "font-variant-east-asian"
@@ -1592,8 +1859,6 @@ impl Css {
         | "font-optical-sizing"
         | "font-kerning"
         | "font-size-adjust"
-        | "font-stretch"
-        | "font-width"
         | "font-smooth"
         | "font-language-override"
         | "font-palette"
@@ -1608,10 +1873,16 @@ impl Css {
         }
 
         // ─────────────────────────── Containment / Performance ────────────
-        "will-change"
-        | "contain"
-        | "content-visibility"
-        | "contain-intrinsic-size"
+        "will-change" => {
+            style.will_change = if value == "auto" { None } else { Some(value.to_string()) };
+        }
+        "contain" => {
+            style.contain = if value == "none" { None } else { Some(value.to_string()) };
+        }
+        "content-visibility" => {
+            style.content_visibility = if value == "visible" { None } else { Some(value.to_string()) };
+        }
+        "contain-intrinsic-size"
         | "contain-intrinsic-width"
         | "contain-intrinsic-height"
         | "contain-intrinsic-block-size"
@@ -1641,16 +1912,49 @@ impl Css {
         | "hyphenate-character"
         | "hyphenate-limit-chars"
         | "line-break"
-        | "word-spacing"
         | "tab-size"
         | "hanging-punctuation" => {
-            // letter-spacing handled above (rendered). Others recognized.
+            // Recognized — writing mode & text layout.
+        }
+        "word-spacing" => {
+            if let Some(v) = parse_px(value) {
+                style.word_spacing = v;
+            }
         }
 
         // ─────────────────────────── Image rendering ──────────────────────
-        "image-rendering" | "image-orientation" | "image-resolution" | "object-position"
+        "image-rendering" | "image-orientation" | "image-resolution"
         | "object-view-box" => {
             // Recognized — image rendering properties.
+        }
+        "object-position" => {
+            let parts: Vec<&str> = value.split_whitespace().collect();
+            let parse_pos = |s: &str| -> BackgroundPosition {
+                match s {
+                    "center" => BackgroundPosition::Center,
+                    "left" | "top" => BackgroundPosition::Percent(0.0),
+                    "right" | "bottom" => BackgroundPosition::Percent(100.0),
+                    _ => {
+                        if let Some(p) = s.strip_suffix('%') {
+                            BackgroundPosition::Percent(p.parse().unwrap_or(50.0))
+                        } else if let Some(v) = parse_px(s) {
+                            BackgroundPosition::Px(v)
+                        } else {
+                            BackgroundPosition::Center
+                        }
+                    }
+                }
+            };
+            match parts.len() {
+                1 => {
+                    let p = parse_pos(parts[0]);
+                    style.object_position = (p, BackgroundPosition::Center);
+                }
+                2 => {
+                    style.object_position = (parse_pos(parts[0]), parse_pos(parts[1]));
+                }
+                _ => {}
+            }
         }
 
         // ─────────────────────────── Pointer / Touch ──────────────────────
@@ -1676,15 +1980,55 @@ impl Css {
         }
 
         // ─────────────────────────── Grid (advanced) ──────────────────────
-        "grid"
-        | "grid-template"
-        | "grid-template-areas"
-        | "grid-auto-flow"
-        | "grid-auto-columns"
-        | "grid-auto-rows"
-        | "grid-area"
-        | "grid-gap" => {
-            // Recognized — advanced grid properties.
+        "grid" | "grid-template" => {
+            // Recognized — grid shorthand (complex parsing).
+        }
+        "grid-template-areas" => {
+            // Parse quoted row strings: "header header" "sidebar main"
+            style.grid_template_areas = value
+                .split('"')
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.trim().to_string())
+                .collect();
+        }
+        "grid-auto-flow" => {
+            style.grid_auto_flow = match value {
+                "row" => GridAutoFlow::Row,
+                "column" => GridAutoFlow::Column,
+                "dense" => GridAutoFlow::Dense,
+                "row dense" => GridAutoFlow::RowDense,
+                "column dense" => GridAutoFlow::ColumnDense,
+                _ => style.grid_auto_flow,
+            };
+        }
+        "grid-auto-columns" => {
+            style.grid_auto_columns = parse_grid_template(value);
+        }
+        "grid-auto-rows" => {
+            style.grid_auto_rows = parse_grid_template(value);
+        }
+        "grid-area" => {
+            // grid-area: row-start / column-start / row-end / column-end
+            let parts: Vec<&str> = value.split('/').map(|s| s.trim()).collect();
+            if let Some(rs) = parts.first() {
+                style.grid_row_start = rs.parse::<i32>().unwrap_or(0);
+            }
+            if let Some(cs) = parts.get(1) {
+                style.grid_column_start = cs.parse::<i32>().unwrap_or(0);
+            }
+            if let Some(re) = parts.get(2) {
+                style.grid_row_end = parse_grid_line(re);
+            }
+            if let Some(ce) = parts.get(3) {
+                style.grid_column_end = parse_grid_line(ce);
+            }
+        }
+        "grid-gap" => {
+            if let Some(v) = parse_px(value) {
+                style.gap = v;
+                style.row_gap = v;
+                style.column_gap = v;
+            }
         }
 
         // ─────────────────────────── View Transition ──────────────────────
@@ -1711,11 +2055,23 @@ impl Css {
         }
 
         // ─────────────────────────── SVG properties ───────────────────────
-        "fill"
-        | "fill-opacity"
+        "fill" => {
+            if let Some(c) = parse_color(value) {
+                style.svg_fill = Some(c);
+            }
+        }
+        "stroke" => {
+            if let Some(c) = parse_color(value) {
+                style.svg_stroke = Some(c);
+            }
+        }
+        "stroke-width" => {
+            if let Some(v) = parse_px(value) {
+                style.svg_stroke_width = Some(v);
+            }
+        }
+        "fill-opacity"
         | "fill-rule"
-        | "stroke"
-        | "stroke-width"
         | "stroke-opacity"
         | "stroke-dasharray"
         | "stroke-dashoffset"
@@ -1780,10 +2136,29 @@ impl Css {
         }
 
         // ─────────────────────────── Misc CSS3 recognized ─────────────────
-        "appearance"
-        | "float"
-        | "clear"
-        | "border-image"
+        "appearance" => {
+            // Recognized — appearance hint.
+        }
+        "float" => {
+            style.float = match value {
+                "left" => Float::Left,
+                "right" => Float::Right,
+                "inline-start" => Float::InlineStart,
+                "inline-end" => Float::InlineEnd,
+                _ => Float::None,
+            };
+        }
+        "clear" => {
+            style.clear = match value {
+                "left" => Clear::Left,
+                "right" => Clear::Right,
+                "both" => Clear::Both,
+                "inline-start" => Clear::InlineStart,
+                "inline-end" => Clear::InlineEnd,
+                _ => Clear::None,
+            };
+        }
+        "border-image"
         | "border-image-source"
         | "border-image-slice"
         | "border-image-width"
@@ -1833,3 +2208,4 @@ impl Css {
     true
     }
 }
+

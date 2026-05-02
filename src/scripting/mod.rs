@@ -1,4 +1,4 @@
-// openrender-runtime/src/scripting/mod.rs
+﻿// prism-runtime/src/scripting/mod.rs
 //
 // JavaScript runtime integration for OpenRender.
 //
@@ -18,3 +18,4 @@ pub mod js_worker;
 
 pub use v8_runtime::JsRuntime;
 pub use js_worker::{JsWorkerHandle, JsWorkerInit, JsCommand, JsResult, DirtyCanvas};
+

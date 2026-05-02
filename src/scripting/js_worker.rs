@@ -1,4 +1,4 @@
-// openrender-runtime/src/scripting/js_worker.rs
+﻿// prism-runtime/src/scripting/js_worker.rs
 //
 // Offloads JavaScript execution to a dedicated background thread.
 // The render thread stays free to present frames at sub-millisecond latency
@@ -12,8 +12,8 @@ use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread::{self, JoinHandle};
 
-use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::node::NodeId;
+use crate::prd::document::PrdDocument;
+use crate::prd::node::NodeId;
 use crate::compiler::css::CssRule;
 use crate::compiler::html::ScriptBlock;
 use crate::scripting::canvas2d::CanvasId;
@@ -46,7 +46,7 @@ pub struct DirtyCanvas {
 pub enum JsResult {
     /// Initial setup complete (scripts executed, first restyle done).
     InitDone {
-        document: CxrdDocument,
+        document: PrdDocument,
         uses_data_tags: bool,
     },
     /// A tick completed. Contains dirty canvas data + flags.
@@ -57,7 +57,7 @@ pub enum JsResult {
     },
     /// Restyle completed. Contains the updated document snapshot.
     RestyleDone {
-        document: CxrdDocument,
+        document: PrdDocument,
     },
 }
 
@@ -65,7 +65,7 @@ pub enum JsResult {
 
 /// Everything needed to initialise the JS runtime inside the worker thread.
 pub struct JsWorkerInit {
-    pub document: CxrdDocument,
+    pub document: PrdDocument,
     pub css_rules: Vec<CssRule>,
     pub css_variables: HashMap<String, String>,
     pub scripts: Vec<ScriptBlock>,
@@ -137,7 +137,7 @@ impl JsWorkerHandle {
     /// document + uses_data_tags flag. Must be called exactly once,
     /// immediately after `spawn()`. Returns `None` if the worker
     /// died or sent an unexpected result.
-    pub fn wait_for_init(&self) -> Option<(CxrdDocument, bool)> {
+    pub fn wait_for_init(&self) -> Option<(PrdDocument, bool)> {
         match self.result_rx.recv_timeout(std::time::Duration::from_secs(15)) {
             Ok(JsResult::InitDone { document, uses_data_tags }) => Some((document, uses_data_tags)),
             Ok(_other) => {
@@ -276,3 +276,4 @@ fn js_worker_main(
         }
     }
 }
+

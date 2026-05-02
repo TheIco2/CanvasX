@@ -1,8 +1,8 @@
-// openrender-runtime/src/animate/interpolate.rs
+﻿// prism-runtime/src/animate/interpolate.rs
 //
 // Property interpolation for animated values.
 
-use crate::cxrd::animation::AnimatableProperty;
+use crate::prd::animation::AnimatableProperty;
 
 /// Linearly interpolate between two animatable property values.
 /// Returns the interpolated property at factor `t` (0.0–1.0).
@@ -79,32 +79,49 @@ pub fn interpolate(from: &AnimatableProperty, to: &AnimatableProperty, t: f32) -
     }
 }
 
-/// Apply an interpolated property to a CXRD node's style.
+/// Apply an interpolated property to a PRD node's style.
 pub fn apply_animated_property(
-    style: &mut crate::cxrd::style::ComputedStyle,
+    style: &mut crate::prd::style::ComputedStyle,
     prop: &AnimatableProperty,
 ) {
     match prop {
         AnimatableProperty::Opacity(v) => style.opacity = *v,
         AnimatableProperty::BackgroundColor(c) => {
-            style.background = crate::cxrd::style::Background::Solid(*c);
+            style.background = crate::prd::style::Background::Solid(*c);
         }
         AnimatableProperty::Color(c) => style.color = *c,
         AnimatableProperty::BorderColor(c) => style.border_color = *c,
         AnimatableProperty::BorderRadius(v) => {
-            style.border_radius = crate::cxrd::value::CornerRadii::uniform(*v);
+            style.border_radius = crate::prd::value::CornerRadii::uniform(*v);
         }
         AnimatableProperty::Width(v) => {
-            style.width = crate::cxrd::value::Dimension::Px(*v);
+            style.width = crate::prd::value::Dimension::Px(*v);
         }
         AnimatableProperty::Height(v) => {
-            style.height = crate::cxrd::value::Dimension::Px(*v);
+            style.height = crate::prd::value::Dimension::Px(*v);
         }
         AnimatableProperty::FontSize(v) => style.font_size = *v,
         AnimatableProperty::Gap(v) => style.gap = *v,
-        // Transform properties don't directly map to style yet.
-        // They'll be applied via a transform matrix on the instance.
-        _ => {}
+        AnimatableProperty::PaddingTop(v) => style.padding.top = crate::prd::value::Dimension::Px(*v),
+        AnimatableProperty::PaddingRight(v) => style.padding.right = crate::prd::value::Dimension::Px(*v),
+        AnimatableProperty::PaddingBottom(v) => style.padding.bottom = crate::prd::value::Dimension::Px(*v),
+        AnimatableProperty::PaddingLeft(v) => style.padding.left = crate::prd::value::Dimension::Px(*v),
+        AnimatableProperty::MarginTop(v) => style.margin.top = crate::prd::value::Dimension::Px(*v),
+        AnimatableProperty::MarginRight(v) => style.margin.right = crate::prd::value::Dimension::Px(*v),
+        AnimatableProperty::MarginBottom(v) => style.margin.bottom = crate::prd::value::Dimension::Px(*v),
+        AnimatableProperty::MarginLeft(v) => style.margin.left = crate::prd::value::Dimension::Px(*v),
+        AnimatableProperty::TranslateX(v) => {
+            style.left = crate::prd::value::Dimension::Px(*v);
+        }
+        AnimatableProperty::TranslateY(v) => {
+            style.top = crate::prd::value::Dimension::Px(*v);
+        }
+        AnimatableProperty::ScaleX(v) | AnimatableProperty::ScaleY(v) => {
+            style.transform_scale = *v;
+        }
+        AnimatableProperty::Rotate(_) => {
+            // Rotation requires GPU transform support — no-op for now.
+        }
     }
 }
 
@@ -112,3 +129,4 @@ pub fn apply_animated_property(
 fn lerp(a: f32, b: f32, t: f32) -> f32 {
     a + (b - a) * t
 }
+

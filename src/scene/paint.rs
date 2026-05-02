@@ -1,14 +1,14 @@
-// openrender-runtime/src/scene/paint.rs
+// prism-runtime/src/scene/paint.rs
 //
-// Paint pass — converts a laid-out CXRD tree into a flat list of UiInstance
+// Paint pass — converts a laid-out PRD tree into a flat list of UiInstance
 // draw calls for the GPU renderer. Depth-first traversal respects z-index
 // and stacking context.
 
 use crate::compiler::css::apply_property;
-use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::node::{NodeId, NodeKind, CxrdNode};
-use crate::cxrd::input::{InputKind, ButtonVariant, CheckboxStyle};
-use crate::cxrd::style::{BorderStyle, ComputedStyle, Display, Background, GradientStop};
+use crate::prd::document::PrdDocument;
+use crate::prd::node::{NodeId, NodeKind, PrdNode};
+use crate::prd::input::{InputKind, ButtonVariant, CheckboxStyle};
+use crate::prd::style::{BorderStyle, ComputedStyle, Display, Background, GradientStop, ObjectFit};
 use crate::gpu::vertex::UiInstance;
 use std::collections::HashMap;
 
@@ -66,7 +66,7 @@ fn hash_gradient_stops(stops: &[GradientStop]) -> u64 {
 
 /// Paint the entire document into a list of GPU instances.
 /// Uses gradient cache to avoid re-rasterizing identical gradients.
-pub fn paint_document(doc: &CxrdDocument, gradient_cache: &mut HashMap<GradientCacheKey, GradientTexture>) -> PaintOutput {
+pub fn paint_document(doc: &PrdDocument, gradient_cache: &mut HashMap<GradientCacheKey, GradientTexture>) -> PaintOutput {
     // Reset gradient slot counter each frame to reuse slots
     NEXT_GRADIENT_SLOT.store(20000, std::sync::atomic::Ordering::Relaxed);
 
@@ -77,7 +77,7 @@ pub fn paint_document(doc: &CxrdDocument, gradient_cache: &mut HashMap<GradientC
 }
 
 /// Recursively paint a node and its children.
-fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, grad_textures: &mut Vec<GradientTexture>, gradient_cache: &mut HashMap<GradientCacheKey, GradientTexture>) {
+fn paint_node(doc: &PrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, grad_textures: &mut Vec<GradientTexture>, gradient_cache: &mut HashMap<GradientCacheKey, GradientTexture>) {
     let node = match doc.get_node(node_id) {
         Some(n) => n,
         None => return,
@@ -86,6 +86,11 @@ fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, gr
     if matches!(node.style.display, Display::None) {
         return;
     }
+
+    // visibility: hidden — skip this node's own visuals but still paint children
+    // (children inherit visibility but can override it).
+    let is_visible = !matches!(node.style.visibility, crate::prd::style::Visibility::Hidden
+                                                     | crate::prd::style::Visibility::Collapse);
 
     // Emit box-shadow quads BEHIND the node.
     if !node.style.box_shadow.is_empty() {
@@ -170,7 +175,7 @@ fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, gr
     }
 
     // Only emit an instance if the node has visible visual properties.
-    if should_paint(node) {
+    if is_visible && should_paint(node) {
         // Check for gradient backgrounds — use cached rasterization if available.
         // Larger gradient sizes (up to 2048x2048) provide better quality.
         // Use effective_style so pseudo-class overrides (hover/active) are respected.
@@ -363,9 +368,76 @@ fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, gr
         }
     }
 
+    // --- Text decoration rendering (underline / line-through / overline) ---
+    if is_visible {
+        let s = &effective_style(node);
+        if !matches!(s.text_decoration, crate::prd::style::TextDecoration::None) {
+            let r = &node.layout.rect;
+            let deco_color = s.text_decoration_color
+                .map(|c| c.to_array())
+                .unwrap_or_else(|| s.color.to_array());
+            let thickness = s.text_decoration_thickness.unwrap_or(1.0);
+            let clip = node.layout.clip
+                .map(|c| c.to_array())
+                .unwrap_or([0.0, 0.0, 99999.0, 99999.0]);
+            match s.text_decoration {
+                crate::prd::style::TextDecoration::Underline => {
+                    out.push(filled_rect(
+                        r.x, r.y + r.height - thickness, r.width, thickness,
+                        deco_color, [0.0; 4], clip, s.opacity,
+                    ));
+                }
+                crate::prd::style::TextDecoration::LineThrough => {
+                    let mid_y = r.y + (r.height * 0.5) - (thickness * 0.5);
+                    out.push(filled_rect(
+                        r.x, mid_y, r.width, thickness,
+                        deco_color, [0.0; 4], clip, s.opacity,
+                    ));
+                }
+                crate::prd::style::TextDecoration::Overline => {
+                    out.push(filled_rect(
+                        r.x, r.y, r.width, thickness,
+                        deco_color, [0.0; 4], clip, s.opacity,
+                    ));
+                }
+                _ => {}
+            }
+        }
+    }
+
+    // --- Outline rendering (drawn outside the border box) ---
+    if is_visible {
+        let s = &effective_style(node);
+        if s.outline_width > 0.0
+            && !matches!(s.outline_style, BorderStyle::None | BorderStyle::Hidden)
+        {
+            let r = &node.layout.rect;
+            let ow = s.outline_width;
+            let oo = s.outline_offset;
+            let outline_color = s.outline_color.unwrap_or(s.color).to_array();
+            let clip = node.layout.clip
+                .map(|c| c.to_array())
+                .unwrap_or([0.0, 0.0, 99999.0, 99999.0]);
+            let expand = ow + oo;
+            let radius = [
+                (s.border_radius.top_left + expand).max(0.0),
+                (s.border_radius.top_right + expand).max(0.0),
+                (s.border_radius.bottom_right + expand).max(0.0),
+                (s.border_radius.bottom_left + expand).max(0.0),
+            ];
+            out.push(bordered_rect(
+                r.x - expand, r.y - expand,
+                r.width + expand * 2.0, r.height + expand * 2.0,
+                [0.0; 4], outline_color, ow, radius, clip, s.opacity,
+            ));
+        }
+    }
+
     // For Input nodes, emit extra widget-specific quads.
-    if let NodeKind::Input(ref input) = node.kind {
-        paint_input_widget(node, input, out);
+    if is_visible {
+        if let NodeKind::Input(ref input) = node.kind {
+            paint_input_widget(node, input, out);
+        }
     }
 
     // For Canvas nodes, emit a textured quad (texture upload handled by main loop).
@@ -430,7 +502,7 @@ fn paint_node(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, gr
 }
 
 /// Does this node need a GPU draw call?
-fn should_paint(node: &CxrdNode) -> bool {
+fn should_paint(node: &PrdNode) -> bool {
     let s = &node.style;
 
     // Non-zero size?
@@ -529,7 +601,7 @@ fn bordered_rect(
 /// normal paint path if the node has a CSS background/border. This function
 /// adds *widget chrome* — the intrinsic visual parts of buttons, text fields,
 /// checkboxes, sliders, etc.
-fn paint_input_widget(node: &CxrdNode, input: &InputKind, out: &mut Vec<UiInstance>) {
+fn paint_input_widget(node: &PrdNode, input: &InputKind, out: &mut Vec<UiInstance>) {
     let r = &node.layout.rect;
     let clip = node.layout.clip
         .map(|c| c.to_array())
@@ -729,7 +801,7 @@ fn paint_input_widget(node: &CxrdNode, input: &InputKind, out: &mut Vec<UiInstan
 
 /// Return the effective style for a node, applying pseudo-class overrides.
 /// Priority: base → :hover → :focus → :active (highest wins).
-fn effective_style(node: &CxrdNode) -> ComputedStyle {
+fn effective_style(node: &PrdNode) -> ComputedStyle {
     let needs_override = (node.hovered && !node.hover_style.is_empty())
         || (node.focused && !node.focus_style.is_empty())
         || (node.active && !node.active_style.is_empty());
@@ -759,8 +831,8 @@ fn effective_style(node: &CxrdNode) -> ComputedStyle {
     }
 }
 
-/// Convert a CXRD node into a GPU UiInstance.
-fn node_to_instance(node: &CxrdNode) -> UiInstance {
+/// Convert a PRD node into a GPU UiInstance.
+fn node_to_instance(node: &PrdNode) -> UiInstance {
     let s = &effective_style(node);
     let r = &node.layout.rect;
 

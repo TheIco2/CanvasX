@@ -1,4 +1,4 @@
-// openrender-runtime/src/devtools/debug_server.rs
+﻿// prism-runtime/src/devtools/debug_server.rs
 //
 // Minimal HTTP debug server that serves the current page's HTML/CSS
 // in a standard browser for visual comparison. Runs on a background
@@ -248,3 +248,4 @@ fn escape_html(s: &str) -> String {
         .replace('>', "&gt;")
         .replace('"', "&quot;")
 }
+

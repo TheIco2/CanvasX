@@ -1,4 +1,4 @@
-// openrender-runtime/src/instance/mod.rs
+﻿// prism-runtime/src/instance/mod.rs
 //
 // Single-instance enforcement and multi-instance coordination.
 //
@@ -252,3 +252,4 @@ fn signal_existing_instance(pipe_name: &str) {
 
     log::info!("Sent FOCUS signal to existing instance");
 }
+

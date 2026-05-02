@@ -1,4 +1,4 @@
-// openrender-runtime/src/platform/desktop.rs
+﻿// prism-runtime/src/platform/desktop.rs
 //
 // WorkerW desktop window embedding for wallpapers.
 // This finds the desktop's WorkerW layer and creates a child window that
@@ -92,3 +92,4 @@ pub fn embed_in_desktop(child_hwnd: HWND) -> bool {
 fn to_wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
+

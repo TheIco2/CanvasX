@@ -1,4 +1,4 @@
-// openrender-runtime/src/gpu/renderer.rs
+﻿// prism-runtime/src/gpu/renderer.rs
 //
 // The main renderer — takes a scene graph's paint output (list of UiInstance)
 // and submits draw calls to the GPU. Also manages text rendering via glyphon.
@@ -10,7 +10,7 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::pipeline::{UiPipelines, GlobalUniforms};
 use crate::gpu::texture::TextureManager;
 use crate::gpu::vertex::{UiInstance, QUAD_VERTICES, QUAD_INDICES};
-use crate::cxrd::value::Color;
+use crate::prd::value::Color;
 
 /// The main renderer for the OpenRender Runtime.
 pub struct Renderer {
@@ -184,6 +184,41 @@ impl Renderer {
         })
     }
 
+    /// Current device scale factor (physical / logical pixels). Callers
+    /// shaping glyphon text should multiply font metrics by this so glyphs
+    /// rasterize at physical pixel resolution (otherwise text looks pixelated
+    /// on high-DPI displays).
+    #[inline]
+    pub fn scale_factor(&self) -> f32 {
+        self.scale_factor
+    }
+
+    /// Convert a list of TextAreas whose positions/bounds are in **logical**
+    /// pixels into TextAreas in **physical** pixels (matching the glyphon
+    /// viewport which is set to physical resolution). The caller's text
+    /// buffers must already be shaped at physical font metrics
+    /// (`font_size * scale_factor`) for crisp output.
+    fn scale_text_areas<'a>(&self, areas: Vec<glyphon::TextArea<'a>>) -> Vec<glyphon::TextArea<'a>> {
+        let s = self.scale_factor;
+        if (s - 1.0).abs() < 0.001 {
+            return areas;
+        }
+        areas.into_iter().map(|ta| glyphon::TextArea {
+            buffer: ta.buffer,
+            left: ta.left * s,
+            top: ta.top * s,
+            scale: ta.scale,
+            bounds: glyphon::TextBounds {
+                left:   (ta.bounds.left   as f32 * s) as i32,
+                top:    (ta.bounds.top    as f32 * s) as i32,
+                right:  (ta.bounds.right  as f32 * s) as i32,
+                bottom: (ta.bounds.bottom as f32 * s) as i32,
+            },
+            default_color: ta.default_color,
+            custom_glyphs: ta.custom_glyphs,
+        }).collect()
+    }
+
     /// Begin a new frame — update timestamp and viewport uniforms.
     ///
     /// When `scale_factor > 1.0` the layout operates in virtual pixels
@@ -258,16 +293,18 @@ impl Renderer {
         let upload_instances = if has_overlay { &all_instances[..] } else { instances };
         self.upload_instances(&ctx.device, &ctx.queue, upload_instances);
 
-        // Update text viewport.
-        let vp_w = (ctx.size.0 as f32 / self.scale_factor) as u32;
-        let vp_h = (ctx.size.1 as f32 / self.scale_factor) as u32;
+        // Update text viewport in PHYSICAL pixels — text is rasterized at
+        // physical resolution and positioned in physical pixels for crisp
+        // glyphs on high-DPI displays. Callers are responsible for
+        // multiplying logical positions and font metrics by scale_factor.
         let resolution = glyphon::Resolution {
-            width: vp_w.max(1),
-            height: vp_h.max(1),
+            width: ctx.size.0.max(1),
+            height: ctx.size.1.max(1),
         };
         self.text_viewport.update(&ctx.queue, resolution);
 
         // Prepare scene text.
+        let scene_text = self.scale_text_areas(scene_text);
         self.text_renderer
             .prepare(
                 &ctx.device,
@@ -283,6 +320,7 @@ impl Renderer {
         // Prepare overlay text using a separate renderer + atlas (avoids evicting scene glyphs).
         if has_overlay_text {
             self.overlay_text_viewport.update(&ctx.queue, resolution);
+            let overlay_text = self.scale_text_areas(overlay_text);
             self.overlay_text_renderer
                 .prepare(
                     &ctx.device,
@@ -422,9 +460,9 @@ impl Renderer {
         all_instances.extend_from_slice(overlay_instances);
         self.upload_instances(&ctx.device, &ctx.queue, &all_instances);
 
-        // Update text viewport.
-        let vp_w = (ctx.size.0 as f32 / self.scale_factor) as u32;
-        let vp_h = (ctx.size.1 as f32 / self.scale_factor) as u32;
+        // Update text viewport (PHYSICAL pixels for crisp glyphs).
+        let vp_w = ctx.size.0;
+        let vp_h = ctx.size.1;
         let resolution = glyphon::Resolution {
             width: vp_w.max(1),
             height: vp_h.max(1),
@@ -432,6 +470,7 @@ impl Renderer {
         self.text_viewport.update(&ctx.queue, resolution);
 
         // Prepare scene text.
+        let scene_text = self.scale_text_areas(scene_text);
         self.text_renderer
             .prepare(
                 &ctx.device, &ctx.queue, &mut self.font_system,
@@ -443,6 +482,7 @@ impl Renderer {
         // Prepare mid-layer text (DevTools).
         if has_mid_text {
             self.mid_text_viewport.update(&ctx.queue, resolution);
+            let mid_text = self.scale_text_areas(mid_text);
             self.mid_text_renderer
                 .prepare(
                     &ctx.device, &ctx.queue, &mut self.font_system,
@@ -455,6 +495,7 @@ impl Renderer {
         // Prepare overlay text (context menu).
         if has_overlay_text {
             self.overlay_text_viewport.update(&ctx.queue, resolution);
+            let overlay_text = self.scale_text_areas(overlay_text);
             self.overlay_text_renderer
                 .prepare(
                     &ctx.device, &ctx.queue, &mut self.font_system,
@@ -656,8 +697,8 @@ impl Renderer {
         queue.write_buffer(&self.instance_buffer, 0, bytemuck::cast_slice(instances));
     }
 
-    /// Load all assets from a CXRD document into GPU textures.
-    pub fn load_assets(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, assets: &crate::cxrd::asset::AssetBundle) {
+    /// Load all assets from a PRD document into GPU textures.
+    pub fn load_assets(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, assets: &crate::prd::asset::AssetBundle) {
         for (i, img) in assets.images.iter().enumerate() {
             let idx = i as u32;
             let ok = if img.mime == "image/raw-rgba" {
@@ -741,3 +782,4 @@ impl Renderer {
 
 // wgpu::util::BufferInitDescriptor helper
 use wgpu::util::DeviceExt;
+

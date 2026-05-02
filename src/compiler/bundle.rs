@@ -1,13 +1,13 @@
-// openrender-runtime/src/compiler/bundle.rs
+﻿// prism-runtime/src/compiler/bundle.rs
 //
 // Asset bundler — collects and bundles all local resources (images, fonts)
-// referenced by an HTML/CSS scene into the CXRD asset table.
+// referenced by an HTML/CSS scene into the PRD asset table.
 
 use std::path::Path;
 use image::GenericImageView;
 use std::fs;
 use anyhow::Result;
-use crate::cxrd::document::CxrdDocument;
+use crate::prd::document::PrdDocument;
 
 /// Supported image extensions.
 const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "svg", "ico"];
@@ -15,12 +15,12 @@ const IMAGE_EXTS: &[&str] = &["png", "jpg", "jpeg", "webp", "svg", "ico"];
 /// Supported font extensions.
 const FONT_EXTS: &[&str] = &["ttf", "otf", "woff", "woff2"];
 
-/// Bundle all assets from a directory into a CXRD document.
+/// Bundle all assets from a directory into a PRD document.
 ///
 /// Scans `asset_dir` for images and fonts, adds them to the document's
 /// asset bundle, and returns a mapping of original paths → asset indexes.
 pub fn bundle_assets(
-    doc: &mut CxrdDocument,
+    doc: &mut PrdDocument,
     asset_dir: &Path,
 ) -> Result<std::collections::HashMap<String, u32>> {
     let mut path_to_index = std::collections::HashMap::new();
@@ -101,7 +101,7 @@ pub fn bundle_assets(
 
 /// Load a single image file into the document's asset bundle.
 /// Returns the asset index on success. Supports png, jpg, webp, svg, ico.
-pub fn load_image_asset(doc: &mut CxrdDocument, path: &Path) -> Result<u32> {
+pub fn load_image_asset(doc: &mut PrdDocument, path: &Path) -> Result<u32> {
     let ext = path.extension()
         .and_then(|e| e.to_str())
         .map(|e| e.to_lowercase())
@@ -139,9 +139,9 @@ pub fn load_image_asset(doc: &mut CxrdDocument, path: &Path) -> Result<u32> {
 /// Resolve `<img src="...">` nodes: match `src` attribute against the asset
 /// path→index map and update `NodeKind::Image { asset_index }` and
 /// `style.background` so the paint system renders the texture.
-pub fn resolve_image_nodes(doc: &mut CxrdDocument, path_to_index: &std::collections::HashMap<String, u32>) {
-    use crate::cxrd::node::NodeKind;
-    use crate::cxrd::style::Background;
+pub fn resolve_image_nodes(doc: &mut PrdDocument, path_to_index: &std::collections::HashMap<String, u32>) {
+    use crate::prd::node::NodeKind;
+    use crate::prd::style::Background;
     for node in &mut doc.nodes {
         if let NodeKind::Image { ref mut asset_index, .. } = node.kind {
             if let Some(src) = node.attributes.get("src") {
@@ -179,3 +179,4 @@ fn guess_weight_from_name(name: &str) -> u16 {
     else if lower.contains("black") || lower.contains("heavy") { 900 }
     else { 400 }
 }
+

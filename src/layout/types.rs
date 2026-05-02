@@ -1,8 +1,8 @@
-// openrender-runtime/src/layout/types.rs
+﻿// prism-runtime/src/layout/types.rs
 //
 // Layout computation types — intermediate results during layout.
 
-use crate::cxrd::value::{Rect, EdgeInsets, Size};
+use crate::prd::value::{Rect, EdgeInsets, Size};
 
 /// Layout constraints passed from parent to child.
 #[derive(Debug, Clone, Copy)]
@@ -75,3 +75,4 @@ impl LayoutBox {
         }
     }
 }
+

@@ -1,4 +1,4 @@
-// openrender-runtime/src/compiler/editable.rs
+﻿// prism-runtime/src/compiler/editable.rs
 //
 // Editable properties system — bridges OpenDesktop's manifest.json editable
 // schema + editable.yaml user overrides into a flat property map that
@@ -438,3 +438,4 @@ fn parse_yaml_scalar(s: &str) -> Value {
     let unquoted = s.trim_matches('"').trim_matches('\'');
     Value::String(unquoted.to_string())
 }
+

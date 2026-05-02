@@ -1,15 +1,15 @@
-// openrender-runtime/src/scene/input_handler.rs
+﻿// prism-runtime/src/scene/input_handler.rs
 //
 // Input event processing — mouse hit-testing, keyboard input routing,
 // focus management, and event dispatch. This makes OpenRender documents
 // actually interactive and usable as app windows.
 
 use std::collections::HashMap;
-use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::node::{NodeId, NodeKind, EventAction};
-use crate::cxrd::input::{InputKind, InteractionState, FocusState};
-use crate::cxrd::style::{CursorStyle, Overflow};
-use crate::cxrd::value::Rect;
+use crate::prd::document::PrdDocument;
+use crate::prd::node::{NodeId, NodeKind, EventAction};
+use crate::prd::input::{InputKind, InteractionState, FocusState};
+use crate::prd::style::{CursorStyle, Overflow};
+use crate::prd::value::Rect;
 
 /// Mouse button identifiers.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,11 +82,11 @@ pub enum UiEvent {
     /// A dropdown selection changed.
     SelectionChanged { node_id: NodeId, value: String },
     /// A color picker value changed.
-    ColorChanged { node_id: NodeId, value: crate::cxrd::value::Color },
+    ColorChanged { node_id: NodeId, value: crate::prd::value::Color },
     /// A tab was selected.
     TabSelected { node_id: NodeId, tab_id: String },
     /// A link was activated.
-    LinkActivated { node_id: NodeId, target: crate::cxrd::input::LinkTarget },
+    LinkActivated { node_id: NodeId, target: crate::prd::input::LinkTarget },
     /// A compiled event action should be dispatched.
     Action(EventAction),
     /// Navigation request (from Navigate events or links).
@@ -115,6 +115,8 @@ pub struct InputHandler {
     pub scroll_dirty: bool,
     /// Set when a ToggleClass action modified a node's class list (caller should re-apply CSS).
     pub class_dirty: bool,
+    /// Set when hover state changed (caller should invalidate paint but not layout).
+    pub hover_dirty: bool,
 }
 
 /// Cursor icon hints for the platform layer.
@@ -146,13 +148,14 @@ impl InputHandler {
             cursor: CursorIcon::Default,
             scroll_dirty: false,
             class_dirty: false,
+            hover_dirty: false,
         }
     }
 
     /// Process a raw input event against the document. Returns high-level UI events.
     pub fn process_event(
         &mut self,
-        doc: &mut CxrdDocument,
+        doc: &mut PrdDocument,
         event: RawInputEvent,
     ) -> Vec<UiEvent> {
         self.pending_events.clear();
@@ -201,12 +204,24 @@ impl InputHandler {
     // --- Hit testing ---
 
     /// Find the deepest node at (x, y) that is interactive.
-    fn hit_test(&self, doc: &CxrdDocument, x: f32, y: f32) -> Option<NodeId> {
+    fn hit_test(&self, doc: &PrdDocument, x: f32, y: f32) -> Option<NodeId> {
         self.hit_test_node(doc, doc.root, x, y)
     }
 
-    fn hit_test_node(&self, doc: &CxrdDocument, node_id: NodeId, x: f32, y: f32) -> Option<NodeId> {
+    fn hit_test_node(&self, doc: &PrdDocument, node_id: NodeId, x: f32, y: f32) -> Option<NodeId> {
         let node = doc.get_node(node_id)?;
+
+        // Skip nodes that are invisible or have pointer-events disabled.
+        if matches!(node.style.display, crate::prd::style::Display::None) {
+            return None;
+        }
+        if matches!(node.style.visibility, crate::prd::style::Visibility::Hidden
+                                          | crate::prd::style::Visibility::Collapse) {
+            return None;
+        }
+        if matches!(node.style.pointer_events, crate::prd::style::PointerEvents::None) {
+            return None;
+        }
 
         // Check if point is in this node's rect.
         let rect = &node.layout.rect;
@@ -250,7 +265,7 @@ impl InputHandler {
 
     // --- Mouse handlers ---
 
-    fn handle_mouse_move(&mut self, doc: &mut CxrdDocument, x: f32, y: f32) {
+    fn handle_mouse_move(&mut self, doc: &mut PrdDocument, x: f32, y: f32) {
         let hit = self.hit_test(doc, x, y);
 
         // Update hover state.
@@ -293,6 +308,7 @@ impl InputHandler {
             }
 
             self.hovered = hit;
+            self.hover_dirty = true;
         }
 
         // Update cursor.
@@ -306,7 +322,7 @@ impl InputHandler {
         };
     }
 
-    fn handle_mouse_down(&mut self, doc: &mut CxrdDocument, x: f32, y: f32) {
+    fn handle_mouse_down(&mut self, doc: &mut PrdDocument, x: f32, y: f32) {
         let hit = self.hit_test(doc, x, y);
 
         // Update focus.
@@ -352,7 +368,7 @@ impl InputHandler {
         }
     }
 
-    fn handle_mouse_up(&mut self, doc: &mut CxrdDocument, x: f32, y: f32) {
+    fn handle_mouse_up(&mut self, doc: &mut PrdDocument, x: f32, y: f32) {
         let hit = self.hit_test(doc, x, y);
 
         // Find all pressed nodes and release them.
@@ -389,7 +405,7 @@ impl InputHandler {
         }
     }
 
-    fn handle_scroll(&mut self, doc: &mut CxrdDocument, _x: f32, _y: f32, _dx: f32, dy: f32) {
+    fn handle_scroll(&mut self, doc: &mut PrdDocument, _x: f32, _y: f32, _dx: f32, dy: f32) {
         let (mx, my) = self.mouse_pos;
         // Find the nearest scroll container ancestor at the cursor.
         if let Some(node_id) = self.find_scroll_container(doc, mx, my) {
@@ -423,13 +439,13 @@ impl InputHandler {
         }
     }
 
-    fn find_scroll_container(&self, doc: &CxrdDocument, x: f32, y: f32) -> Option<NodeId> {
+    fn find_scroll_container(&self, doc: &PrdDocument, x: f32, y: f32) -> Option<NodeId> {
         self.find_scroll_container_node(doc, doc.root, x, y)
     }
 
     fn find_scroll_container_node(
         &self,
-        doc: &CxrdDocument,
+        doc: &PrdDocument,
         node_id: NodeId,
         x: f32,
         y: f32,
@@ -457,7 +473,7 @@ impl InputHandler {
 
     // --- Click dispatch ---
 
-    fn dispatch_click(&mut self, doc: &mut CxrdDocument, node_id: NodeId) {
+    fn dispatch_click(&mut self, doc: &mut PrdDocument, node_id: NodeId) {
         let node = match doc.get_node(node_id) {
             Some(n) => n.clone(),
             None => return,
@@ -530,7 +546,7 @@ impl InputHandler {
 
     /// Walk up from `child_id` through parent nodes, dispatching click event
     /// bindings on the first ancestor that has them (event bubbling).
-    fn bubble_click_to_parent(&mut self, doc: &mut CxrdDocument, child_id: NodeId) {
+    fn bubble_click_to_parent(&mut self, doc: &mut PrdDocument, child_id: NodeId) {
         // Find parent that contains child_id.
         let mut current = child_id;
         while let Some(parent_id) = self.find_parent(doc, doc.root, current) {
@@ -589,7 +605,7 @@ impl InputHandler {
     }
 
     /// Find the parent of `target` by searching from `node_id` downward.
-    fn find_parent(&self, doc: &CxrdDocument, node_id: NodeId, target: NodeId) -> Option<NodeId> {
+    fn find_parent(&self, doc: &PrdDocument, node_id: NodeId, target: NodeId) -> Option<NodeId> {
         let node = doc.get_node(node_id)?;
         for &child_id in &node.children {
             if child_id == target {
@@ -603,7 +619,7 @@ impl InputHandler {
     }
 
     /// Find a node by its HTML `id` attribute.
-    fn find_node_by_html_id(doc: &CxrdDocument, html_id: &str) -> Option<NodeId> {
+    fn find_node_by_html_id(doc: &PrdDocument, html_id: &str) -> Option<NodeId> {
         for (i, node) in doc.nodes.iter().enumerate() {
             if node.html_id.as_deref() == Some(html_id) {
                 return Some(i as NodeId);
@@ -612,7 +628,7 @@ impl InputHandler {
         None
     }
 
-    fn handle_interactive_click(&mut self, doc: &mut CxrdDocument, node_id: NodeId) {
+    fn handle_interactive_click(&mut self, doc: &mut PrdDocument, node_id: NodeId) {
         // We need to work with a clone since we can't borrow mutably while reading.
         let node = match doc.get_node(node_id) {
             Some(n) => n.clone(),
@@ -660,17 +676,17 @@ impl InputHandler {
             }
             NodeKind::Input(InputKind::Link { href: target, .. }) => {
                 match target {
-                    crate::cxrd::input::LinkTarget::Scene(scene_id) => {
+                    crate::prd::input::LinkTarget::Scene(scene_id) => {
                         self.pending_events.push(UiEvent::NavigateRequest {
                             scene_id: scene_id.clone(),
                         });
                     }
-                    crate::cxrd::input::LinkTarget::External(url) => {
+                    crate::prd::input::LinkTarget::External(url) => {
                         self.pending_events.push(UiEvent::OpenExternal {
                             url: url.clone(),
                         });
                     }
-                    crate::cxrd::input::LinkTarget::Ipc { ns, cmd, args } => {
+                    crate::prd::input::LinkTarget::Ipc { ns, cmd, args } => {
                         self.pending_events.push(UiEvent::IpcCommand {
                             ns: ns.clone(),
                             cmd: cmd.clone(),
@@ -704,7 +720,7 @@ impl InputHandler {
 
     // --- Keyboard handlers ---
 
-    fn handle_key_down(&mut self, doc: &mut CxrdDocument, key: KeyCode, modifiers: Modifiers) {
+    fn handle_key_down(&mut self, doc: &mut PrdDocument, key: KeyCode, modifiers: Modifiers) {
         let focused = match self.focused {
             Some(id) => id,
             None => {
@@ -834,7 +850,7 @@ impl InputHandler {
         }
     }
 
-    fn handle_text_input(&mut self, doc: &mut CxrdDocument, text: &str) {
+    fn handle_text_input(&mut self, doc: &mut PrdDocument, text: &str) {
         let focused = match self.focused {
             Some(id) => id,
             None => return,
@@ -886,7 +902,7 @@ impl InputHandler {
 
     // --- Focus navigation ---
 
-    fn focus_next(&mut self, doc: &CxrdDocument, forward: bool) {
+    fn focus_next(&mut self, doc: &PrdDocument, forward: bool) {
         let interactive = collect_interactive_nodes(doc);
         if interactive.is_empty() {
             return;
@@ -991,7 +1007,7 @@ fn css_cursor_from_str(value: &str, kind: &NodeKind) -> CursorIcon {
 /// parent while the hit test returns a deeper child. We walk up the ancestor
 /// chain checking `hover_style` for a cursor override, then fall back to the
 /// compiled `style.cursor` (which already has inheritance baked in).
-fn resolve_hover_cursor(doc: &CxrdDocument, start: NodeId) -> CursorIcon {
+fn resolve_hover_cursor(doc: &PrdDocument, start: NodeId) -> CursorIcon {
     let mut nid = Some(start);
     while let Some(id) = nid {
         if let Some(node) = doc.get_node(id) {
@@ -1017,13 +1033,13 @@ fn resolve_hover_cursor(doc: &CxrdDocument, start: NodeId) -> CursorIcon {
 }
 
 /// Collect all interactive node IDs in document order (depth-first).
-fn collect_interactive_nodes(doc: &CxrdDocument) -> Vec<NodeId> {
+fn collect_interactive_nodes(doc: &PrdDocument) -> Vec<NodeId> {
     let mut result = Vec::new();
     collect_interactive_recursive(doc, doc.root, &mut result);
     result
 }
 
-fn collect_interactive_recursive(doc: &CxrdDocument, node_id: NodeId, out: &mut Vec<NodeId>) {
+fn collect_interactive_recursive(doc: &PrdDocument, node_id: NodeId, out: &mut Vec<NodeId>) {
     let node = match doc.get_node(node_id) {
         Some(n) => n,
         None => return,
@@ -1037,3 +1053,4 @@ fn collect_interactive_recursive(doc: &CxrdDocument, node_id: NodeId, out: &mut 
         collect_interactive_recursive(doc, child_id, out);
     }
 }
+

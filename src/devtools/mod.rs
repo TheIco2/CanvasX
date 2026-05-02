@@ -1,4 +1,4 @@
-// openrender-runtime/src/devtools/mod.rs
+﻿// prism-runtime/src/devtools/mod.rs
 //
 // Built-in developer tools for OpenRender Runtime.
 // Provides an Elements panel (DOM tree view with collapsible nodes and
@@ -14,9 +14,9 @@ pub mod debug_server;
 
 use std::collections::HashSet;
 use crate::gpu::vertex::UiInstance;
-use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::node::NodeId;
-use crate::cxrd::value::Color;
+use crate::prd::document::PrdDocument;
+use crate::prd::node::NodeId;
+use crate::prd::value::Color;
 
 /// Which DevTools tab is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -87,6 +87,10 @@ pub struct DevTools {
     pub vertex_count: u32,
     /// Texture count.
     pub texture_count: u32,
+    /// Whether to draw a highlight outline in the scene around the selected
+    /// or hovered DOM node (Elements panel). Toggleable via the checkbox in
+    /// the Elements tab header.
+    pub highlight_enabled: bool,
 }
 
 impl DevTools {
@@ -114,6 +118,7 @@ impl DevTools {
             frame_time_history: Vec::with_capacity(120),
             vertex_count: 0,
             texture_count: 0,
+            highlight_enabled: true,
         }
     }
 
@@ -257,7 +262,14 @@ impl DevTools {
 
     /// Handle a click inside the Elements panel content area.
     /// Returns true if the click was consumed.
-    pub fn handle_elements_click(&mut self, x: f32, y: f32, viewport_height: f32, doc: &CxrdDocument) -> bool {
+    pub fn handle_elements_click(&mut self, x: f32, y: f32, viewport_height: f32, doc: &PrdDocument) -> bool {
+        self.handle_elements_click_ex(x, y, 99999.0, viewport_height, doc)
+    }
+
+    /// Same as `handle_elements_click` but receives the viewport width so the
+    /// "highlight" checkbox in the Elements tab header (right-aligned) can be
+    /// hit-tested. New code should prefer this variant.
+    pub fn handle_elements_click_ex(&mut self, x: f32, y: f32, viewport_width: f32, viewport_height: f32, doc: &PrdDocument) -> bool {
         if !self.open || self.active_tab != DevToolsTab::Elements {
             return false;
         }
@@ -267,6 +279,12 @@ impl DevTools {
 
         if y < content_y || y > content_y + content_h {
             return false;
+        }
+
+        // Highlight checkbox hit (top-right corner of Elements content area).
+        if hit_highlight_checkbox(x, y, viewport_width, content_y) {
+            self.highlight_enabled = !self.highlight_enabled;
+            return true;
         }
 
         let line_h = 16.0;
@@ -346,7 +364,7 @@ impl DevTools {
     /// Generate GPU instances for the DevTools overlay (badge + panel).
     pub fn paint(
         &self,
-        doc: &CxrdDocument,
+        doc: &PrdDocument,
         viewport_width: f32,
         viewport_height: f32,
     ) -> Vec<UiInstance> {
@@ -364,6 +382,10 @@ impl DevTools {
             );
         }
 
+        // Context menu always paints on top (when open) — independent of the
+        // DevTools panel so right-click menus work even when DevTools is closed.
+        instances.extend(self.context_menu.paint());
+
         instances
     }
 
@@ -372,10 +394,36 @@ impl DevTools {
         self.context_menu.paint()
     }
 
+    /// GPU instances for the in-scene **hover** highlight (the box-model
+    /// overlay for the *selected* node is painted from `overlay::paint_panel`).
+    /// Returns an empty vec when `highlight_enabled == false` or DevTools is
+    /// closed, or no node is hovered in the Elements panel.
+    pub fn scene_highlight_instances(&self, doc: &PrdDocument) -> Vec<UiInstance> {
+        if !self.open || !self.highlight_enabled {
+            return Vec::new();
+        }
+        let mut out = Vec::new();
+        if let Some(hover_line) = self.hovered_element_line {
+            if let Some(nid) = elements::node_id_at_line(doc, hover_line as usize, &self.expanded_nodes) {
+                if Some(nid) != self.selected_node {
+                    if let Some(node) = doc.get_node(nid) {
+                        out.extend(highlight_rect(
+                            &node.layout.rect,
+                            Color::TRANSPARENT,
+                            Color::new(1.0, 0.55, 0.20, 1.0),
+                            1.0,
+                        ));
+                    }
+                }
+            }
+        }
+        out
+    }
+
     /// Generate text areas for the DevTools overlay.
     pub fn text_entries(
         &self,
-        doc: &CxrdDocument,
+        doc: &PrdDocument,
         viewport_width: f32,
         viewport_height: f32,
     ) -> Vec<DevToolsTextEntry> {
@@ -479,6 +527,21 @@ impl DevTools {
                         self.selected_node, &self.expanded_nodes,
                         self.hovered_element_line,
                     );
+                    // "Highlight" label next to the checkbox.
+                    let (cx, cy, _size) = overlay::highlight_checkbox_box(viewport_width, content_y);
+                    entries.push(DevToolsTextEntry {
+                        text: "Highlight".to_string(),
+                        x: cx - 70.0,
+                        y: cy - 1.0,
+                        width: 64.0,
+                        font_size: 11.0,
+                        color: if self.highlight_enabled {
+                            Color::WHITE
+                        } else {
+                            Color::new(0.55, 0.55, 0.6, 1.0)
+                        },
+                        bold: false,
+                    });
                 }
                 DevToolsTab::Console => {
                     console::text_entries_console(
@@ -502,6 +565,9 @@ impl DevTools {
                 }
             }
         }
+
+        // Context menu labels (drawn on top of everything else).
+        entries.extend(self.context_menu.text_entries());
 
         entries
     }
@@ -590,4 +656,34 @@ pub struct DevToolsTextEntry {
     pub font_size: f32,
     pub color: Color,
     pub bold: bool,
+}
+
+/// Hit-test the highlight-toggle checkbox in the Elements tab header.
+fn hit_highlight_checkbox(x: f32, y: f32, viewport_width: f32, content_y: f32) -> bool {
+    let (cx, cy, size) = overlay::highlight_checkbox_box(viewport_width, content_y);
+    // Generous hit area to make the small box easy to click.
+    let pad = 4.0;
+    x >= cx - pad && x <= cx + size + pad && y >= cy - pad && y <= cy + size + pad
+}
+
+/// Build a filled-and-outlined highlight rectangle (returns 1 instance).
+fn highlight_rect(r: &crate::prd::value::Rect, fill: Color, border: Color, bw: f32) -> Vec<UiInstance> {
+    if r.width <= 0.0 || r.height <= 0.0 {
+        return Vec::new();
+    }
+    let mut flags = 0u32;
+    if fill.a > 0.0 { flags |= UiInstance::FLAG_HAS_BACKGROUND; }
+    if bw > 0.0 && border.a > 0.0 { flags |= UiInstance::FLAG_HAS_BORDER; }
+    vec![UiInstance {
+        rect: [r.x, r.y, r.width, r.height],
+        bg_color: fill.to_array(),
+        border_color: border.to_array(),
+        border_width: [bw, bw, bw, bw],
+        border_radius: [0.0; 4],
+        clip_rect: [0.0, 0.0, 99999.0, 99999.0],
+        texture_index: -1,
+        opacity: 1.0,
+        flags,
+        _pad: 0,
+    }]
 }

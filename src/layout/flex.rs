@@ -1,4 +1,4 @@
-// openrender-runtime/src/layout/flex.rs
+﻿// prism-runtime/src/layout/flex.rs
 //
 // Simplified flexbox layout algorithm.
 //
@@ -13,9 +13,9 @@
 // Does NOT support:
 //   order, align-content, baseline alignment, min/max cross-size clamping
 
-use crate::cxrd::style::{FlexDirection, JustifyContent, AlignItems, AlignSelf, Display};
-use crate::cxrd::node::CxrdNode;
-use crate::cxrd::value::{Dimension, Rect, EdgeInsets};
+use crate::prd::style::{FlexDirection, JustifyContent, AlignItems, AlignSelf, Display};
+use crate::prd::node::PrdNode;
+use crate::prd::value::{Dimension, Rect, EdgeInsets};
 use crate::layout::types::LayoutConstraints;
 
 /// Perform flexbox layout on a container's children.
@@ -24,9 +24,9 @@ use crate::layout::types::LayoutConstraints;
 /// `children` — mutable references to child nodes (will set their layout.rect).
 /// Returns the intrinsic height used by children (for auto-sizing containers).
 pub fn layout_flex(
-    container: &CxrdNode,
+    container: &PrdNode,
     container_rect: Rect,
-    children: &mut [&mut CxrdNode],
+    children: &mut [&mut PrdNode],
     constraints: &LayoutConstraints,
 ) -> f32 {
     let style = &container.style;
@@ -275,3 +275,4 @@ pub fn layout_flex(
 
     if is_row { max_cross_used } else { offset }
 }
+

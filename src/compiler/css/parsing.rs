@@ -1,11 +1,11 @@
-// openrender-runtime/src/compiler/css/parsing.rs
+﻿// prism-runtime/src/compiler/css/parsing.rs
 //
 // Shared CSS value parsers — dimensions, colors, gradients, shadows, etc.
 // Used by the property application logic in css.rs and by html.rs / v8_runtime.rs
 // through the re-exports in mod.rs.
 
-use crate::cxrd::style::*;
-use crate::cxrd::value::{Color, Dimension};
+use crate::prd::style::*;
+use crate::prd::value::{Color, Dimension};
 use std::collections::HashMap;
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -779,7 +779,7 @@ fn parse_stop_position(s: &str) -> f32 {
 }
 
 /// Parse a CSS angle value: `90deg`, `0.25turn`, `100grad`, `1.57rad`.
-fn parse_angle(s: &str) -> Option<f32> {
+pub fn parse_angle(s: &str) -> Option<f32> {
     let s = s.trim();
     if let Some(deg) = s.strip_suffix("deg") {
         return deg.trim().parse::<f32>().ok();
@@ -1107,3 +1107,342 @@ pub fn parse_border_style_keyword(value: &str) -> Option<BorderStyle> {
         _ => None,
     }
 }
+
+/// Parse a border-style keyword, returning a default of Solid for unknowns.
+pub fn parse_border_style(value: &str) -> BorderStyle {
+    parse_border_style_keyword(value).unwrap_or(BorderStyle::Solid)
+}
+
+/// Parse an overflow value, returning the most restrictive of two axes.
+pub fn most_restrictive_overflow(a: Overflow, b: Overflow) -> Overflow {
+    match (a, b) {
+        (Overflow::Scroll, _) | (_, Overflow::Scroll) => Overflow::Scroll,
+        (Overflow::Hidden, _) | (_, Overflow::Hidden) => Overflow::Hidden,
+        _ => Overflow::Visible,
+    }
+}
+
+/// Parse a CSS blend mode keyword.
+pub fn parse_blend_mode(value: &str) -> BlendMode {
+    match value.trim() {
+        "multiply" => BlendMode::Multiply,
+        "screen" => BlendMode::Screen,
+        "overlay" => BlendMode::Overlay,
+        "darken" => BlendMode::Darken,
+        "lighten" => BlendMode::Lighten,
+        "color-dodge" => BlendMode::ColorDodge,
+        "color-burn" => BlendMode::ColorBurn,
+        "hard-light" => BlendMode::HardLight,
+        "soft-light" => BlendMode::SoftLight,
+        "difference" => BlendMode::Difference,
+        "exclusion" => BlendMode::Exclusion,
+        "hue" => BlendMode::Hue,
+        "saturation" => BlendMode::Saturation,
+        "color" => BlendMode::Color,
+        "luminosity" => BlendMode::Luminosity,
+        _ => BlendMode::Normal,
+    }
+}
+
+/// Parse a background-clip/background-origin keyword.
+pub fn parse_background_box(value: &str) -> BackgroundBox {
+    match value.trim() {
+        "padding-box" => BackgroundBox::PaddingBox,
+        "content-box" => BackgroundBox::ContentBox,
+        _ => BackgroundBox::BorderBox,
+    }
+}
+
+/// Parse a full `transform` value into a list of CssTransform functions.
+pub fn parse_transforms(value: &str) -> Vec<CssTransform> {
+    let mut transforms = Vec::new();
+    let mut remaining = value.trim();
+
+    while !remaining.is_empty() {
+        if let Some(start) = remaining.find('(') {
+            let func_name = remaining[..start].trim();
+            let after_paren = &remaining[start + 1..];
+            // Find matching close paren
+            let mut depth = 1;
+            let mut end = 0;
+            for (i, ch) in after_paren.char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let args = &after_paren[..end];
+            remaining = after_paren[end + 1..].trim();
+
+            match func_name {
+                "translate" | "translateX" | "translateY" => {
+                    let parts: Vec<&str> = args.split(',').collect();
+                    let tx = if func_name == "translateY" { 0.0 } else { parse_px(parts[0].trim()).unwrap_or(0.0) };
+                    let ty = if func_name == "translateX" {
+                        0.0
+                    } else if func_name == "translateY" {
+                        parse_px(parts[0].trim()).unwrap_or(0.0)
+                    } else {
+                        parts.get(1).and_then(|v| parse_px(v.trim())).unwrap_or(0.0)
+                    };
+                    transforms.push(CssTransform::Translate(tx, ty));
+                }
+                "scale" | "scaleX" | "scaleY" => {
+                    let parts: Vec<&str> = args.split(',').collect();
+                    let sx = if func_name == "scaleY" { 1.0 } else { parts[0].trim().parse::<f32>().unwrap_or(1.0) };
+                    let sy = if func_name == "scaleX" {
+                        1.0
+                    } else if func_name == "scaleY" {
+                        parts[0].trim().parse::<f32>().unwrap_or(1.0)
+                    } else {
+                        parts.get(1).and_then(|v| v.trim().parse::<f32>().ok()).unwrap_or(sx)
+                    };
+                    transforms.push(CssTransform::Scale(sx, sy));
+                }
+                "rotate" => {
+                    if let Some(deg) = parse_angle(args.trim()) {
+                        transforms.push(CssTransform::Rotate(deg));
+                    }
+                }
+                "skewX" | "skew" => {
+                    if let Some(deg) = parse_angle(args.split(',').next().unwrap_or("").trim()) {
+                        transforms.push(CssTransform::SkewX(deg));
+                    }
+                }
+                "skewY" => {
+                    if let Some(deg) = parse_angle(args.trim()) {
+                        transforms.push(CssTransform::SkewY(deg));
+                    }
+                }
+                _ => {} // Unrecognized transform function
+            }
+        } else {
+            break;
+        }
+    }
+    transforms
+}
+
+/// Parse a CSS `filter` value into a list of CssFilter functions.
+pub fn parse_filters(value: &str) -> Vec<CssFilter> {
+    let mut filters = Vec::new();
+    let mut remaining = value.trim();
+
+    while !remaining.is_empty() {
+        if let Some(start) = remaining.find('(') {
+            let func_name = remaining[..start].trim();
+            let after_paren = &remaining[start + 1..];
+            let mut depth = 1;
+            let mut end = 0;
+            for (i, ch) in after_paren.char_indices() {
+                match ch {
+                    '(' => depth += 1,
+                    ')' => {
+                        depth -= 1;
+                        if depth == 0 {
+                            end = i;
+                            break;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            let arg = after_paren[..end].trim();
+            remaining = after_paren[end + 1..].trim();
+
+            let parse_percent_or_number = |s: &str| -> f32 {
+                if let Some(p) = s.strip_suffix('%') {
+                    p.parse::<f32>().unwrap_or(100.0) / 100.0
+                } else {
+                    s.parse::<f32>().unwrap_or(1.0)
+                }
+            };
+
+            match func_name {
+                "blur" => {
+                    if let Some(v) = parse_px(arg) {
+                        filters.push(CssFilter::Blur(v));
+                    }
+                }
+                "brightness" => filters.push(CssFilter::Brightness(parse_percent_or_number(arg))),
+                "contrast" => filters.push(CssFilter::Contrast(parse_percent_or_number(arg))),
+                "grayscale" => filters.push(CssFilter::Grayscale(parse_percent_or_number(arg))),
+                "hue-rotate" => {
+                    if let Some(deg) = parse_angle(arg) {
+                        filters.push(CssFilter::HueRotate(deg));
+                    }
+                }
+                "invert" => filters.push(CssFilter::Invert(parse_percent_or_number(arg))),
+                "opacity" => filters.push(CssFilter::Opacity(parse_percent_or_number(arg))),
+                "saturate" => filters.push(CssFilter::Saturate(parse_percent_or_number(arg))),
+                "sepia" => filters.push(CssFilter::Sepia(parse_percent_or_number(arg))),
+                _ => {}
+            }
+        } else {
+            break;
+        }
+    }
+    filters
+}
+
+/// Parse a CSS `font` shorthand value.
+pub fn parse_font_shorthand(value: &str, style: &mut ComputedStyle) {
+    // CSS font shorthand: [style] [variant] [weight] [stretch] size[/line-height] family[, family]*
+    // We parse from right to left: family is everything after the size/line-height token.
+    let tokens: Vec<&str> = value.split_whitespace().collect();
+    if tokens.is_empty() {
+        return;
+    }
+
+    // Find the size token — it's the first token that looks like a dimension
+    let mut size_idx = None;
+    for (i, t) in tokens.iter().enumerate() {
+        let base = t.split('/').next().unwrap_or(t);
+        if parse_px(base).is_some() || base.ends_with("em") || base.ends_with("rem") || base.ends_with('%') {
+            size_idx = Some(i);
+            break;
+        }
+    }
+
+    if let Some(si) = size_idx {
+        // Everything before size_idx is style/variant/weight/stretch
+        for t in &tokens[..si] {
+            match *t {
+                "italic" => style.font_style = FontStyle::Italic,
+                "oblique" => style.font_style = FontStyle::Oblique,
+                "bold" => style.font_weight = FontWeight(700),
+                "normal" => {} // default
+                "lighter" => style.font_weight = FontWeight(300),
+                "bolder" => style.font_weight = FontWeight(600),
+                "small-caps" => style.font_variant = Some("small-caps".to_string()),
+                _ => {
+                    if let Ok(w) = t.parse::<u16>() {
+                        style.font_weight = FontWeight(w);
+                    }
+                }
+            }
+        }
+
+        // Parse size/line-height
+        let size_token = tokens[si];
+        if let Some(slash) = size_token.find('/') {
+            let size_str = &size_token[..slash];
+            let lh_str = &size_token[slash + 1..];
+            if let Some(s) = parse_px(size_str) {
+                style.font_size = s;
+            }
+            if let Ok(lh) = lh_str.parse::<f32>() {
+                style.line_height = lh;
+            } else if let Some(lh) = parse_px(lh_str) {
+                style.line_height = lh / style.font_size.max(1.0);
+            }
+        } else if let Some(s) = parse_px(size_token) {
+            style.font_size = s;
+        }
+
+        // Everything after size is the font family
+        if si + 1 < tokens.len() {
+            let family_str = tokens[si + 1..].join(" ");
+            let first = family_str.split(',').next().unwrap_or(&family_str);
+            let family = first.trim().trim_matches(|c: char| c == '"' || c == '\'');
+            style.font_family = family.to_string();
+        }
+    } else {
+        // No size found — treat entire value as family
+        let first = value.split(',').next().unwrap_or(value);
+        let family = first.trim().trim_matches(|c: char| c == '"' || c == '\'');
+        style.font_family = family.to_string();
+    }
+}
+
+/// Parse a CSS `animation` shorthand into an AnimationDef.
+pub fn parse_animation_shorthand(value: &str) -> Option<AnimationDef> {
+    let tokens: Vec<&str> = value.split_whitespace().collect();
+    if tokens.is_empty() || value == "none" {
+        return None;
+    }
+
+    let mut name = String::new();
+    let mut duration_ms = 0.0;
+    let mut delay_ms = 0.0;
+    let mut easing = EasingFunction::Ease;
+    let mut iteration_count = AnimationIterationCount::Number(1.0);
+    let mut direction = AnimationDirection::Normal;
+    let mut fill_mode = AnimationFillMode::None;
+    let mut play_state = AnimationPlayState::Running;
+    let mut found_duration = false;
+
+    for token in &tokens {
+        if let Some(t) = parse_time_ms(token) {
+            if !found_duration {
+                duration_ms = t;
+                found_duration = true;
+            } else {
+                delay_ms = t;
+            }
+        } else if let Some(e) = parse_easing(token) {
+            easing = e;
+        } else {
+            match *token {
+                "infinite" => iteration_count = AnimationIterationCount::Infinite,
+                "reverse" => direction = AnimationDirection::Reverse,
+                "alternate" => direction = AnimationDirection::Alternate,
+                "alternate-reverse" => direction = AnimationDirection::AlternateReverse,
+                "forwards" => fill_mode = AnimationFillMode::Forwards,
+                "backwards" => fill_mode = AnimationFillMode::Backwards,
+                "both" => fill_mode = AnimationFillMode::Both,
+                "paused" => play_state = AnimationPlayState::Paused,
+                "running" => play_state = AnimationPlayState::Running,
+                "normal" => {} // default direction
+                "none" => {}
+                _ => {
+                    if name.is_empty() {
+                        name = token.to_string();
+                    }
+                }
+            }
+        }
+    }
+
+    if name.is_empty() {
+        return None;
+    }
+
+    Some(AnimationDef {
+        name,
+        duration_ms,
+        delay_ms,
+        easing,
+        iteration_count,
+        direction,
+        fill_mode,
+        play_state,
+    })
+}
+
+/// Create a default AnimationDef with the given name.
+pub fn default_animation_def(name: &str) -> AnimationDef {
+    AnimationDef {
+        name: name.to_string(),
+        duration_ms: 0.0,
+        delay_ms: 0.0,
+        easing: EasingFunction::Ease,
+        iteration_count: AnimationIterationCount::Number(1.0),
+        direction: AnimationDirection::Normal,
+        fill_mode: AnimationFillMode::None,
+        play_state: AnimationPlayState::Running,
+    }
+}
+
+/// Parse an easing function, wrapping the inner parse_easing.
+pub fn parse_easing_function(value: &str) -> EasingFunction {
+    parse_easing(value).unwrap_or(EasingFunction::Ease)
+}
+

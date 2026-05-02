@@ -1,4 +1,4 @@
-// openrender-runtime/src/gpu/pipeline.rs
+﻿// prism-runtime/src/gpu/pipeline.rs
 //
 // Render pipelines: the SDF-based UI pipeline and the texture pipeline.
 // We use SDF rendering for boxes (rounded rects with borders) so that
@@ -127,3 +127,4 @@ impl UiPipelines {
         }
     }
 }
+

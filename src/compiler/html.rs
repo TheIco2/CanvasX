@@ -1,7 +1,7 @@
-// openrender-runtime/src/compiler/html.rs
+﻿// prism-runtime/src/compiler/html.rs
 //
 // HTML subset parser for the OpenRender Runtime.
-// Converts restricted HTML into CXRD nodes.
+// Converts restricted HTML into PRD nodes.
 //
 // Supported elements:
 //   div, span, p, h1–h6, img, button, input, label, svg, path, section
@@ -9,11 +9,11 @@
 //
 // Attributes: class, id, style (inline), data-*, src, alt
 
-use crate::cxrd::document::{CxrdDocument, SceneType};
-use crate::cxrd::node::{CxrdNode, NodeKind, ImageFit, NodeId, EventBinding, EventAction};
-use crate::cxrd::input::{InputKind, TextInputType, ButtonVariant, CheckboxStyle};
-use crate::cxrd::style::{AlignItems, Background, ComputedStyle, CursorStyle, Display, FlexDirection, FontWeight, TextAlign};
-use crate::cxrd::value::{Color, Dimension};
+use crate::prd::document::{PrdDocument, SceneType};
+use crate::prd::node::{PrdNode, NodeKind, ImageFit, NodeId, EventBinding, EventAction};
+use crate::prd::input::{InputKind, TextInputType, ButtonVariant, CheckboxStyle};
+use crate::prd::style::{AlignItems, Background, ComputedStyle, CursorStyle, Display, FlexDirection, FontWeight, TextAlign};
+use crate::prd::value::{Color, Dimension};
 use crate::compiler::css::{parse_css, apply_property, parse_color, CssRule, CompoundSelector};
 use std::collections::HashMap;
 use std::path::Path;
@@ -59,6 +59,35 @@ fn preprocess_includes(html: &str, base_dir: Option<&Path>, depth: u32) -> Strin
 }
 
 fn preprocess_includes_inner(html: &str, base_dir: Option<&Path>, depth: u32) -> (String, Vec<String>) {
+    preprocess_includes_inner_with_embed(html, base_dir, None, depth)
+}
+
+/// Embed-aware include preprocessor.
+///
+/// `embed_base` is a relative path within the embedded `pages/` bundle that
+/// acts as the resolution root for `<include src="...">` tags (e.g. `""` for
+/// pages at the bundle root, or `"settings"` for pages under `pages/settings/`).
+///
+/// When `embed_base` is `Some(_)`, asset/component/HTML includes are resolved
+/// against the in-memory embedded bundle via [`crate::embed::read_page_str`].
+/// When it is `None`, the legacy filesystem-based behaviour is used.
+pub fn preprocess_includes_embedded(html: &str, embed_base: &str, depth: u32) -> String {
+    let (mut result, deferred) =
+        preprocess_includes_inner_with_embed(html, None, Some(embed_base), depth);
+    for script in &deferred {
+        result.push_str("\n<script data-deferred=\"true\">\n");
+        result.push_str(script);
+        result.push_str("\n</script>");
+    }
+    result
+}
+
+fn preprocess_includes_inner_with_embed(
+    html: &str,
+    base_dir: Option<&Path>,
+    embed_base: Option<&str>,
+    depth: u32,
+) -> (String, Vec<String>) {
     if depth > 16 {
         log::warn!("include depth limit reached (>16), stopping recursion");
         return (html.to_string(), Vec::new());
@@ -102,6 +131,80 @@ fn preprocess_includes_inner(html: &str, base_dir: Option<&Path>, depth: u32) ->
             let immediate = has_attribute(tag_text, "immediate");
 
             if let Some(src_path) = src {
+                // Embedded resolution path -------------------------------------
+                if let Some(eb) = embed_base {
+                    let sub = match include_type.as_deref() {
+                        Some("component") => "components",
+                        Some("asset") => "assets",
+                        Some("icon") => "icons",
+                        _ => "",
+                    };
+                    let resolved_rel = join_embed(eb, sub, &src_path);
+
+                    if include_type.as_deref() == Some("icon") {
+                        let target = extract_attribute(tag_text, "target").unwrap_or_default();
+                        result.push_str(&format!(
+                            "<meta name=\"icon\" data-target=\"{}\" content=\"{}\" />",
+                            target, resolved_rel
+                        ));
+                    } else {
+                        let target_attr = extract_attribute(tag_text, "target");
+                        let is_immediate = immediate || target_attr.as_deref() == Some("start");
+
+                        match crate::embed::read_page_str(&resolved_rel) {
+                            Some(contents) => {
+                                let ext = resolved_rel
+                                    .rsplit('.')
+                                    .next()
+                                    .unwrap_or("")
+                                    .to_lowercase();
+                                match ext.as_str() {
+                                    "css" => {
+                                        result.push_str("<style>\n");
+                                        result.push_str(contents);
+                                        result.push_str("\n</style>");
+                                    }
+                                    "js" => {
+                                        if is_immediate {
+                                            result.push_str("<script>\n");
+                                            result.push_str(contents);
+                                            result.push_str("\n</script>");
+                                        } else {
+                                            deferred_scripts.push(contents.to_string());
+                                        }
+                                    }
+                                    _ => {
+                                        let child_base = parent_of(&resolved_rel);
+                                        let (expanded, child_deferred) =
+                                            preprocess_includes_inner_with_embed(
+                                                contents,
+                                                None,
+                                                Some(&child_base),
+                                                depth + 1,
+                                            );
+                                        result.push_str(&expanded);
+                                        deferred_scripts.extend(child_deferred);
+                                    }
+                                }
+                            }
+                            None => {
+                                log::error!(
+                                    "include: failed to read embedded '{}'",
+                                    resolved_rel
+                                );
+                                result.push_str(&format!(
+                                    "<!-- include error: embedded '{}' not found -->",
+                                    resolved_rel
+                                ));
+                            }
+                        }
+                    }
+
+                    pos = tag_end;
+                    continue;
+                }
+
+                // Filesystem resolution path -----------------------------------
                 // Resolve base directory based on type.
                 let resolve_base = match include_type.as_deref() {
                     Some("component") => base_dir.map(|b| b.join("components")),
@@ -158,7 +261,9 @@ fn preprocess_includes_inner(html: &str, base_dir: Option<&Path>, depth: u32) ->
                                 // HTML content — recurse for nested includes.
                                 let child_dir = resolved.parent().or(base_dir);
                                 let (expanded, child_deferred) =
-                                    preprocess_includes_inner(&contents, child_dir, depth + 1);
+                                    preprocess_includes_inner_with_embed(
+                                        &contents, child_dir, None, depth + 1,
+                                    );
                                 result.push_str(&expanded);
                                 deferred_scripts.extend(child_deferred);
                             }
@@ -182,6 +287,37 @@ fn preprocess_includes_inner(html: &str, base_dir: Option<&Path>, depth: u32) ->
     }
 
     (result, deferred_scripts)
+}
+
+/// Join `(base, sub, src)` into a normalised forward-slash relative path used
+/// for embedded bundle lookups.
+///
+/// Examples:
+///   `join_embed("",          "",           "css/x.css") -> "css/x.css"`
+///   `join_embed("settings",  "components", "btn.html")  -> "settings/components/btn.html"`
+fn join_embed(base: &str, sub: &str, src: &str) -> String {
+    let mut out = String::new();
+    let base = base.trim_matches('/');
+    let sub = sub.trim_matches('/');
+    let src = src.trim_start_matches('/');
+    if !base.is_empty() {
+        out.push_str(base);
+        out.push('/');
+    }
+    if !sub.is_empty() {
+        out.push_str(sub);
+        out.push('/');
+    }
+    out.push_str(src);
+    out.replace('\\', "/")
+}
+
+/// Return the parent (directory) portion of an embedded relative path, or "".
+fn parent_of(rel: &str) -> String {
+    match rel.rfind('/') {
+        Some(i) => rel[..i].to_string(),
+        None => String::new(),
+    }
 }
 
 /// Preprocess `<page-content>` tags by inlining the default page fragment.
@@ -275,7 +411,7 @@ fn extract_redirect(html: &str) -> Option<String> {
 
 /// Extract icon declarations from `<meta name="icon" ...>` tags
 /// (emitted by `<include type="icon">` preprocessing).
-fn extract_icons(html: &str) -> Vec<crate::cxrd::document::IconDecl> {
+fn extract_icons(html: &str) -> Vec<crate::prd::document::IconDecl> {
     let lower = html.to_lowercase();
     let mut icons = Vec::new();
     let mut search_pos = 0;
@@ -291,7 +427,7 @@ fn extract_icons(html: &str) -> Vec<crate::cxrd::document::IconDecl> {
         if extract_attribute(tag_text, "name").as_deref() == Some("icon") {
             if let Some(path) = extract_attribute(tag_text, "content") {
                 let target = extract_attribute(tag_text, "data-target").unwrap_or_default();
-                icons.push(crate::cxrd::document::IconDecl { target, path, asset_index: None });
+                icons.push(crate::prd::document::IconDecl { target, path, asset_index: None });
             }
         }
         search_pos = tag_end;
@@ -348,7 +484,7 @@ fn extract_attribute(tag: &str, attr_name: &str) -> Option<String> {
     None
 }
 
-/// Compile an HTML file + CSS into a CXRD document.
+/// Compile an HTML file + CSS into a PRD document.
 ///
 /// Flatten HTML for debug serving: resolve includes, page-content, extract inline CSS.
 /// Returns (flattened_html, combined_css).
@@ -380,8 +516,8 @@ pub fn compile_html(
     name: &str,
     scene_type: SceneType,
     asset_dir: Option<&Path>,
-) -> anyhow::Result<(CxrdDocument, Vec<ScriptBlock>, Vec<CssRule>)> {
-    let mut doc = CxrdDocument::new(name, scene_type);
+) -> anyhow::Result<(PrdDocument, Vec<ScriptBlock>, Vec<CssRule>)> {
+    let mut doc = PrdDocument::new(name, scene_type);
 
     // 0. Preprocess <include> tags (with type/immediate support).
     let html_source = preprocess_includes(html_source, asset_dir, 0);
@@ -522,7 +658,7 @@ fn extract_inline_styles(html: &str) -> String {
 /// which resolves to a hex color. We check body, html, and :root rules in
 /// order, taking the last match (highest specificity).
 fn extract_document_background(
-    doc: &mut CxrdDocument,
+    doc: &mut PrdDocument,
     rules: &[CssRule],
     variables: &HashMap<String, String>,
 ) {
@@ -561,7 +697,7 @@ fn extract_document_background(
 /// inherit from its parent.
 ///
 /// We do a depth-first traversal, carrying the parent's style down.
-fn propagate_inherited_styles(doc: &mut CxrdDocument) {
+fn propagate_inherited_styles(doc: &mut PrdDocument) {
     let defaults = ComputedStyle::default();
     let root_id = doc.root;
 
@@ -580,14 +716,14 @@ fn propagate_inherited_styles(doc: &mut CxrdDocument) {
 /// Inheritable CSS property bundle.
 #[derive(Clone)]
 struct InheritedProps {
-    color: crate::cxrd::value::Color,
+    color: crate::prd::value::Color,
     font_family: String,
     font_size: f32,
     font_weight: FontWeight,
     line_height: f32,
     letter_spacing: f32,
     text_align: TextAlign,
-    white_space: crate::cxrd::style::WhiteSpace,
+    white_space: crate::prd::style::WhiteSpace,
     cursor: CursorStyle,
 }
 
@@ -608,7 +744,7 @@ impl InheritedProps {
 }
 
 fn propagate_recursive(
-    doc: &mut CxrdDocument,
+    doc: &mut PrdDocument,
     node_id: u32,
     parent: &InheritedProps,
     defaults: &ComputedStyle,
@@ -931,9 +1067,9 @@ pub struct AncestorInfo {
     pub html_id: Option<String>,
 }
 
-/// Add a parsed node tree to the CXRD document.
+/// Add a parsed node tree to the PRD document.
 fn add_node_recursive(
-    doc: &mut CxrdDocument,
+    doc: &mut PrdDocument,
     parsed: ParsedNode,
     rules: &[CssRule],
     variables: &HashMap<String, String>,
@@ -995,7 +1131,7 @@ fn add_node_recursive(
             // paint system actually renders the texture.
             style.background = Background::Image { asset_index: asset_idx };
 
-            let mut node = CxrdNode {
+            let mut node = PrdNode {
                 id: 0,
                 tag: Some("svg".to_string()),
                 html_id: parsed.id.clone(),
@@ -1111,7 +1247,7 @@ fn add_node_recursive(
         "p" => {
             style.display = Display::Flex;
             style.flex_direction = FlexDirection::Row;
-            style.flex_wrap = crate::cxrd::style::FlexWrap::Wrap;
+            style.flex_wrap = crate::prd::style::FlexWrap::Wrap;
             style.align_items = AlignItems::FlexStart;
             style.margin.top = Dimension::Em(1.0);
             style.margin.bottom = Dimension::Em(1.0);
@@ -1160,7 +1296,7 @@ fn add_node_recursive(
         style.text_transform = ps.text_transform;
     }
 
-    let mut node = CxrdNode {
+    let mut node = PrdNode {
         id: 0, // Will be set by add_node
         tag: Some(parsed.tag.clone()),
         html_id: parsed.id.clone(),
@@ -1399,7 +1535,7 @@ pub fn rasterize_svg(svg_markup: &str, target_w: u32, target_h: u32) -> Option<(
 
 /// Rasterize an `<svg>` ParsedNode, add result as an image asset to the doc.
 /// Returns the asset index on success.
-fn rasterize_svg_node(doc: &mut CxrdDocument, parsed: &ParsedNode, current_color: &Color) -> Option<u32> {
+fn rasterize_svg_node(doc: &mut PrdDocument, parsed: &ParsedNode, current_color: &Color) -> Option<u32> {
     let color_hex = current_color.to_hex_string();
     let svg_markup = reconstruct_svg_markup(parsed).replace("currentColor", &color_hex);
 
@@ -1565,7 +1701,7 @@ fn determine_node_kind(parsed: &ParsedNode, _variables: &HashMap<String, String>
 /// Re-apply CSS rules to all nodes in a document (for runtime class toggling).
 /// Resets each node's style to tag defaults, applies CSS rules, then inline styles.
 /// Finishes with inherited style propagation.
-pub fn reapply_all_styles(doc: &mut CxrdDocument, rules: &[CssRule]) {
+pub fn reapply_all_styles(doc: &mut PrdDocument, rules: &[CssRule]) {
     let variables: HashMap<String, String> = doc.variables.iter().cloned().collect();
     let root = doc.root;
     // Collect the children list from root (we need to borrow doc mutably later).
@@ -1597,7 +1733,7 @@ pub fn reapply_all_styles(doc: &mut CxrdDocument, rules: &[CssRule]) {
 }
 
 fn reapply_styles_recursive(
-    doc: &mut CxrdDocument,
+    doc: &mut PrdDocument,
     node_id: NodeId,
     rules: &[CssRule],
     variables: &HashMap<String, String>,
@@ -1633,7 +1769,7 @@ fn reapply_styles_recursive(
 }
 
 /// Re-apply inline `style=""` attributes (highest CSS specificity).
-fn reapply_inline_styles(node: &mut CxrdNode, variables: &HashMap<String, String>) {
+fn reapply_inline_styles(node: &mut PrdNode, variables: &HashMap<String, String>) {
     if let Some(inline) = node.attributes.get("style").cloned() {
         for decl in inline.split(';') {
             let decl = decl.trim();
@@ -1697,7 +1833,7 @@ fn tag_default_style(tag: &str) -> ComputedStyle {
         "p" => {
             style.display = Display::Flex;
             style.flex_direction = FlexDirection::Row;
-            style.flex_wrap = crate::cxrd::style::FlexWrap::Wrap;
+            style.flex_wrap = crate::prd::style::FlexWrap::Wrap;
             style.align_items = AlignItems::FlexStart;
             style.margin.top = Dimension::Em(1.0);
             style.margin.bottom = Dimension::Em(1.0);
@@ -1718,7 +1854,7 @@ fn tag_default_style(tag: &str) -> ComputedStyle {
 
 /// Apply matching CSS rules to a node with ancestor context for descendant matching.
 pub fn apply_rules_to_node_with_ancestors(
-    node: &mut CxrdNode,
+    node: &mut PrdNode,
     html_id: &Option<String>,
     rules: &[CssRule],
     variables: &HashMap<String, String>,
@@ -1754,7 +1890,7 @@ pub fn apply_rules_to_node_with_ancestors(
 
 /// Apply matching CSS rules to a node (legacy, for root node without ancestors).
 fn apply_rules_to_node(
-    node: &mut CxrdNode,
+    node: &mut PrdNode,
     rules: &[CssRule],
     variables: &HashMap<String, String>,
 ) {
@@ -1768,7 +1904,7 @@ fn apply_rules_to_node(
 /// Earlier compound selectors must match ancestors (in order, not necessarily consecutive).
 pub fn compound_selector_matches(
     selectors: &[CompoundSelector],
-    node: &CxrdNode,
+    node: &PrdNode,
     html_id: &Option<String>,
     ancestors: &[AncestorInfo],
 ) -> bool {
@@ -1819,7 +1955,7 @@ pub fn compound_selector_matches(
 /// matching → inline styles).  Call this after JS has finished mutating the
 /// DOM so that dynamically-created nodes receive proper styling.
 pub fn restyle_document(
-    doc: &mut CxrdDocument,
+    doc: &mut PrdDocument,
     rules: &[CssRule],
     variables: &std::collections::HashMap<String, String>,
 ) {
@@ -1828,7 +1964,7 @@ pub fn restyle_document(
 }
 
 fn restyle_recursive(
-    doc: &mut CxrdDocument,
+    doc: &mut PrdDocument,
     node_id: NodeId,
     rules: &[CssRule],
     variables: &std::collections::HashMap<String, String>,
@@ -1841,7 +1977,7 @@ fn restyle_recursive(
             Some(n) => n,
             None => return,
         };
-        let cdims = if let crate::cxrd::node::NodeKind::Canvas { width, height } = &node.kind {
+        let cdims = if let crate::prd::node::NodeKind::Canvas { width, height } = &node.kind {
             Some((*width, *height))
         } else {
             None
@@ -1882,17 +2018,17 @@ fn restyle_recursive(
             "p" => {
                 style.display = Display::Flex;
                 style.flex_direction = FlexDirection::Row;
-                style.flex_wrap = crate::cxrd::style::FlexWrap::Wrap;
+                style.flex_wrap = crate::prd::style::FlexWrap::Wrap;
                 style.align_items = AlignItems::FlexStart;
             }
             "data-bind" => {
-                style.display = crate::cxrd::style::Display::InlineBlock;
+                style.display = crate::prd::style::Display::InlineBlock;
                 if classes.iter().any(|c| c == "val") {
                     style.flex_grow = 1.0;
                 }
             }
             "data-bar" => {
-                style.display = crate::cxrd::style::Display::Block;
+                style.display = crate::prd::style::Display::Block;
             }
             "canvas" => {
                 style.display = Display::Block;
@@ -1922,7 +2058,7 @@ fn restyle_recursive(
     // Apply CSS rules with full ancestor-aware matching.
     {
         let node_ref = doc.get_node(node_id).unwrap();
-        // Build a temporary CxrdNode-like view for matching.
+        // Build a temporary PrdNode-like view for matching.
         for rule in rules {
             if compound_selector_matches(
                 &rule.compound_selectors,
@@ -1957,8 +2093,8 @@ fn restyle_recursive(
     // Our layout engine doesn't track containing blocks, so we approximate
     // this by downgrading position:fixed to position:absolute when the
     // element is deeper than a direct child of body (ancestors > 2 levels).
-    if matches!(style.position, crate::cxrd::style::Position::Fixed) && ancestors.len() > 2 {
-        style.position = crate::cxrd::style::Position::Absolute;
+    if matches!(style.position, crate::prd::style::Position::Fixed) && ancestors.len() > 2 {
+        style.position = crate::prd::style::Position::Absolute;
     }
 
     // ── 3. Write the new style back to the node ──────────────────────
@@ -1979,3 +2115,4 @@ fn restyle_recursive(
         restyle_recursive(doc, cid, rules, variables, &child_ancestors, Some(&finalized_style));
     }
 }
+

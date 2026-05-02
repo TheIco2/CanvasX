@@ -1,4 +1,4 @@
-// openrender-runtime/src/gpu/vertex.rs
+﻿// prism-runtime/src/gpu/vertex.rs
 //
 // Vertex and per-instance data structures for the GPU renderer.
 // We use instanced rendering: one quad per UI element with per-instance
@@ -162,3 +162,4 @@ impl UiInstance {
         }
     }
 }
+

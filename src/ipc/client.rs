@@ -1,4 +1,4 @@
-// openrender-runtime/src/ipc/client.rs
+﻿// prism-runtime/src/ipc/client.rs
 //
 // Generic named-pipe IPC client — connects to any host application that
 // implements the OpenRender IPC protocol to exchange data and commands.
@@ -284,3 +284,4 @@ pub fn flatten_json_to_map(value: &serde_json::Value, prefix: &str, map: &mut st
         }
     }
 }
+

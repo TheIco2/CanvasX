@@ -39,6 +39,18 @@ use log::{Level, LevelFilter, Log, Metadata, Record};
 /// Whether debug-level messages are enabled.
 static DEBUG_ENABLED: AtomicBool = AtomicBool::new(false);
 
+/// Whether stderr is attached to a terminal (computed once at first log).
+/// When true, all log records are mirrored to stderr regardless of debug mode
+/// so apps launched from a terminal show interactions live.
+static STDERR_IS_TTY: OnceLock<bool> = OnceLock::new();
+
+fn stderr_is_tty() -> bool {
+    *STDERR_IS_TTY.get_or_init(|| {
+        use std::io::IsTerminal;
+        std::io::stderr().is_terminal()
+    })
+}
+
 /// Sender for the background writer thread.
 static LOG_TX: OnceLock<Sender<String>> = OnceLock::new();
 
@@ -56,7 +68,7 @@ static LOGGER: ProjectOpenLogger = ProjectOpenLogger;
 /// - `debug`: if true, captures Debug-level and above; otherwise Warn and above.
 ///
 /// Call once at startup. Panics if called more than once.
-pub fn init(app_name: &str, segment: &str, debug: bool) {
+pub fn init_with_path(app_name: &str, segment: &str, debug: bool, log_dir: Option<&str>, log_level: Option<&str>) {
     if LOG_TX.get().is_some() {
         panic!("logging::init() called more than once");
     }
@@ -65,25 +77,90 @@ pub fn init(app_name: &str, segment: &str, debug: bool) {
 
     let app = app_name.to_owned();
     let seg = segment.to_owned();
+    let log_dir = log_dir.map(|s| s.to_string());
+    let log_level = log_level.map(|s| s.to_lowercase());
 
     let (tx, rx) = mpsc::channel::<String>();
     LOG_TX.set(tx).expect("LOG_TX already set");
 
-    // Background writer thread with daily rotation.
+    // Background writer thread with daily rotation and custom dir.
     thread::spawn(move || {
-        writer_loop(&app, &seg, rx);
+        writer_loop_custom(&app, &seg, rx, log_dir);
     });
 
     // Register as the global `log` crate backend.
-    let max_level = if debug {
-        LevelFilter::Debug
-    } else {
-        LevelFilter::Warn
+    let max_level = match log_level.as_deref() {
+        Some("trace") => LevelFilter::Trace,
+        Some("debug") => LevelFilter::Debug,
+        Some("info") => LevelFilter::Info,
+        Some("warn") => LevelFilter::Warn,
+        Some("error") => LevelFilter::Error,
+        _ => if debug { LevelFilter::Debug } else { LevelFilter::Warn },
     };
 
     log::set_logger(&LOGGER)
         .map(|()| log::set_max_level(max_level))
         .expect("Failed to set logger");
+}
+
+// Backward compatibility
+pub fn init(app_name: &str, segment: &str, debug: bool) {
+    init_with_path(app_name, segment, debug, None, None);
+}
+
+/// Like writer_loop, but supports a custom log directory and ~ for EXE dir.
+fn writer_loop_custom(app_name: &str, segment: &str, rx: mpsc::Receiver<String>, log_dir: Option<String>) {
+    let dir = match log_dir {
+        Some(mut d) => {
+            if d.starts_with("~") {
+                if let Ok(exe) = std::env::current_exe() {
+                    if let Some(exe_dir) = exe.parent() {
+                        d = exe_dir.join(&d[1..]).to_string_lossy().to_string();
+                    }
+                }
+            }
+            PathBuf::from(d)
+        },
+        None => logs_dir(app_name, segment),
+    };
+    if let Err(e) = fs::create_dir_all(&dir) {
+        eprintln!("[Prism][Logger] Failed to create log directory {}: {e}", dir.display());
+    } else {
+        eprintln!("[Prism][Logger] Log directory: {}", dir.display());
+    }
+
+    let mut current_date = today();
+    let mut file = open_log_file_custom(&dir, app_name, segment, &current_date);
+
+    if file.is_none() {
+        eprintln!("[Prism][Logger] Failed to open log file in {}", dir.display());
+    }
+
+    while let Ok(line) = rx.recv() {
+        let now_date = today();
+        if now_date != current_date {
+            current_date = now_date;
+            file = open_log_file_custom(&dir, app_name, segment, &current_date);
+        }
+        if let Some(ref mut f) = file {
+            let _ = writeln!(f, "{line}");
+            let _ = f.flush();
+        }
+    }
+}
+
+fn open_log_file_custom(
+    dir: &PathBuf,
+    app_name: &str,
+    segment: &str,
+    date: &str,
+) -> Option<fs::File> {
+    let path = dir.join(format!("{app_name}-{date}.log"));
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .ok()
 }
 
 /// Returns true if debug-level logging is active.
@@ -111,6 +188,10 @@ pub fn set_debug(debug: bool) {
 /// Enqueue a log message to the background writer.
 #[inline]
 pub fn enqueue(level: &str, msg: String) {
+    // Mirror to stderr for terminal-attached processes (e.g. `cargo run`).
+    if stderr_is_tty() {
+        eprintln!("[{level}] {msg}");
+    }
     if let Some(tx) = LOG_TX.get() {
         let ts = chrono::Local::now()
             .format("%Y-%m-%d %H:%M:%S%.3f")
@@ -142,8 +223,10 @@ impl Log for ProjectOpenLogger {
         let level = record.level();
         let msg = format!("{}", record.args());
 
-        // Also print to stderr for immediate visibility during development.
-        if DEBUG_ENABLED.load(Ordering::Relaxed) {
+        // Stderr mirroring is handled inside `enqueue` (TTY detection).
+        // Keep an extra mirror only when debug is on AND stderr is *not* a TTY
+        // (so debugger consoles, attached IDE consoles, etc. still see output).
+        if DEBUG_ENABLED.load(Ordering::Relaxed) && !stderr_is_tty() {
             eprintln!("[{level}] {msg}");
         }
 

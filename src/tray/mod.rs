@@ -1,4 +1,4 @@
-// openrender-runtime/src/tray/mod.rs
+﻿// prism-runtime/src/tray/mod.rs
 //
 // System tray integration for OpenRender Runtime.
 // Provides a tray icon with double-click to show/hide window and a
@@ -481,3 +481,4 @@ fn create_default_icon() -> tray_icon::Icon {
     }
     tray_icon::Icon::from_rgba(rgba, SIZE, SIZE).expect("Failed to create default tray icon")
 }
+

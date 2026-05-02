@@ -1,13 +1,13 @@
-// openrender-runtime/src/scene/graph.rs
+﻿// prism-runtime/src/scene/graph.rs
 //
-// The SceneGraph is the top-level coordinator: it owns a CXRD document,
+// The SceneGraph is the top-level coordinator: it owns a PRD document,
 // runs layout, generates paint calls, and manages text buffers.
 // The main loop calls SceneGraph methods each frame.
 
 use std::collections::HashMap;
-use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::node::NodeKind;
-use crate::cxrd::value::Dimension;
+use crate::prd::document::PrdDocument;
+use crate::prd::node::NodeKind;
+use crate::prd::value::Dimension;
 use crate::gpu::vertex::UiInstance;
 use crate::layout::engine::compute_layout;
 use crate::scene::paint::{paint_document, GradientTexture, GradientCacheKey};
@@ -16,8 +16,8 @@ use crate::animate::timeline::AnimationTimeline;
 
 /// The scene graph coordinator.
 pub struct SceneGraph {
-    /// The current CXRD document being rendered.
-    pub document: CxrdDocument,
+    /// The current PRD document being rendered.
+    pub document: PrdDocument,
 
     /// Text painting state.
     pub text_painter: TextPainter,
@@ -59,7 +59,7 @@ pub struct SceneGraph {
 
 impl SceneGraph {
     /// Create a new scene graph with a given document.
-    pub fn new(document: CxrdDocument) -> Self {
+    pub fn new(document: PrdDocument) -> Self {
         Self {
             document,
             text_painter: TextPainter::new(),
@@ -78,7 +78,7 @@ impl SceneGraph {
     }
 
     /// Load a new document (e.g. when wallpaper changes).
-    pub fn load_document(&mut self, doc: CxrdDocument) {
+    pub fn load_document(&mut self, doc: PrdDocument) {
         self.document = doc;
         self.layout_dirty = true;
         self.cached_instances.clear();
@@ -96,13 +96,13 @@ impl SceneGraph {
     /// entire scene document.  This preserves runtime-only state (`hovered`,
     /// `layout`, `clip`) on every node, avoiding the hover-reset bug and the
     /// cost of a full clone + re-layout when only a handful of nodes changed.
-    pub fn merge_js_document(&mut self, js_doc: &CxrdDocument) {
+    pub fn merge_js_document(&mut self, js_doc: &PrdDocument) {
         let our = &mut self.document;
 
         // If the node count changed (innerHTML added/removed nodes), resize.
         if js_doc.nodes.len() > our.nodes.len() {
             our.nodes.resize_with(js_doc.nodes.len(), || {
-                crate::cxrd::node::CxrdNode::container(0)
+                crate::prd::node::PrdNode::container(0)
             });
         }
 
@@ -286,7 +286,7 @@ impl SceneGraph {
                 });
 
                 if text_child.is_none() {
-                    let mut new_text = crate::cxrd::node::CxrdNode::text(0, "");
+                    let mut new_text = crate::prd::node::PrdNode::text(0, "");
                     if let Some(parent) = self.document.get_node(node_id) {
                         new_text.style.color = parent.style.color;
                         new_text.style.font_size = parent.style.font_size;
@@ -378,3 +378,4 @@ fn parse_numeric_value(value: &str) -> Option<f32> {
         .to_string();
     cleaned.parse::<f32>().ok()
 }
+

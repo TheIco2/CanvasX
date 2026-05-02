@@ -1,4 +1,4 @@
-// openrender-runtime/src/scene/app_host.rs
+﻿// prism-runtime/src/scene/app_host.rs
 //
 // App Host — manages a OpenRender-powered application window with interactive
 // multi-page navigation, sidebar, tabs, and document embedding.
@@ -19,9 +19,9 @@ use crate::capabilities::CapabilitySet;
 use crate::compiler::css::CssRule;
 use crate::compiler::html::{compile_html, ScriptBlock};
 use crate::compiler::editable::EditableContext;
-use crate::cxrd::document::{CxrdDocument, SceneType};
-use crate::cxrd::node::NodeId;
-use crate::cxrd::value::Color;
+use crate::prd::document::{PrdDocument, SceneType};
+use crate::prd::node::NodeId;
+use crate::prd::value::Color;
 use crate::devtools::DevTools;
 use crate::devtools::context_menu::ContextAction;
 use crate::devtools::debug_server::DebugServer;
@@ -53,10 +53,16 @@ pub struct Route {
 /// Where a page's content comes from.
 #[derive(Clone, Debug)]
 pub enum PageSource {
-    /// Pre-compiled CxrdDocument.
-    Document(Arc<CxrdDocument>),
+    /// Pre-compiled PrdDocument.
+    Document(Arc<PrdDocument>),
     /// HTML file path to compile on demand.
     HtmlFile(PathBuf),
+    /// Embedded HTML page identified by its path within the binary's
+    /// `pages/` directory (e.g. `"base.html"`, `"sub/page.html"`).
+    /// Sibling CSS is also looked up in the embedded tree. JS is not
+    /// loaded from disk for embedded pages — users cannot modify HTML/JS,
+    /// only theme CSS overrides apply.
+    Embedded(String),
     /// Inline HTML string.
     Inline(String),
     /// Custom protocol URI (e.g. opendesktop://wallpaper/options/options.html).
@@ -154,6 +160,8 @@ pub struct AppHost {
     pub window_visible: bool,
     /// Pending context action from right-click menu.
     pending_context_action: Option<ContextAction>,
+    /// Route id treated as the "Home" page for the right-click menu.
+    home_route: Option<PageId>,
     /// Map from canvas CanvasId → GPU texture slot.
     canvas_texture_slots: HashMap<u32, u32>,
     /// Map from NodeId → CanvasId (mirrors JS runtime).
@@ -171,6 +179,9 @@ pub struct AppHost {
     instance_guard: Option<InstanceGuard>,
     /// Set when new image assets need uploading to the GPU (e.g. dynamic SVGs).
     assets_dirty: bool,
+    /// Active theme CSS — injected into every page that gets compiled.
+    /// `None` means no themed overrides.
+    theme_css: Option<String>,
 }
 
 /// A compiled custom title bar scene.
@@ -242,6 +253,7 @@ impl AppHost {
             system_tray: None,
             window_visible: true,
             pending_context_action: None,
+            home_route: None,
             canvas_texture_slots: HashMap::new(),
             node_canvas_map: HashMap::new(),
             next_canvas_slot: 10000,
@@ -250,6 +262,7 @@ impl AppHost {
             has_custom_title_bar: false,
             instance_guard: None,
             assets_dirty: false,
+            theme_css: None,
         }
     }
 
@@ -274,6 +287,12 @@ impl AppHost {
         self.capabilities = caps;
     }
 
+    /// Set the active theme CSS that gets prepended to every page's
+    /// stylesheet. Pass `None` to disable themed overrides.
+    pub fn set_theme_css(&mut self, css: Option<String>) {
+        self.theme_css = css;
+    }
+
     /// Load a custom title bar from a `title-bar.html` file.
     /// If the file exists and compiles successfully, the title bar is stored
     /// and `has_custom_title_bar` is set to `true` — the consuming app should
@@ -291,7 +310,7 @@ impl AppHost {
                 // Default title bar height: use the root node's height if set, else 32px.
                 let height = match doc.nodes.first() {
                     Some(root) => match root.style.height {
-                        crate::cxrd::value::Dimension::Px(h) => h,
+                        crate::prd::value::Dimension::Px(h) => h,
                         _ => 32.0,
                     },
                     None => 32.0,
@@ -325,6 +344,62 @@ impl AppHost {
         if let Ok(mut store) = self.shared_data.lock() {
             *store = data;
         }
+    }
+
+    /// Set which route id is treated as the "Home" page (used by the
+    /// right-click menu's Home action).
+    pub fn set_home_route(&mut self, page_id: &str) {
+        self.home_route = Some(page_id.to_string());
+    }
+
+    /// Replace the right-click context menu using a developer-supplied
+    /// configuration. `extra_items` are appended after the (filtered)
+    /// built-in entries; `hide_defaults` removes built-ins by name
+    /// (`inspect`, `devtools`, `popout-devtools`, `debug-server`, `home`,
+    /// `back`, `forward`, `reload`, `exit`).
+    pub fn configure_context_menu(
+        &mut self,
+        extra_items: &[crate::config::ContextMenuItemConfig],
+        hide_defaults: &[String],
+    ) {
+        use crate::devtools::context_menu::{ContextAction, ContextMenu, ContextMenuEntry};
+
+        let mut entries: Vec<ContextMenuEntry> = Vec::new();
+        for it in extra_items {
+            if it.separator || it.label.trim() == "-" {
+                entries.push(ContextMenuEntry::Separator);
+                continue;
+            }
+            let action = match it.action.as_deref().unwrap_or("").trim() {
+                "" => continue,
+                "home"            => ContextAction::Home,
+                "back"            => ContextAction::Back,
+                "forward"         => ContextAction::Forward,
+                "reload"          => ContextAction::Reload,
+                "devtools"        => ContextAction::ToggleDevTools,
+                "popout-devtools" => ContextAction::PopoutDevTools,
+                "debug-server"    => ContextAction::DebugServer,
+                "inspect"         => ContextAction::InspectElement,
+                "exit"            => ContextAction::Exit,
+                other if other.starts_with("navigate:") => {
+                    ContextAction::NavigateTo(other["navigate:".len()..].to_string())
+                }
+                other if other.starts_with("js:") => {
+                    ContextAction::Eval(other["js:".len()..].to_string())
+                }
+                other => {
+                    log::warn!("[Prism] unknown context-menu action: '{other}'");
+                    continue;
+                }
+            };
+            entries.push(ContextMenuEntry::Item {
+                label: it.label.clone(),
+                shortcut: it.shortcut.clone(),
+                action,
+                enabled: true,
+            });
+        }
+        self.devtools.context_menu = ContextMenu::with_config(entries, hide_defaults);
     }
 
     /// Navigate to a page by ID.
@@ -409,14 +484,14 @@ impl AppHost {
     }
 
     /// Get the asset bundle from the active page's scene document.
-    pub fn active_scene_assets(&self) -> Option<&crate::cxrd::asset::AssetBundle> {
+    pub fn active_scene_assets(&self) -> Option<&crate::prd::asset::AssetBundle> {
         self.active_page.as_ref()
             .and_then(|pid| self.pages.get(pid))
             .map(|page| &page.scene.document.assets)
     }
 
     /// Get icon declarations from the active page's document.
-    pub fn icon_declarations(&self) -> &[crate::cxrd::document::IconDecl] {
+    pub fn icon_declarations(&self) -> &[crate::prd::document::IconDecl] {
         if let Some(ref page_id) = self.active_page {
             if let Some(page) = self.pages.get(page_id) {
                 return &page.scene.document.icons;
@@ -531,7 +606,7 @@ impl AppHost {
                 for ui_event in ui_events {
                     match ui_event {
                         UiEvent::Action(ref action) => {
-                            use crate::cxrd::node::EventAction;
+                            use crate::prd::node::EventAction;
                             match action {
                                 EventAction::WindowClose => {
                                     self.pending_events.push(AppEvent::CloseRequested);
@@ -601,7 +676,7 @@ impl AppHost {
                             click_node_ids.push(node_id);
                         }
                         UiEvent::Action(ref action) => {
-                            use crate::cxrd::node::EventAction;
+                            use crate::prd::node::EventAction;
                             match action {
                                 EventAction::WindowClose => {
                                     self.pending_events.push(AppEvent::CloseRequested);
@@ -681,11 +756,33 @@ impl AppHost {
                 ContextAction::ToggleDevTools => {
                     self.devtools.toggle();
                 }
+                ContextAction::PopoutDevTools => {
+                    self.popout_devtools();
+                }
                 ContextAction::DebugServer => {
                     self.toggle_debug_server();
                 }
                 ContextAction::Reload => {
                     self.reload_active_page();
+                }
+                ContextAction::Home => {
+                    if let Some(home) = self.home_route.clone() {
+                        self.navigate_to(&home);
+                    }
+                }
+                ContextAction::Back => {
+                    self.navigate_back();
+                }
+                ContextAction::Forward => {
+                    self.navigate_forward();
+                }
+                ContextAction::NavigateTo(id) => {
+                    self.navigate_to(&id);
+                }
+                ContextAction::Eval(code) => {
+                    if let Some(rt) = self.js_runtime.as_mut() {
+                        rt.execute(&code, "<context-menu>");
+                    }
                 }
                 ContextAction::Exit => {
                     self.pending_events.push(AppEvent::CloseRequested);
@@ -968,6 +1065,29 @@ impl AppHost {
         }
     }
 
+    /// Pop the DevTools out into the system browser via the debug web server.
+    /// Closes the in-window panel and ensures the server is running.
+    fn popout_devtools(&mut self) {
+        // Hide the in-window panel — devtools is now "external".
+        self.devtools.open = false;
+        if self.debug_server.is_running() {
+            let port = self.debug_server.port();
+            if port > 0 {
+                open_in_browser(&format!("http://127.0.0.1:{}", port));
+            }
+            return;
+        }
+        if let Some(path) = self.active_html_path() {
+            self.debug_server.update_content(&path);
+        }
+        let port = self.debug_server.start();
+        if port > 0 {
+            let url = format!("http://127.0.0.1:{}", port);
+            log::info!("DevTools popped out at {}", url);
+            open_in_browser(&url);
+        }
+    }
+
     /// Get the HTML file path for the currently active page.
     fn active_html_path(&self) -> Option<PathBuf> {
         let page_id = self.active_page.as_ref()?;
@@ -1015,11 +1135,12 @@ impl AppHost {
         let doc_for_devtools = if let Some(scene) = self.active_scene() {
             scene.document.clone()
         } else {
-            CxrdDocument::new("empty", SceneType::ConfigPanel)
+            PrdDocument::new("empty", SceneType::ConfigPanel)
         };
 
         // Append DevTools overlay instances.
         let devtools_instances = self.devtools.paint(&doc_for_devtools, viewport_width, viewport_height);
+        let highlight_instances = self.devtools.scene_highlight_instances(&doc_for_devtools);
         let mut combined = patched;
 
         // Prepend title bar instances (rendered on top, at y=0).
@@ -1027,6 +1148,7 @@ impl AppHost {
             combined.extend(tb.scene.cached_instances.iter().cloned());
         }
 
+        combined.extend(highlight_instances);
         combined.extend(devtools_instances);
 
         self.devtools.draw_calls = combined.len() as u32;
@@ -1070,15 +1192,17 @@ impl AppHost {
         let doc_for_devtools = if let Some(scene) = self.active_scene() {
             scene.document.clone()
         } else {
-            CxrdDocument::new("empty", SceneType::ConfigPanel)
+            PrdDocument::new("empty", SceneType::ConfigPanel)
         };
 
         let devtools_instances = self.devtools.paint(&doc_for_devtools, viewport_width, viewport_height);
+        let highlight_instances = self.devtools.scene_highlight_instances(&doc_for_devtools);
 
         let mut scene = patched;
         if let Some(ref tb) = self.title_bar {
             scene.extend(tb.scene.cached_instances.iter().cloned());
         }
+        scene.extend(highlight_instances);
 
         self.devtools.draw_calls = (scene.len() + devtools_instances.len()) as u32;
 
@@ -1095,7 +1219,7 @@ impl AppHost {
             &scene.document
         } else {
             return self.devtools.text_entries(
-                &CxrdDocument::new("empty", SceneType::ConfigPanel),
+                &PrdDocument::new("empty", SceneType::ConfigPanel),
                 viewport_width,
                 viewport_height,
             );
@@ -1324,7 +1448,17 @@ impl AppHost {
                     }
                     Err(e) => {
                         log::error!("AppHost: failed to load '{}': {}", route.id, e);
-                        (CxrdDocument::new(&route.id, SceneType::ConfigPanel), Vec::new(), Vec::new(), None)
+                        (PrdDocument::new(&route.id, SceneType::ConfigPanel), Vec::new(), Vec::new(), None)
+                    }
+                }
+            }
+
+            PageSource::Embedded(rel) => {
+                match load_embedded_document_full(rel, &route.id, self.theme_css.as_deref()) {
+                    Ok((d, s, r)) => (d, s, r, None),
+                    Err(e) => {
+                        log::error!("AppHost: failed to load embedded '{}': {}", rel, e);
+                        (PrdDocument::new(&route.id, SceneType::ConfigPanel), Vec::new(), Vec::new(), None)
                     }
                 }
             }
@@ -1335,7 +1469,7 @@ impl AppHost {
                     Ok((d, s, r)) => (d, s, r, None),
                     Err(e) => {
                         log::error!("AppHost: failed to compile inline '{}': {}", route.id, e);
-                        (CxrdDocument::new(&route.id, SceneType::ConfigPanel), Vec::new(), Vec::new(), None)
+                        (PrdDocument::new(&route.id, SceneType::ConfigPanel), Vec::new(), Vec::new(), None)
                     }
                 }
             }
@@ -1349,18 +1483,18 @@ impl AppHost {
                         }
                         Err(e) => {
                             log::error!("AppHost: protocol load failed for '{}': {}", uri, e);
-                            (CxrdDocument::new(&route.id, SceneType::ConfigPanel), Vec::new(), Vec::new(), None)
+                            (PrdDocument::new(&route.id, SceneType::ConfigPanel), Vec::new(), Vec::new(), None)
                         }
                     }
                 } else {
                     log::error!("AppHost: unresolvable URI '{}'", uri);
-                    (CxrdDocument::new(&route.id, SceneType::ConfigPanel), Vec::new(), Vec::new(), None)
+                    (PrdDocument::new(&route.id, SceneType::ConfigPanel), Vec::new(), Vec::new(), None)
                 }
             }
 
             PageSource::External(url) => {
                 self.pending_events.push(AppEvent::OpenExternal(url.clone()));
-                (CxrdDocument::new(&route.id, SceneType::ConfigPanel), Vec::new(), Vec::new(), None)
+                (PrdDocument::new(&route.id, SceneType::ConfigPanel), Vec::new(), Vec::new(), None)
             }
         };
 
@@ -1430,7 +1564,7 @@ fn extract_inline_styles(html: &str) -> String {
 fn load_html_document_full(
     path: &Path,
     name: &str,
-) -> Result<(CxrdDocument, Vec<ScriptBlock>, Vec<CssRule>), String> {
+) -> Result<(PrdDocument, Vec<ScriptBlock>, Vec<CssRule>), String> {
     let html = std::fs::read_to_string(path)
         .map_err(|e| format!("Read error: {}", e))?;
 
@@ -1448,6 +1582,69 @@ fn load_html_document_full(
 
     compile_html(&html, &css, name, SceneType::ConfigPanel, path.parent())
         .map_err(|e| e.to_string())
+}
+
+/// Load an HTML document from the embedded `pages/` directory. Sibling CSS
+/// (same stem, `.css` extension, or a sibling `style.css`) is concatenated,
+/// followed by the optional `theme_css` (themes always win over page CSS).
+fn load_embedded_document_full(
+    rel_path: &str,
+    name: &str,
+    theme_css: Option<&str>,
+) -> Result<(PrdDocument, Vec<ScriptBlock>, Vec<CssRule>), String> {
+    use crate::embed;
+
+    let html = embed::read_page_str(rel_path)
+        .ok_or_else(|| format!("embedded HTML not found: {rel_path}"))?;
+
+    // Look up sibling CSS (same stem, .css) or style.css in the same dir.
+    let mut css = String::new();
+    if let Some(stem_css) = strip_ext_then_add(rel_path, "css") {
+        if let Some(s) = embed::read_page_str(&stem_css) {
+            css.push_str(s);
+            css.push('\n');
+        }
+    }
+    if let Some(parent) = parent_dir(rel_path) {
+        let style = format!("{parent}/style.css");
+        let style = style.trim_start_matches('/').to_string();
+        if let Some(s) = embed::read_page_str(&style) {
+            css.push_str(s);
+            css.push('\n');
+        }
+    }
+    if let Some(theme) = theme_css {
+        css.push_str(theme);
+    }
+
+    // Preprocess <include> tags against the embedded bundle BEFORE handing
+    // off to `compile_html` (which would otherwise try to read includes from
+    // the filesystem and fail).
+    let embed_base = parent_dir(rel_path).unwrap_or("");
+    let expanded = crate::compiler::html::preprocess_includes_embedded(html, embed_base, 0);
+
+    compile_html(&expanded, &css, name, SceneType::ConfigPanel, None)
+        .map_err(|e| e.to_string())
+}
+
+fn strip_ext_then_add(path: &str, new_ext: &str) -> Option<String> {
+    let dot = path.rfind('.')?;
+    Some(format!("{}.{}", &path[..dot], new_ext))
+}
+
+fn parent_dir(path: &str) -> Option<&str> {
+    let slash = path.rfind('/')?;
+    Some(&path[..slash])
+}
+
+/// Open a URL in the system's default browser.
+fn open_in_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    { let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn(); }
+    #[cfg(target_os = "macos")]
+    { let _ = std::process::Command::new("open").arg(url).spawn(); }
+    #[cfg(target_os = "linux")]
+    { let _ = std::process::Command::new("xdg-open").arg(url).spawn(); }
 }
 
 /// Builder for constructing an AppHost with a common OpenDesktop-style layout
@@ -1576,3 +1773,4 @@ fn format_addon_label(raw_name: &str) -> String {
         .collect::<Vec<_>>()
         .join(" ")
 }
+

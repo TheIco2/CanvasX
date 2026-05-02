@@ -1,4 +1,4 @@
-// openrender-runtime/src/scripting/v8_runtime.rs
+﻿// prism-runtime/src/scripting/v8_runtime.rs
 //
 // JavaScript runtime powered by V8 (via the `v8` crate / rusty_v8).
 // Drop-in replacement for the boa_engine-based runtime — same public API,
@@ -10,8 +10,8 @@ use std::path::Path;
 use std::rc::Rc;
 use std::time::Instant;
 
-use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::node::{NodeKind, NodeId};
+use crate::prd::document::PrdDocument;
+use crate::prd::node::{NodeKind, NodeId};
 use crate::compiler::css::{CssRule, apply_property};
 use crate::compiler::html::{compound_selector_matches, AncestorInfo};
 use crate::layout::engine::compute_layout;
@@ -55,7 +55,7 @@ where
     })
 }
 
-fn reachable_nodes(doc: &CxrdDocument) -> Vec<bool> {
+fn reachable_nodes(doc: &PrdDocument) -> Vec<bool> {
     let mut reachable = vec![false; doc.nodes.len()];
     let mut stack = vec![doc.root];
     while let Some(id) = stack.pop() {
@@ -157,7 +157,7 @@ fn decode_html_entities(input: &str) -> String {
 
 /// Shared mutable state accessible from both Rust and JS native functions.
 pub struct SharedState {
-    pub document: CxrdDocument,
+    pub document: PrdDocument,
     pub css_rules: Vec<CssRule>,
     pub css_variables: HashMap<String, String>,
     pub canvas_manager: CanvasManager,
@@ -240,7 +240,7 @@ pub struct JsRuntime {
 impl JsRuntime {
     /// Create a new V8-backed JS runtime and register all native bindings.
     pub fn new(
-        document: CxrdDocument,
+        document: PrdDocument,
         css_rules: Vec<CssRule>,
         css_variables: HashMap<String, String>,
     ) -> Self {
@@ -291,19 +291,19 @@ impl JsRuntime {
             let tc = tc.init();
             match v8::Script::compile(&tc, code, None) {
                 Some(script) => match script.run(&tc) {
-                    Some(_) => log::info!("[OR][JS] V8 shim injected OK ({} bytes)", JS_SHIM.len()),
+                    Some(_) => log::info!("[PRISM][JS] V8 shim injected OK ({} bytes)", JS_SHIM.len()),
                     None => {
                         let msg = tc.exception()
                             .map(|e| e.to_rust_string_lossy(&tc))
                             .unwrap_or_default();
-                        log::error!("[OR][JS] V8 shim execution FAILED: {}", msg);
+                        log::error!("[PRISM][JS] V8 shim execution FAILED: {}", msg);
                     }
                 },
                 None => {
                     let msg = tc.exception()
                         .map(|e| e.to_rust_string_lossy(&tc))
                         .unwrap_or_default();
-                    log::error!("[OR][JS] V8 shim compilation FAILED: {}", msg);
+                    log::error!("[PRISM][JS] V8 shim compilation FAILED: {}", msg);
                 }
             }
         }
@@ -355,7 +355,7 @@ impl JsRuntime {
     /// Execute script source code.
     pub fn execute(&mut self, source: &str, name: &str) {
         self.activate();
-        log::warn!("[OR][JS] Executing script '{}' ({} bytes)", name, source.len());
+        log::warn!("[PRISM][JS] Executing script '{}' ({} bytes)", name, source.len());
 
         let hs = std::pin::pin!(v8::HandleScope::new(&mut self.isolate));
         let mut hs = hs.init();
@@ -365,7 +365,7 @@ impl JsRuntime {
         let code = match v8::String::new(cs, source) {
             Some(s) => s,
             None => {
-                log::error!("[OR][JS] Failed to create V8 string for '{}'", name);
+                log::error!("[PRISM][JS] Failed to create V8 string for '{}'", name);
                 return;
             }
         };
@@ -375,10 +375,10 @@ impl JsRuntime {
         match v8::Script::compile(&tc, code, None) {
             Some(script) => match script.run(&tc) {
                 Some(_) => {
-                    log::debug!("[OR][JS] Script '{}' completed OK", name);
+                    log::debug!("[PRISM][JS] Script '{}' completed OK", name);
                     let state = self.state.borrow();
                     log::warn!(
-                        "[OR][JS] Doc state: {} nodes, {} canvases, layout_dirty={}",
+                        "[PRISM][JS] Doc state: {} nodes, {} canvases, layout_dirty={}",
                         state.document.nodes.len(),
                         state.node_canvas_map.len(),
                         state.layout_dirty,
@@ -388,14 +388,14 @@ impl JsRuntime {
                     let msg = tc.exception()
                         .map(|e| e.to_rust_string_lossy(&tc))
                         .unwrap_or_default();
-                    log::error!("[OR][JS] Script '{}' THREW: {}", name, msg);
+                    log::error!("[PRISM][JS] Script '{}' THREW: {}", name, msg);
                 }
             },
             None => {
                 let msg = tc.exception()
                     .map(|e| e.to_rust_string_lossy(&tc))
                     .unwrap_or_default();
-                log::error!("[OR][JS] Script '{}' compile error: {}", name, msg);
+                log::error!("[PRISM][JS] Script '{}' compile error: {}", name, msg);
             }
         }
     }
@@ -403,7 +403,7 @@ impl JsRuntime {
     /// Execute a script file from disk.
     pub fn execute_file(&mut self, path: &Path) {
         self.activate();
-        log::warn!("[OR][JS] Loading script file: {}", path.display());
+        log::warn!("[PRISM][JS] Loading script file: {}", path.display());
         match std::fs::read_to_string(path) {
             Ok(source) => {
                 let name = path.file_name()
@@ -411,7 +411,7 @@ impl JsRuntime {
                     .unwrap_or("unknown");
                 self.execute(&source, name);
             }
-            Err(e) => log::error!("[OR][JS] Failed to read script '{}': {}", path.display(), e),
+            Err(e) => log::error!("[PRISM][JS] Failed to read script '{}': {}", path.display(), e),
         }
     }
 
@@ -437,9 +437,9 @@ impl JsRuntime {
 
         if let Some(func) = global_fn {
             self.raf_tick_fn = Some(func);
-            log::info!("[OR][JS] Cached __or_raf_tick function for direct calls");
+            log::info!("[PRISM][JS] Cached __or_raf_tick function for direct calls");
         } else {
-            log::warn!("[OR][JS] __or_raf_tick not found or not callable — will fall back to eval");
+            log::warn!("[PRISM][JS] __or_raf_tick not found or not callable — will fall back to eval");
         }
     }
 
@@ -465,7 +465,7 @@ impl JsRuntime {
                 if func.call(&tc, recv, &args).is_none() {
                     if let Some(ex) = tc.exception() {
                         let msg = ex.to_rust_string_lossy(&tc);
-                        log::error!("[OR][JS] tick error: {}", msg);
+                        log::error!("[PRISM][JS] tick error: {}", msg);
                     }
                 }
             } else {
@@ -480,7 +480,7 @@ impl JsRuntime {
                         if script.run(&tc).is_none() {
                             if let Some(ex) = tc.exception() {
                                 let msg = ex.to_rust_string_lossy(&tc);
-                                log::error!("[OR][JS] tick eval error: {}", msg);
+                                log::error!("[PRISM][JS] tick eval error: {}", msg);
                             }
                         }
                     }
@@ -537,14 +537,14 @@ impl JsRuntime {
     }
 
     /// Get the document (for layout/paint passes).
-    pub fn document(&self) -> std::cell::Ref<'_, CxrdDocument> {
+    pub fn document(&self) -> std::cell::Ref<'_, PrdDocument> {
         std::cell::Ref::map(self.state.borrow(), |s| &s.document)
     }
 
     /// Replace the JS runtime's document with an updated copy.
     /// Used after content swaps so that JS-driven DOM syncs don't overwrite
     /// the newly swapped content with a stale snapshot.
-    pub fn sync_document(&self, doc: &CxrdDocument) {
+    pub fn sync_document(&self, doc: &PrdDocument) {
         self.state.borrow_mut().document = doc.clone();
     }
 
@@ -563,7 +563,7 @@ impl JsRuntime {
         let vw = state.viewport_width as f32;
         let vh = state.viewport_height as f32;
         compute_layout(&mut state.document, vw, vh);
-        log::debug!("[OR][JS] Restyled document with {} rules", rules.len());
+        log::debug!("[PRISM][JS] Restyled document with {} rules", rules.len());
     }
 
     /// Drain all console messages buffered since the last call.
@@ -591,7 +591,7 @@ impl JsRuntime {
         if let Some(script) = v8::Script::compile(&tc, source, None) {
             if script.run(&tc).is_none() {
                 if let Some(exc) = tc.exception() {
-                    log::error!("[OR][JS] Event dispatch error: {}", exc.to_rust_string_lossy(&tc));
+                    log::error!("[PRISM][JS] Event dispatch error: {}", exc.to_rust_string_lossy(&tc));
                 }
             }
         }
@@ -655,6 +655,9 @@ fn register_all_functions(scope: &mut v8::PinScope<'_, '_>) {
     set_fn!("__or_c2d_setFont", cx_c2d_set_font);
     set_fn!("__or_c2d_setTextAlign", cx_c2d_set_text_align);
     set_fn!("__or_c2d_setTextBaseline", cx_c2d_set_text_baseline);
+    set_fn!("__or_c2d_setLineCap", cx_c2d_set_line_cap);
+    set_fn!("__or_c2d_setLineJoin", cx_c2d_set_line_join);
+    set_fn!("__or_c2d_setMiterLimit", cx_c2d_set_miter_limit);
     set_fn!("__or_c2d_fillText", cx_c2d_fill_text);
     set_fn!("__or_c2d_drawImage", cx_c2d_draw_image);
     set_fn!("__or_c2d_createRadialGradient", cx_c2d_create_radial_gradient);
@@ -696,10 +699,9 @@ fn cx_log(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbackArguments,
 // ═══════════════════════════════════════════════════════════════════════════
 
 fn cx_performance_now(scope: &mut v8::PinScope<'_, '_>, _args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue<v8::Value>) {
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs_f64() * 1000.0;
+    static EPOCH: std::sync::OnceLock<Instant> = std::sync::OnceLock::new();
+    let epoch = EPOCH.get_or_init(Instant::now);
+    let now = epoch.elapsed().as_secs_f64() * 1000.0;
     rv.set(v8::Number::new(scope, now).into());
 }
 
@@ -757,19 +759,19 @@ fn cx_query_selector_all(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCal
 fn cx_create_element(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbackArguments, mut rv: v8::ReturnValue<v8::Value>) {
     let tag = v8_str(scope, &args, 0);
     let nid = with_state(|st| {
-        let mut node = crate::cxrd::node::CxrdNode::container(0);
+        let mut node = crate::prd::node::PrdNode::container(0);
         node.tag = Some(tag.clone());
         if tag == "canvas" {
-            node.kind = crate::cxrd::node::NodeKind::Canvas { width: 300, height: 150 };
+            node.kind = crate::prd::node::NodeKind::Canvas { width: 300, height: 150 };
         }
         let node_id = st.document.add_node(node);
         if tag == "canvas" {
             let cid = st.canvas_manager.create_canvas(300, 150);
             st.node_canvas_map.insert(node_id, cid);
             st.canvas_node_map.insert(cid, node_id);
-            log::info!("[OR][DOM] createElement('canvas') → node={} canvas={}", node_id, cid);
+            log::info!("[PRISM][DOM] createElement('canvas') → node={} canvas={}", node_id, cid);
         } else {
-            log::info!("[OR][DOM] createElement('{}') → node={}", tag, node_id);
+            log::info!("[PRISM][DOM] createElement('{}') → node={}", tag, node_id);
         }
         node_id as i32
     });
@@ -845,7 +847,7 @@ fn cx_set_text_content(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallb
         st.reachable_cache = None;
 
         // Create a new text child that inherits the parent's inheritable styles.
-        let mut text_node = crate::cxrd::node::CxrdNode::text(0, text);
+        let mut text_node = crate::prd::node::PrdNode::text(0, text);
         text_node.tag = Some("#text".to_string());
         text_node.style.color = parent_style.color;
         text_node.style.font_size = parent_style.font_size;
@@ -866,7 +868,7 @@ fn cx_set_inner_html(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbac
     let nid = v8_i32(&args, scope, 0) as u32;
     let html = v8_str(scope, &args, 1);
     let scripts = with_state(|st| {
-        log::info!("[OR][DOM] setInnerHTML: node={} html_len={}", nid, html.len());
+        log::info!("[PRISM][DOM] setInnerHTML: node={} html_len={}", nid, html.len());
         set_inner_html(st, nid, &html);
         // Drain deferred scripts collected from <script> blocks inside innerHTML
         std::mem::take(&mut st.deferred_scripts)
@@ -877,7 +879,7 @@ fn cx_set_inner_html(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbac
         let origin = v8::ScriptOrigin::new(scope, v8::String::new(scope, "<inline>").unwrap().into(), 0, 0, false, 0, None::<v8::Local<v8::Value>>, false, false, false, None);
         if let Some(compiled) = v8::Script::compile(scope, src, Some(&origin)) {
             if let None = compiled.run(scope) {
-                log::warn!("[OR][JS] Deferred script from innerHTML failed to execute");
+                log::warn!("[PRISM][JS] Deferred script from innerHTML failed to execute");
             }
         }
     }
@@ -1394,6 +1396,36 @@ fn cx_c2d_set_text_baseline(scope: &mut v8::PinScope<'_, '_>, args: v8::Function
     });
 }
 
+fn cx_c2d_set_line_cap(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue<v8::Value>) {
+    let cid = v8_i32(&args, scope, 0) as u32;
+    let cap = v8_str(scope, &args, 1);
+    with_state(|st| {
+        if let Some(canvas) = st.canvas_manager.buffers.get_mut(&cid) {
+            canvas.set_line_cap(&cap);
+        }
+    });
+}
+
+fn cx_c2d_set_line_join(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue<v8::Value>) {
+    let cid = v8_i32(&args, scope, 0) as u32;
+    let join = v8_str(scope, &args, 1);
+    with_state(|st| {
+        if let Some(canvas) = st.canvas_manager.buffers.get_mut(&cid) {
+            canvas.set_line_join(&join);
+        }
+    });
+}
+
+fn cx_c2d_set_miter_limit(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue<v8::Value>) {
+    let cid = v8_i32(&args, scope, 0) as u32;
+    let limit = v8_f32(&args, scope, 1);
+    with_state(|st| {
+        if let Some(canvas) = st.canvas_manager.buffers.get_mut(&cid) {
+            canvas.set_miter_limit(limit);
+        }
+    });
+}
+
 fn cx_c2d_fill_text(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue<v8::Value>) {
     let cid = v8_i32(&args, scope, 0) as u32;
     let text = v8_str(scope, &args, 1);
@@ -1579,7 +1611,7 @@ fn cx_get_viewport_size(scope: &mut v8::PinScope<'_, '_>, _args: v8::FunctionCal
 
 fn cx_dump_doc(_scope: &mut v8::PinScope<'_, '_>, _args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue<v8::Value>) {
     with_state(|st| {
-        log::warn!("[OR][DEBUG] === Document dump: {} nodes ===", st.document.nodes.len());
+        log::warn!("[PRISM][DEBUG] === Document dump: {} nodes ===", st.document.nodes.len());
         for node in &st.document.nodes {
             let tag = node.tag.as_deref().unwrap_or("(none)");
             let id = node.html_id.as_deref().unwrap_or("");
@@ -1587,7 +1619,7 @@ fn cx_dump_doc(_scope: &mut v8::PinScope<'_, '_>, _args: v8::FunctionCallbackArg
             let kind = match &node.kind {
                 NodeKind::Container => "Container",
                 NodeKind::Text { content } => {
-                    log::warn!("[OR][DEBUG]   node {} tag={} id={} class='{}' kind=Text text='{}'",
+                    log::warn!("[PRISM][DEBUG]   node {} tag={} id={} class='{}' kind=Text text='{}'",
                         node.id, tag, id, classes, &content[..content.len().min(60)]);
                     continue;
                 },
@@ -1596,10 +1628,10 @@ fn cx_dump_doc(_scope: &mut v8::PinScope<'_, '_>, _args: v8::FunctionCallbackArg
             };
             let children_str: Vec<String> = node.children.iter().map(|c| c.to_string()).collect();
             let has_canvas = st.node_canvas_map.contains_key(&node.id);
-            log::warn!("[OR][DEBUG]   node {} tag={} id={} class='{}' kind={} children=[{}] canvas={}",
+            log::warn!("[PRISM][DEBUG]   node {} tag={} id={} class='{}' kind={} children=[{}] canvas={}",
                 node.id, tag, id, classes, kind, children_str.join(","), has_canvas);
         }
-        log::warn!("[OR][DEBUG] === End document dump ===");
+        log::warn!("[PRISM][DEBUG] === End document dump ===");
     });
 }
 
@@ -1607,7 +1639,7 @@ fn cx_dump_doc(_scope: &mut v8::PinScope<'_, '_>, _args: v8::FunctionCallbackArg
 // Helper functions (engine-agnostic)
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn selector_matches_node(selector: &str, node: &crate::cxrd::node::CxrdNode, _doc: &CxrdDocument) -> bool {
+fn selector_matches_node(selector: &str, node: &crate::prd::node::PrdNode, _doc: &PrdDocument) -> bool {
     let sel = selector.trim();
     if sel.starts_with('#') {
         return node.html_id.as_deref() == Some(&sel[1..]);
@@ -1622,7 +1654,7 @@ fn selector_matches_node(selector: &str, node: &crate::cxrd::node::CxrdNode, _do
     false
 }
 
-fn collect_text_content(doc: &CxrdDocument, node_id: NodeId) -> String {
+fn collect_text_content(doc: &PrdDocument, node_id: NodeId) -> String {
     let mut text = String::new();
     if let Some(node) = doc.get_node(node_id) {
         if let NodeKind::Text { content } = &node.kind {
@@ -1646,7 +1678,7 @@ fn free_descendants(st: &mut SharedState, node_id: NodeId) {
             st.canvas_node_map.remove(&cid);
         }
         if let Some(node) = st.document.get_node_mut(child_id) {
-            *node = crate::cxrd::node::CxrdNode::container(child_id);
+            *node = crate::prd::node::PrdNode::container(child_id);
         }
         st.document.free_list.push(child_id);
     }
@@ -1831,7 +1863,7 @@ fn add_html_children(st: &mut SharedState, parent_id: NodeId, html: &str) {
                     let current_color = node_stack.last()
                         .and_then(|pid| st.document.get_node(*pid))
                         .map(|n| n.style.color)
-                        .unwrap_or(crate::cxrd::value::Color::WHITE);
+                        .unwrap_or(crate::prd::value::Color::WHITE);
                     let color_hex = current_color.to_hex_string();
                     let svg_markup = svg_markup.replace("currentColor", &color_hex);
 
@@ -1852,23 +1884,23 @@ fn add_html_children(st: &mut SharedState, parent_id: NodeId, html: &str) {
                         let name = format!("svg_dyn_{}", st.document.assets.images.len());
                         let asset_idx = st.document.assets.add_raw_image(name, w, h, rgba);
 
-                        let mut node = crate::cxrd::node::CxrdNode::container(0);
+                        let mut node = crate::prd::node::PrdNode::container(0);
                         node.tag = Some("svg".to_string());
                         node.kind = NodeKind::Image {
                             asset_index: asset_idx,
-                            fit: crate::cxrd::node::ImageFit::Contain,
+                            fit: crate::prd::node::ImageFit::Contain,
                         };
-                        node.style.display = crate::cxrd::style::Display::InlineBlock;
-                        node.style.background = crate::cxrd::style::Background::Image { asset_index: asset_idx };
+                        node.style.display = crate::prd::style::Display::InlineBlock;
+                        node.style.background = crate::prd::style::Background::Image { asset_index: asset_idx };
 
                         // Set dimensions from attributes or viewBox.
                         let dim_w = if tw > 0 { tw } else { vb_w };
                         let dim_h = if th > 0 { th } else { vb_h };
                         if dim_w > 0 {
-                            node.style.width = crate::cxrd::value::Dimension::Px(dim_w as f32);
+                            node.style.width = crate::prd::value::Dimension::Px(dim_w as f32);
                         }
                         if dim_h > 0 {
-                            node.style.height = crate::cxrd::value::Dimension::Px(dim_h as f32);
+                            node.style.height = crate::prd::value::Dimension::Px(dim_h as f32);
                         }
 
                         // Inherit styles from parent.
@@ -1961,7 +1993,7 @@ fn add_html_children(st: &mut SharedState, parent_id: NodeId, html: &str) {
                 None
             };
 
-            let mut node = crate::cxrd::node::CxrdNode::container(0);
+            let mut node = crate::prd::node::PrdNode::container(0);
             node.tag = Some(tag.clone());
             node.html_id = html_id;
             node.classes = classes;
@@ -2075,7 +2107,7 @@ fn add_html_children(st: &mut SharedState, parent_id: NodeId, html: &str) {
             let text = decode_html_entities(raw_text);
 
             let parent = *node_stack.last().unwrap_or(&parent_id);
-            let mut text_node = crate::cxrd::node::CxrdNode::text(0, &text);
+            let mut text_node = crate::prd::node::PrdNode::text(0, &text);
             if let Some(parent_node) = st.document.get_node(parent) {
                 text_node.style.color = parent_node.style.color;
                 text_node.style.font_size = parent_node.style.font_size;
@@ -2101,7 +2133,7 @@ fn add_html_children(st: &mut SharedState, parent_id: NodeId, html: &str) {
 /// Resets the node's style to defaults + tag defaults + parent inheritance,
 /// then re-evaluates all CSS rules (including pseudo-class rules).
 fn restyle_node(st: &mut SharedState, node_id: NodeId) {
-    use crate::cxrd::style::ComputedStyle;
+    use crate::prd::style::ComputedStyle;
     use crate::compiler::css::resolve_var_pub;
 
     let ancestors = collect_ancestor_chain(&st.document, node_id);
@@ -2209,7 +2241,7 @@ fn restyle_node(st: &mut SharedState, node_id: NodeId) {
 /// Recursively restyle a node and all its descendants. Used after a parent
 /// class change to ensure descendant selectors are re-evaluated.
 fn restyle_subtree(st: &mut SharedState, node_id: NodeId) {
-    use crate::cxrd::style::ComputedStyle;
+    use crate::prd::style::ComputedStyle;
     use crate::compiler::css::resolve_var_pub;
 
     let ancestors = collect_ancestor_chain(&st.document, node_id);
@@ -2302,7 +2334,7 @@ fn restyle_subtree(st: &mut SharedState, node_id: NodeId) {
     }
 }
 
-fn collect_ancestor_chain(doc: &CxrdDocument, node_id: NodeId) -> Vec<AncestorInfo> {
+fn collect_ancestor_chain(doc: &PrdDocument, node_id: NodeId) -> Vec<AncestorInfo> {
     let mut chain = Vec::new();
     let mut cursor = Some(node_id);
     while let Some(id) = cursor {
@@ -2323,8 +2355,8 @@ fn collect_ancestor_chain(doc: &CxrdDocument, node_id: NodeId) -> Vec<AncestorIn
 
 /// Extract event bindings from data-action/data-ns/data-cmd attributes on
 /// dynamically inserted nodes (innerHTML). Mirrors the compiler logic.
-fn extract_runtime_event_bindings(node: &mut crate::cxrd::node::CxrdNode) {
-    use crate::cxrd::node::{EventAction, EventBinding};
+fn extract_runtime_event_bindings(node: &mut crate::prd::node::PrdNode) {
+    use crate::prd::node::{EventAction, EventBinding};
 
     let action_type = match node.attributes.get("data-action") {
         Some(a) => a.clone(),
@@ -2378,8 +2410,8 @@ fn extract_runtime_event_bindings(node: &mut crate::cxrd::node::CxrdNode) {
     }
 }
 
-fn apply_dynamic_tag_defaults(node: &mut crate::cxrd::node::CxrdNode) {
-    use crate::cxrd::style::{Display, FlexDirection, FontWeight};
+fn apply_dynamic_tag_defaults(node: &mut crate::prd::node::PrdNode) {
+    use crate::prd::style::{Display, FlexDirection, FontWeight};
 
     if let Some(tag) = node.tag.as_deref() {
         match tag {
@@ -2419,7 +2451,7 @@ fn apply_dynamic_tag_defaults(node: &mut crate::cxrd::node::CxrdNode) {
     }
 }
 
-fn simple_rule_matches(selector: &str, node: &crate::cxrd::node::CxrdNode) -> bool {
+fn simple_rule_matches(selector: &str, node: &crate::prd::node::PrdNode) -> bool {
     let parts: Vec<&str> = selector.split_whitespace().collect();
     if parts.is_empty() { return false; }
     let last = parts.last().unwrap();
@@ -2438,20 +2470,23 @@ fn simple_rule_matches(selector: &str, node: &crate::cxrd::node::CxrdNode) -> bo
     false
 }
 
-fn get_computed_style_value(style: &crate::cxrd::style::ComputedStyle, prop: &str) -> String {
-    use crate::cxrd::style::Display;
+fn get_computed_style_value(style: &crate::prd::style::ComputedStyle, prop: &str) -> String {
+    use crate::prd::style::Display;
     match prop {
         "display" => match style.display {
             Display::None => "none".into(),
             Display::Block => "block".into(),
             Display::Flex => "flex".into(),
+            Display::InlineFlex => "inline-flex".into(),
             Display::InlineBlock => "inline-block".into(),
+            Display::Inline => "inline".into(),
             Display::Grid => "grid".into(),
+            Display::InlineGrid => "inline-grid".into(),
         },
         "opacity" => format!("{}", style.opacity),
         "background" | "background-color" | "backgroundColor" => {
             match &style.background {
-                crate::cxrd::style::Background::Solid(c) => {
+                crate::prd::style::Background::Solid(c) => {
                     format!(
                         "rgba({},{},{},{})",
                         (c.r * 255.0) as u8,
@@ -2466,14 +2501,18 @@ fn get_computed_style_value(style: &crate::cxrd::style::ComputedStyle, prop: &st
         "font-size" | "fontSize" => format!("{}px", style.font_size),
         "font-family" | "fontFamily" => style.font_family.clone(),
         "padding" => {
-            use crate::cxrd::value::Dimension;
+            use crate::prd::value::Dimension;
             match style.padding.top {
                 Dimension::Px(v) => format!("{}px", v),
                 Dimension::Percent(v) => format!("{}%", v),
                 _ => String::new(),
             }
         },
-        "overflow" => "visible".into(),
+        "overflow" => match style.overflow {
+            crate::prd::style::Overflow::Visible => "visible".into(),
+            crate::prd::style::Overflow::Hidden => "hidden".into(),
+            crate::prd::style::Overflow::Scroll => "scroll".into(),
+        },
         "border-radius" | "borderRadius" => format!("{}px", style.border_radius.top_left),
         "box-shadow" | "boxShadow" => {
             if style.box_shadow.is_empty() {
@@ -2502,19 +2541,19 @@ fn get_computed_style_value(style: &crate::cxrd::style::ComputedStyle, prop: &st
             style.color.a,
         ),
         "width" => match style.width {
-            crate::cxrd::value::Dimension::Px(v) => format!("{}px", v),
+            crate::prd::value::Dimension::Px(v) => format!("{}px", v),
             _ => "auto".into(),
         },
         "height" => match style.height {
-            crate::cxrd::value::Dimension::Px(v) => format!("{}px", v),
+            crate::prd::value::Dimension::Px(v) => format!("{}px", v),
             _ => "auto".into(),
         },
         _ => String::new(),
     }
 }
 
-fn style_dimension_px(dim: &crate::cxrd::value::Dimension, viewport: f32) -> Option<f32> {
-    use crate::cxrd::value::Dimension;
+fn style_dimension_px(dim: &crate::prd::value::Dimension, viewport: f32) -> Option<f32> {
+    use crate::prd::value::Dimension;
     match dim {
         Dimension::Px(v) => Some(*v),
         Dimension::Percent(p) => Some(viewport * (*p / 100.0)),
@@ -2552,7 +2591,7 @@ function __or_wrapElement(nid) {
         get nodeName() { return __or_getNodeTag(nid); },
         get textContent() { return __or_getTextContent(nid); },
         set textContent(v) { __or_setTextContent(nid, String(v)); },
-        get innerHTML() { return ''; },
+        get innerHTML() { return __or_getTextContent(nid); },
         set innerHTML(v) { __or_setInnerHTML(nid, String(v)); },
         get children() {
             var ids = JSON.parse(__or_getNodeChildren(nid));
@@ -2701,7 +2740,22 @@ function __or_wrapElement(nid) {
             var ids = JSON.parse(__or_getNodeChildren(nid));
             return ids.map(function(cid) { return __or_wrapElement(cid); });
         },
-        get nextSibling() { return null; },
+        get nextSibling() {
+            var p = __or_getParentNode(nid);
+            if (p < 0) return null;
+            var siblings = JSON.parse(__or_getNodeChildren(p));
+            var idx = siblings.indexOf(nid);
+            if (idx >= 0 && idx < siblings.length - 1) return __or_wrapElement(siblings[idx + 1]);
+            return null;
+        },
+        get previousSibling() {
+            var p = __or_getParentNode(nid);
+            if (p < 0) return null;
+            var siblings = JSON.parse(__or_getNodeChildren(p));
+            var idx = siblings.indexOf(nid);
+            if (idx > 0) return __or_wrapElement(siblings[idx - 1]);
+            return null;
+        },
         get className() {
             return __or_getNodeAttribute(nid, 'class') || '';
         },
@@ -2723,7 +2777,12 @@ function __or_wrapElement(nid) {
 }
 
 function isDescendant(parentNid, childNid) {
-    return true;
+    var cur = childNid;
+    while (cur >= 0) {
+        if (cur === parentNid) return true;
+        cur = __or_getParentNode(cur);
+    }
+    return false;
 }
 
 // ─── Canvas 2D Context Factory ───
@@ -2784,9 +2843,9 @@ function __or_createContext2D(cid) {
         get textBaseline() { return _textBaseline; },
         set textBaseline(v) { _textBaseline = v; __or_c2d_setTextBaseline(cid, v); },
         get lineCap() { return _lineCap; },
-        set lineCap(v) { _lineCap = v; },
+        set lineCap(v) { _lineCap = v; __or_c2d_setLineCap(cid, v); },
         get lineJoin() { return _lineJoin; },
-        set lineJoin(v) { _lineJoin = v; },
+        set lineJoin(v) { _lineJoin = v; __or_c2d_setLineJoin(cid, v); },
         get shadowBlur() { return _shadowBlur; },
         set shadowBlur(v) { _shadowBlur = Number(v) || 0; },
         get shadowColor() { return _shadowColor; },
@@ -2794,7 +2853,7 @@ function __or_createContext2D(cid) {
         get imageSmoothingEnabled() { return _imageSmoothingEnabled; },
         set imageSmoothingEnabled(v) { _imageSmoothingEnabled = !!v; },
         get miterLimit() { return _miterLimit; },
-        set miterLimit(v) { _miterLimit = Number(v) || 10; },
+        set miterLimit(v) { _miterLimit = Number(v) || 10; __or_c2d_setMiterLimit(cid, _miterLimit); },
         get lineDashOffset() { return _lineDashOffset; },
         set lineDashOffset(v) { _lineDashOffset = Number(v) || 0; },
 
@@ -2871,7 +2930,10 @@ function __or_createContext2D(cid) {
         },
         fillText: function(text, x, y) { __or_c2d_fillText(cid, text, x, y); },
         strokeText: function() {},
-        measureText: function(text) { return { width: text.length * 7 }; },
+        measureText: function(text) {
+            var sz = parseFloat(_font) || 10;
+            return { width: text.length * sz * 0.6 };
+        },
         getImageData: function(x, y, w, h) {
             var raw = __or_c2d_getImageData(cid, x|0, y|0, w|0, h|0);
             var parsed = { width: 0, height: 0, data: [] };
@@ -3036,7 +3098,7 @@ function __or_raf_tick(timestamp) {
     for (var m = 0; m < callbacks.length; m++) {
         var entry = callbacks[m];
         if (typeof entry.callback !== 'function') {
-            console.error('[OR] rAF entry not callable: type=' + typeof entry.callback + ' id=' + entry.id);
+            console.error('[PRISM] rAF entry not callable: type=' + typeof entry.callback + ' id=' + entry.id);
             continue;
         }
         try { entry.callback(timestamp); } catch(e) { console.error('rAF error:', e); }
@@ -3082,3 +3144,4 @@ function __or_dispatchDomEvent(nodeId, eventType) {
     }
 }
 "#;
+

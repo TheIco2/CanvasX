@@ -1,14 +1,14 @@
-// openrender-runtime — main entry point
+// prism-runtime — main entry point
 //
 // This wires together every subsystem:
 //   1. Parse CLI args (scene type, source path, target monitor)
 //   2. Create winit window (or embed in WorkerW for wallpapers)
 //   3. Initialise GPU context + renderer via wgpu
-//   4. Compile HTML/CSS → CXRD (or load cached CXRD)
+//   4. Compile HTML/CSS → PRD (or load cached PRD)
 //   5. Start IPC client (background thread polling host application)
 //   6. Enter render loop: layout → animate → paint → submit → present
 //
-// Binary name: openrender-rt
+// Binary name: prism-rt
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -23,23 +23,23 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
 use winit::window::{Window, WindowAttributes, WindowId};
 
-use openrender_runtime::compiler::html::compile_html;
-use openrender_runtime::compiler::css::CssRule;
-use openrender_runtime::compiler::html::ScriptBlock;
-use openrender_runtime::gpu::context::GpuContext;
-use openrender_runtime::gpu::renderer::Renderer;
-use openrender_runtime::ipc::client::IpcClient;
-use openrender_runtime::platform::monitor::enumerate_monitors;
-use openrender_runtime::scene::graph::SceneGraph;
-use openrender_runtime::scene::input_handler::{
+use prism_runtime::compiler::html::compile_html;
+use prism_runtime::compiler::css::CssRule;
+use prism_runtime::compiler::html::ScriptBlock;
+use prism_runtime::gpu::context::GpuContext;
+use prism_runtime::gpu::renderer::Renderer;
+use prism_runtime::ipc::client::IpcClient;
+use prism_runtime::platform::monitor::enumerate_monitors;
+use prism_runtime::scene::graph::SceneGraph;
+use prism_runtime::scene::input_handler::{
     InputHandler, RawInputEvent, KeyCode, Modifiers, MouseButton as CxMouseButton,
 };
-use openrender_runtime::cxrd::document::{SceneType, CxrdDocument};
-use openrender_runtime::cxrd::node::NodeId;
-use openrender_runtime::scripting::JsRuntime;
-use openrender_runtime::gpu::vertex::UiInstance;
-use openrender_runtime::tray::{SystemTray, TrayConfig, TrayEvent};
-use openrender_runtime::devtools::context_menu::ContextAction;
+use prism_runtime::prd::document::{SceneType, PrdDocument};
+use prism_runtime::prd::node::NodeId;
+use prism_runtime::scripting::JsRuntime;
+use prism_runtime::gpu::vertex::UiInstance;
+use prism_runtime::tray::{SystemTray, TrayConfig, TrayEvent};
+use prism_runtime::devtools::context_menu::ContextAction;
 
 // ---------------------------------------------------------------------------
 // CLI arguments
@@ -48,7 +48,7 @@ use openrender_runtime::devtools::context_menu::ContextAction;
 struct CliArgs {
     /// What kind of scene to render.
     scene_type: SceneType,
-    /// Path to the HTML file (or .cxrd document) to render.
+    /// Path to the HTML file (or .prd document) to render.
     source: PathBuf,
     /// Optional CSS override file.
     css_override: Option<PathBuf>,
@@ -153,7 +153,7 @@ struct App {
     /// Current modifier key state (tracked via ModifiersChanged).
     current_modifiers: winit::keyboard::ModifiersState,
     /// Built-in DevTools (OpenRender badge + developer panel).
-    devtools: openrender_runtime::devtools::DevTools,
+    devtools: prism_runtime::devtools::DevTools,
     /// System tray icon and menu.
     system_tray: Option<SystemTray>,
     /// Whether the window is currently visible (for tray hide/show).
@@ -161,11 +161,17 @@ struct App {
     /// Set to `true` when the app should exit at the next event-loop iteration.
     exit_requested: bool,
     /// Debug server for viewing the page in a browser.
-    debug_server: Option<openrender_runtime::devtools::debug_server::DebugServer>,
+    debug_server: Option<prism_runtime::devtools::debug_server::DebugServer>,
+    /// Target frame interval (derived from target_fps, default 60).
+    frame_interval: std::time::Duration,
+    /// Next scheduled frame deadline for WaitUntil control flow.
+    next_frame_time: Instant,
 }
 
 impl App {
     fn new(args: CliArgs) -> Self {
+        let fps = if args.target_fps > 0 { args.target_fps as f64 } else { 60.0 };
+        let frame_interval = std::time::Duration::from_secs_f64(1.0 / fps);
         Self {
             args,
             window: None,
@@ -184,23 +190,25 @@ impl App {
             frame_count: 0,
             fps_timer: Instant::now(),
             current_modifiers: winit::keyboard::ModifiersState::empty(),
-            devtools: openrender_runtime::devtools::DevTools::new(),
+            devtools: prism_runtime::devtools::DevTools::new(),
             system_tray: None,
             window_visible: true,
             exit_requested: false,
             debug_server: None,
+            frame_interval,
+            next_frame_time: Instant::now(),
         }
     }
 
-    /// Load the scene document (compile from HTML/CSS or load cached CXRD).
+    /// Load the scene document (compile from HTML/CSS or load cached PRD).
     /// Returns (document, scripts, css_rules).
-    fn load_scene(&self) -> Result<(CxrdDocument, Vec<ScriptBlock>, Vec<CssRule>)> {
+    fn load_scene(&self) -> Result<(PrdDocument, Vec<ScriptBlock>, Vec<CssRule>)> {
         let source = &self.args.source;
 
-        if source.extension().map_or(false, |e| e == "cxrd") {
+        if source.extension().map_or(false, |e| e == "prd") {
             // Load pre-compiled CXRD.
             let data = std::fs::read(source)?;
-            let doc = CxrdDocument::from_binary(&data).map_err(|e| anyhow::anyhow!(e))?;
+            let doc = PrdDocument::from_binary(&data).map_err(|e| anyhow::anyhow!(e))?;
             Ok((doc, Vec::new(), Vec::new()))
         } else {
             // Compile from HTML + CSS.
@@ -331,7 +339,7 @@ impl ApplicationHandler for App {
                 if let winit::raw_window_handle::RawWindowHandle::Win32(h) = handle.as_raw() {
                     let hwnd =
                         windows::Win32::Foundation::HWND(h.hwnd.get() as *mut std::ffi::c_void);
-                    if openrender_runtime::platform::desktop::embed_in_desktop(hwnd) {
+                    if prism_runtime::platform::desktop::embed_in_desktop(hwnd) {
                         log::info!("Embedded render window in desktop WorkerW layer");
                     } else {
                         log::warn!("Failed to embed in WorkerW — rendering as overlay");
@@ -366,7 +374,7 @@ impl ApplicationHandler for App {
             Err(e) => {
                 log::error!("Failed to load scene: {}", e);
                 // Create an empty document so we at least get a window.
-                (CxrdDocument::new("error", SceneType::ConfigPanel), Vec::new(), Vec::new())
+                (PrdDocument::new("error", SceneType::ConfigPanel), Vec::new(), Vec::new())
             }
         };
 
@@ -458,12 +466,9 @@ impl ApplicationHandler for App {
         // Request first frame.
         window.request_redraw();
 
-        // Use Poll for lowest-latency rendering, or WaitUntil for capped FPS.
-        if self.args.target_fps > 0 {
-            event_loop.set_control_flow(ControlFlow::Poll);
-        } else {
-            event_loop.set_control_flow(ControlFlow::Poll);
-        }
+        // Use WaitUntil to cap frame rate and avoid burning CPU.
+        self.next_frame_time = Instant::now() + self.frame_interval;
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_time));
     }
 
     fn window_event(
@@ -508,10 +513,9 @@ impl ApplicationHandler for App {
                     event_loop.exit();
                     return;
                 }
-                // Request next frame immediately.
-                if let Some(ref w) = self.window {
-                    w.request_redraw();
-                }
+                // Schedule next frame at the target interval.
+                self.next_frame_time = Instant::now() + self.frame_interval;
+                event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_time));
             }
 
             // --- Input events → InputHandler ---
@@ -590,7 +594,10 @@ impl ApplicationHandler for App {
                         // Handle elements panel click (select / expand/collapse)
                         if let Some(ref scene) = self.scene {
                             let doc = &scene.document;
-                            if self.devtools.handle_elements_click(x, y, vh, doc) {
+                            let vw = self.window.as_ref()
+                                .map(|w| w.inner_size().width as f32 / w.scale_factor() as f32)
+                                .unwrap_or(800.0);
+                            if self.devtools.handle_elements_click_ex(x, y, vw, vh, doc) {
                                 return;
                             }
                         }
@@ -675,7 +682,7 @@ impl ApplicationHandler for App {
                         && matches!(event.logical_key, winit::keyboard::Key::Character(ref c) if c.as_str().eq_ignore_ascii_case("c"))
                     {
                         self.devtools.open = true;
-                        self.devtools.active_tab = openrender_runtime::devtools::DevToolsTab::Elements;
+                        self.devtools.active_tab = prism_runtime::devtools::DevToolsTab::Elements;
                         return;
                     }
 
@@ -754,9 +761,17 @@ impl ApplicationHandler for App {
             }
         }
 
-        // Ensure redraws continue even when window is hidden (for tray event polling).
-        if let Some(ref w) = self.window {
-            w.request_redraw();
+        // Only request redraws when the window is actually visible.
+        // When hidden, the WaitUntil control flow still fires about_to_wait
+        // so tray events are processed without burning CPU on rendering.
+        if self.window_visible {
+            if let Some(ref w) = self.window {
+                w.request_redraw();
+            }
+        } else {
+            // When hidden, use a slow poll rate (250ms) just for tray events.
+            let slow_poll = Instant::now() + std::time::Duration::from_millis(250);
+            event_loop.set_control_flow(ControlFlow::WaitUntil(slow_poll));
         }
         if self.exit_requested {
             event_loop.exit();
@@ -765,8 +780,8 @@ impl ApplicationHandler for App {
 }
 
 /// Find the deepest node at a given (x, y) coordinate (for Inspect Element).
-fn find_node_at(x: f32, y: f32, doc: &CxrdDocument) -> Option<NodeId> {
-    fn walk(doc: &CxrdDocument, nid: NodeId, x: f32, y: f32, best: &mut Option<NodeId>) {
+fn find_node_at(x: f32, y: f32, doc: &PrdDocument) -> Option<NodeId> {
+    fn walk(doc: &PrdDocument, nid: NodeId, x: f32, y: f32, best: &mut Option<NodeId>) {
         if let Some(node) = doc.get_node(nid) {
             let r = &node.layout.rect;
             if x >= r.x && x <= r.x + r.width && y >= r.y && y <= r.y + r.height {
@@ -783,9 +798,9 @@ fn find_node_at(x: f32, y: f32, doc: &CxrdDocument) -> Option<NodeId> {
 }
 
 /// Expand all ancestors of a node in the devtools tree.
-fn expand_ancestors(nid: NodeId, doc: &CxrdDocument, expanded: &mut std::collections::HashSet<NodeId>) {
+fn expand_ancestors(nid: NodeId, doc: &PrdDocument, expanded: &mut std::collections::HashSet<NodeId>) {
     // Walk from root, expanding any node that is an ancestor of `nid`.
-    fn mark_path(doc: &CxrdDocument, current: NodeId, target: NodeId, expanded: &mut std::collections::HashSet<NodeId>) -> bool {
+    fn mark_path(doc: &PrdDocument, current: NodeId, target: NodeId, expanded: &mut std::collections::HashSet<NodeId>) -> bool {
         if current == target {
             return true;
         }
@@ -812,7 +827,7 @@ impl App {
             ContextAction::InspectElement => {
                 // Open devtools to Elements tab and select the node under cursor.
                 self.devtools.open = true;
-                self.devtools.active_tab = openrender_runtime::devtools::DevToolsTab::Elements;
+                self.devtools.active_tab = prism_runtime::devtools::DevToolsTab::Elements;
                 // Try to find the node under the current mouse position.
                 let (mx, my) = self.input_handler.mouse_pos;
                 if let Some(ref scene) = self.scene {
@@ -826,7 +841,7 @@ impl App {
             }
             ContextAction::DebugServer => {
                 if self.debug_server.is_none() {
-                    self.debug_server = Some(openrender_runtime::devtools::debug_server::DebugServer::new());
+                    self.debug_server = Some(prism_runtime::devtools::debug_server::DebugServer::new());
                 }
                 if let Some(ref mut srv) = self.debug_server {
                     if srv.is_running() {
@@ -843,6 +858,37 @@ impl App {
             }
             ContextAction::Reload => {
                 self.reload_scene();
+            }
+            ContextAction::PopoutDevTools => {
+                // Hide the in-process panel and open the debug server page
+                // in the system browser.
+                self.devtools.open = false;
+                if self.debug_server.is_none() {
+                    self.debug_server = Some(prism_runtime::devtools::debug_server::DebugServer::new());
+                }
+                let port = if let Some(ref mut srv) = self.debug_server {
+                    if !srv.is_running() {
+                        srv.update_content(&self.args.source);
+                        srv.start()
+                    } else {
+                        srv.port()
+                    }
+                } else { 0 };
+                if port > 0 {
+                    let url = format!("http://127.0.0.1:{port}");
+                    log::info!("Opening DevTools in browser: {url}");
+                    open_in_browser(&url);
+                }
+            }
+            ContextAction::Home | ContextAction::Back | ContextAction::Forward
+            | ContextAction::NavigateTo(_) => {
+                // Standalone runtime has no router — these are AppHost-only.
+                log::warn!("Navigation actions are only available when running inside an AppHost.");
+            }
+            ContextAction::Eval(code) => {
+                if let Some(ref mut js) = self.js_runtime {
+                    js.execute(&code, "<context-menu>");
+                }
             }
             ContextAction::Exit => {
                 event_loop.exit();
@@ -925,22 +971,22 @@ impl App {
 
         for event in ui_events {
             match event {
-                openrender_runtime::scene::input_handler::UiEvent::NavigateRequest { scene_id } => {
+                prism_runtime::scene::input_handler::UiEvent::NavigateRequest { scene_id } => {
                     log::info!("Navigate request: {}", scene_id);
                 }
-                openrender_runtime::scene::input_handler::UiEvent::IpcCommand { ns, cmd, args } => {
+                prism_runtime::scene::input_handler::UiEvent::IpcCommand { ns, cmd, args } => {
                     log::info!("IPC command: {}.{} args={:?}", ns, cmd, args);
                 }
-                openrender_runtime::scene::input_handler::UiEvent::OpenExternal { url } => {
+                prism_runtime::scene::input_handler::UiEvent::OpenExternal { url } => {
                     log::info!("Open external: {}", url);
                     #[cfg(target_os = "windows")]
                     { let _ = std::process::Command::new("cmd").args(["/C", "start", &url]).spawn(); }
                 }
-                openrender_runtime::scene::input_handler::UiEvent::Click { node_id } => {
+                prism_runtime::scene::input_handler::UiEvent::Click { node_id } => {
                     click_node_ids.push(node_id);
                 }
-                openrender_runtime::scene::input_handler::UiEvent::Action(ref action) => {
-                    use openrender_runtime::cxrd::node::EventAction;
+                prism_runtime::scene::input_handler::UiEvent::Action(ref action) => {
+                    use prism_runtime::prd::node::EventAction;
                     match action {
                         EventAction::WindowClose => {
                             self.exit_requested = true;
@@ -993,10 +1039,16 @@ impl App {
             scene.invalidate_layout();
         }
 
+        // If hover state changed, repaint to apply :hover style overrides.
+        if self.input_handler.hover_dirty {
+            self.input_handler.hover_dirty = false;
+            scene.invalidate_paint();
+        }
+
         // If a class was toggled, re-apply CSS rules so styles reflect the new class.
         if self.input_handler.class_dirty {
             self.input_handler.class_dirty = false;
-            openrender_runtime::compiler::html::reapply_all_styles(
+            prism_runtime::compiler::html::reapply_all_styles(
                 &mut scene.document,
                 &self.compiled_css_rules,
             );
@@ -1006,13 +1058,13 @@ impl App {
         // Apply updated cursor icon.
         if let Some(ref w) = self.window {
             let winit_cursor = match self.input_handler.cursor {
-                openrender_runtime::scene::input_handler::CursorIcon::Default     => winit::window::CursorIcon::Default,
-                openrender_runtime::scene::input_handler::CursorIcon::Pointer     => winit::window::CursorIcon::Pointer,
-                openrender_runtime::scene::input_handler::CursorIcon::Text        => winit::window::CursorIcon::Text,
-                openrender_runtime::scene::input_handler::CursorIcon::Move        => winit::window::CursorIcon::Move,
-                openrender_runtime::scene::input_handler::CursorIcon::NotAllowed  => winit::window::CursorIcon::NotAllowed,
-                openrender_runtime::scene::input_handler::CursorIcon::ResizeNS    => winit::window::CursorIcon::NsResize,
-                openrender_runtime::scene::input_handler::CursorIcon::ResizeEW    => winit::window::CursorIcon::EwResize,
+                prism_runtime::scene::input_handler::CursorIcon::Default     => winit::window::CursorIcon::Default,
+                prism_runtime::scene::input_handler::CursorIcon::Pointer     => winit::window::CursorIcon::Pointer,
+                prism_runtime::scene::input_handler::CursorIcon::Text        => winit::window::CursorIcon::Text,
+                prism_runtime::scene::input_handler::CursorIcon::Move        => winit::window::CursorIcon::Move,
+                prism_runtime::scene::input_handler::CursorIcon::NotAllowed  => winit::window::CursorIcon::NotAllowed,
+                prism_runtime::scene::input_handler::CursorIcon::ResizeNS    => winit::window::CursorIcon::NsResize,
+                prism_runtime::scene::input_handler::CursorIcon::ResizeEW    => winit::window::CursorIcon::EwResize,
             };
             w.set_cursor(winit::window::Cursor::Icon(winit_cursor));
         }
@@ -1022,6 +1074,24 @@ impl App {
         let now = Instant::now();
         let dt = now.duration_since(self.last_frame).as_secs_f32();
         self.last_frame = now;
+
+        // When the window is hidden (e.g. minimized to tray), skip all heavy
+        // rendering work. Only sync IPC data so state stays current.
+        if !self.window_visible {
+            self.sync_ipc_data();
+            // Still tick JS timers so intervals/timeouts fire, but skip rAF.
+            if let Some(ref mut js_rt) = self.js_runtime {
+                let _js_dirty = js_rt.tick(dt);
+                if js_rt.take_layout_dirty() {
+                    if let Some(ref mut scene) = self.scene {
+                        let js_doc = js_rt.document();
+                        scene.merge_js_document(&js_doc);
+                        drop(js_doc);
+                    }
+                }
+            }
+            return;
+        }
 
         // Record frame time for GPU tab sparkline.
         self.devtools.record_frame_stats(self.devtools.fps, dt);
@@ -1101,10 +1171,10 @@ impl App {
             // Drain JS console messages into DevTools.
             for (level, msg) in js_rt.drain_console() {
                 let log_level = match level {
-                    0 => openrender_runtime::devtools::console::LogLevel::Log,
-                    2 => openrender_runtime::devtools::console::LogLevel::Warn,
-                    3 => openrender_runtime::devtools::console::LogLevel::Error,
-                    _ => openrender_runtime::devtools::console::LogLevel::Info,
+                    0 => prism_runtime::devtools::console::LogLevel::Log,
+                    2 => prism_runtime::devtools::console::LogLevel::Warn,
+                    3 => prism_runtime::devtools::console::LogLevel::Error,
+                    _ => prism_runtime::devtools::console::LogLevel::Info,
                 };
                 self.devtools.console.log(log_level, msg);
             }
@@ -1185,7 +1255,7 @@ impl App {
         // Build patched list only if canvas textures exist (avoid copy when not needed).
         let has_canvas_patches = instances.iter().any(|inst| {
             inst.texture_index <= -2
-                && (inst.flags & openrender_runtime::gpu::vertex::UiInstance::FLAG_HAS_TEXTURE) != 0
+                && (inst.flags & prism_runtime::gpu::vertex::UiInstance::FLAG_HAS_TEXTURE) != 0
         });
 
         let patched_instances;
@@ -1193,7 +1263,7 @@ impl App {
         let final_instances: &[UiInstance] = if has_canvas_patches {
             patched_instances = instances.iter().map(|inst| {
                 if inst.texture_index <= -2
-                    && (inst.flags & openrender_runtime::gpu::vertex::UiInstance::FLAG_HAS_TEXTURE) != 0
+                    && (inst.flags & prism_runtime::gpu::vertex::UiInstance::FLAG_HAS_TEXTURE) != 0
                 {
                     let node_id = (-inst.texture_index - 2) as u32;
                     if let Some(&slot) = self.node_canvas_map.get(&node_id) {
@@ -1249,10 +1319,13 @@ impl App {
                     top: entry.y,
                     scale: 1.0,
                     bounds: glyphon::TextBounds {
-                        left: entry.x as i32,
-                        top: entry.y as i32,
-                        right: (entry.x + entry.width) as i32,
-                        bottom: (entry.y + entry.font_size * 2.0) as i32,
+                        // Loose bounds — clip only against the viewport so
+                        // text isn't accidentally clipped by tight per-entry
+                        // boxes (e.g. context menu items at fractional y).
+                        left: 0,
+                        top: 0,
+                        right: vw as i32,
+                        bottom: vh as i32,
                     },
                     default_color: glyphon::Color::rgba(
                         (c.r * 255.0) as u8,
@@ -1332,7 +1405,7 @@ fn winit_key_to_cx(key: &winit::keyboard::Key) -> KeyCode {
 fn main() {
     // Initialise file-based logger (~/ProjectOpen/OpenDesktop/logs/OpenRender.log).
     // Pass `true` for debug-level output, or `false` for warn-and-above only.
-    openrender_runtime::logging::init("OpenRender", "Runtime", cfg!(debug_assertions));
+    prism_runtime::logging::init("OpenRender", "Runtime", cfg!(debug_assertions));
 
     let args = CliArgs::from_env();
     log::info!(
@@ -1349,4 +1422,15 @@ fn main() {
         log::error!("Event loop error: {}", e);
         std::process::exit(1);
     }
+}
+
+
+/// Open a URL in the system's default browser.
+fn open_in_browser(url: &str) {
+    #[cfg(target_os = "windows")]
+    { let _ = std::process::Command::new("cmd").args(["/C", "start", "", url]).spawn(); }
+    #[cfg(target_os = "macos")]
+    { let _ = std::process::Command::new("open").arg(url).spawn(); }
+    #[cfg(target_os = "linux")]
+    { let _ = std::process::Command::new("xdg-open").arg(url).spawn(); }
 }

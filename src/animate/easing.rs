@@ -1,8 +1,8 @@
-// openrender-runtime/src/animate/easing.rs
+﻿// prism-runtime/src/animate/easing.rs
 //
 // Easing functions for animations and transitions.
 
-use crate::cxrd::style::EasingFunction;
+use crate::prd::style::EasingFunction;
 
 /// Evaluate an easing function at time `t` (0.0–1.0).
 pub fn evaluate(easing: &EasingFunction, t: f32) -> f32 {
@@ -68,3 +68,4 @@ mod tests {
         assert!((evaluate(&EasingFunction::Ease, 1.0) - 1.0).abs() < 0.001);
     }
 }
+

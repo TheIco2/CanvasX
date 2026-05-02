@@ -1,4 +1,4 @@
-// openrender-runtime/src/gpu/context.rs
+﻿// prism-runtime/src/gpu/context.rs
 //
 // GPU device context — initialises wgpu with Vulkan or DX12 backend,
 // manages surface, device, queue, and swap chain configuration.
@@ -54,7 +54,7 @@ impl GpuContext {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    label: Some("openrender-runtime"),
+                    label: Some("prism-runtime"),
                     required_features: wgpu::Features::empty(),
                     required_limits: wgpu::Limits::default(),
                     ..Default::default()
@@ -169,7 +169,7 @@ impl GpuContext {
         let (device, queue) = adapter
             .request_device(
                 &wgpu::DeviceDescriptor {
-                    label: Some("openrender-runtime-raw"),
+                    label: Some("prism-runtime-raw"),
                     required_features: wgpu::Features::empty(),
                     required_limits: wgpu::Limits::default(),
                     ..Default::default()
@@ -229,3 +229,4 @@ impl GpuContext {
         self.surface.get_current_texture()
     }
 }
+

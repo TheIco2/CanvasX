@@ -1,11 +1,11 @@
-// openrender-runtime/src/cxrd/input.rs
+// prism-runtime/src/prd/input.rs
 //
 // Interactive input node types for building usable app windows.
 // These extend the base NodeKind with interactive widgets that
 // accept user input and maintain internal state.
 
 use serde::{Serialize, Deserialize};
-use crate::cxrd::value::Color;
+use crate::prd::value::Color;
 
 /// Input widget types that can be used in OpenRender documents.
 /// These provide the interactive primitives needed to build full app UIs.
@@ -214,3 +214,4 @@ pub struct InteractionState {
     pub content_width: f32,
     pub content_height: f32,
 }
+

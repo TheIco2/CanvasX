@@ -1,4 +1,4 @@
-// openrender-runtime/src/ipc/protocol.rs
+﻿// prism-runtime/src/ipc/protocol.rs
 //
 // Wire protocol types for the OpenRender IPC format.
 // Any host application implementing this protocol can communicate with the runtime.
@@ -44,3 +44,4 @@ impl IpcRequest {
         }
     }
 }
+

@@ -1,14 +1,14 @@
-// openrender-runtime/src/devtools/elements.rs
+﻿// prism-runtime/src/devtools/elements.rs
 //
 // Elements panel for the OpenRender DevTools.
-// Renders a tree view of the CXRD document showing the DOM structure
+// Renders a tree view of the PRD document showing the DOM structure
 // with collapsible nodes, computed styles sidebar, and box model display.
 
 use std::collections::HashSet;
-use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::node::{NodeKind, NodeId};
-use crate::cxrd::style::{Display, ComputedStyle, Background, Position, FlexDirection, JustifyContent, AlignItems, AlignSelf, FlexWrap, Overflow, Visibility};
-use crate::cxrd::value::Color;
+use crate::prd::document::PrdDocument;
+use crate::prd::node::{NodeKind, NodeId};
+use crate::prd::style::{Display, ComputedStyle, Background, Position, FlexDirection, JustifyContent, AlignItems, AlignSelf, FlexWrap, Overflow, Visibility};
+use crate::prd::value::Color;
 use super::DevToolsTextEntry;
 
 /// Width reserved for the computed styles sidebar when a node is selected.
@@ -25,7 +25,7 @@ pub struct ElementTreeLine {
 /// Generate text entries for the Elements panel (DOM tree view + computed styles sidebar).
 pub fn text_entries_elements(
     out: &mut Vec<DevToolsTextEntry>,
-    doc: &CxrdDocument,
+    doc: &PrdDocument,
     x: f32,
     content_y: f32,
     viewport_width: f32,
@@ -204,28 +204,28 @@ pub fn text_entries_elements(
 }
 
 /// Total number of visible lines in the tree (for scroll calculations).
-pub fn tree_line_count(doc: &CxrdDocument, expanded: &HashSet<NodeId>) -> usize {
+pub fn tree_line_count(doc: &PrdDocument, expanded: &HashSet<NodeId>) -> usize {
     let mut lines = Vec::new();
     collect_tree_lines(doc, doc.root, 0, &mut lines, expanded);
     lines.len()
 }
 
 /// Get the node_id for a given line index in the tree.
-pub fn node_id_at_line(doc: &CxrdDocument, line_idx: usize, expanded: &HashSet<NodeId>) -> Option<NodeId> {
+pub fn node_id_at_line(doc: &PrdDocument, line_idx: usize, expanded: &HashSet<NodeId>) -> Option<NodeId> {
     let mut lines = Vec::new();
     collect_tree_lines(doc, doc.root, 0, &mut lines, expanded);
     lines.get(line_idx).map(|l| l.node_id)
 }
 
 /// Check if the node at a given line has children (for expand/collapse).
-pub fn node_has_children_at_line(doc: &CxrdDocument, line_idx: usize, expanded: &HashSet<NodeId>) -> bool {
+pub fn node_has_children_at_line(doc: &PrdDocument, line_idx: usize, expanded: &HashSet<NodeId>) -> bool {
     let mut lines = Vec::new();
     collect_tree_lines(doc, doc.root, 0, &mut lines, expanded);
     lines.get(line_idx).map(|l| l.has_children).unwrap_or(false)
 }
 
 fn collect_tree_lines(
-    doc: &CxrdDocument,
+    doc: &PrdDocument,
     node_id: NodeId,
     depth: u32,
     lines: &mut Vec<ElementTreeLine>,
@@ -307,7 +307,7 @@ fn computed_style_props(style: &ComputedStyle) -> Vec<(&'static str, String)> {
     let mut props = Vec::new();
 
     props.push(("display", format!("{:?}", style.display).to_lowercase()));
-    if !matches!(style.position, Position::Relative) {
+    if !matches!(style.position, Position::Static) {
         props.push(("position", format!("{:?}", style.position).to_lowercase()));
     }
     if !matches!(style.overflow, Overflow::Visible) {
@@ -386,3 +386,4 @@ fn computed_style_props(style: &ComputedStyle) -> Vec<(&'static str, String)> {
 
     props
 }
+

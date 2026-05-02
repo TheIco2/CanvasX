@@ -1,11 +1,11 @@
-// openrender-runtime/src/devtools/overlay.rs
+﻿// prism-runtime/src/devtools/overlay.rs
 //
 // Paints the OpenRender badge and DevTools panel as GPU instances.
 // Includes: panel background, tab bar, scrollbar, resize handle,
 // FPS sparkline graph, element highlight overlay, and console filter bar.
 
-use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::value::Color;
+use crate::prd::document::PrdDocument;
+use crate::prd::value::Color;
 use crate::gpu::vertex::UiInstance;
 use super::DevTools;
 use super::DevToolsTab;
@@ -80,7 +80,7 @@ pub fn paint_badge(
 pub fn paint_panel(
     out: &mut Vec<UiInstance>,
     devtools: &DevTools,
-    doc: &CxrdDocument,
+    doc: &PrdDocument,
     viewport_width: f32,
     viewport_height: f32,
 ) {
@@ -174,6 +174,9 @@ pub fn paint_panel(
             let total = line_count as f32 * 16.0;
             paint_scrollbar(out, viewport_width, content_y, content_h, total, devtools.elements_scroll);
 
+            // Highlight checkbox (top-right of panel content area).
+            paint_highlight_checkbox(out, viewport_width, content_y, devtools.highlight_enabled);
+
             // Sidebar separator (if a node is selected)
             if devtools.selected_node.is_some() {
                 let sidebar_x = (viewport_width - super::elements::STYLES_SIDEBAR_WIDTH).max(200.0);
@@ -186,6 +189,7 @@ pub fn paint_panel(
             }
 
             // Element highlight overlay on the viewport (above the scene, below the panel)
+            if devtools.highlight_enabled {
             if let Some(sel_id) = devtools.selected_node {
                 if let Some(node) = doc.get_node(sel_id) {
                     let r = &node.layout.rect;
@@ -253,6 +257,7 @@ pub fn paint_panel(
                     }
                 }
             }
+            } // end if devtools.highlight_enabled
         }
         DevToolsTab::Gpu => {
             // FPS sparkline graph
@@ -359,6 +364,42 @@ fn paint_fps_graph(
             color,
             None,
             0.0,
+        ));
+    }
+}
+
+
+
+// ---------------------------------------------------------------------------
+// Highlight checkbox (Elements tab)
+// ---------------------------------------------------------------------------
+
+pub const HIGHLIGHT_CHECKBOX_SIZE: f32 = 14.0;
+pub const HIGHLIGHT_CHECKBOX_RIGHT_INSET: f32 = SCROLLBAR_WIDTH + 110.0;
+
+/// Top-left corner of the highlight checkbox box (square only — label sits to its left).
+pub fn highlight_checkbox_box(viewport_width: f32, content_y: f32) -> (f32, f32, f32) {
+    let x = viewport_width - HIGHLIGHT_CHECKBOX_RIGHT_INSET;
+    let y = content_y + 6.0;
+    (x, y, HIGHLIGHT_CHECKBOX_SIZE)
+}
+
+fn paint_highlight_checkbox(out: &mut Vec<UiInstance>, viewport_width: f32, content_y: f32, on: bool) {
+    let (cx, cy, size) = highlight_checkbox_box(viewport_width, content_y);
+    out.push(make_rect_instance(
+        cx, cy, size, size,
+        if on { ACCENT } else { Color { r: 0.18, g: 0.18, b: 0.22, a: 1.0 } },
+        Some(BORDER_COLOR),
+        3.0,
+    ));
+    if on {
+        // Inner check square.
+        let pad = 3.0;
+        out.push(make_rect_instance(
+            cx + pad, cy + pad, size - pad * 2.0, size - pad * 2.0,
+            Color::WHITE,
+            None,
+            1.5,
         ));
     }
 }

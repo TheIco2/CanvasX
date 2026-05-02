@@ -1,4 +1,4 @@
-// openrender-runtime/src/platform/monitor.rs
+﻿// prism-runtime/src/platform/monitor.rs
 //
 // Multi-monitor enumeration and DPI-aware monitor info.
 
@@ -86,3 +86,4 @@ unsafe extern "system" fn enum_monitor_callback(
 
     BOOL(1)
 }
+

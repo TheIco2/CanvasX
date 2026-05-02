@@ -1,10 +1,10 @@
-// openrender-runtime/src/devtools/console.rs
+﻿// prism-runtime/src/devtools/console.rs
 //
 // Console log capture for the OpenRender DevTools.
 // Stores log entries with level, message, and timestamp.
 
 use std::time::Instant;
-use crate::cxrd::value::Color;
+use crate::prd::value::Color;
 use super::DevToolsTextEntry;
 
 /// Log level for console entries.
@@ -253,3 +253,4 @@ pub fn text_entries_console(
         });
     }
 }
+

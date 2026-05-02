@@ -1,15 +1,15 @@
-// openrender-runtime/src/cxrd/node.rs
+// prism-runtime/src/prd/node.rs
 //
-// Scene graph node types for the CXRD format.
+// Scene graph node types for the PRD format.
 // Each node is a renderable element in the UI tree.
 
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
-use crate::cxrd::style::ComputedStyle;
-use crate::cxrd::input::InputKind;
-use crate::cxrd::value::Rect;
+use crate::prd::style::ComputedStyle;
+use crate::prd::input::InputKind;
+use crate::prd::value::Rect;
 
-/// Unique node identifier within a CXRD document.
+/// Unique node identifier within a PRD document.
 pub type NodeId = u32;
 
 /// The kind of content a node holds.
@@ -25,7 +25,7 @@ pub enum NodeKind {
 
     /// Image element.
     Image {
-        /// Index into the CXRD asset table.
+        /// Index into the PRD asset table.
         asset_index: u32,
         /// Object-fit style.
         fit: ImageFit,
@@ -79,9 +79,9 @@ impl Default for ImageFit {
     }
 }
 
-/// A single node in the CXRD scene graph.
+/// A single node in the PRD scene graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CxrdNode {
+pub struct PrdNode {
     /// Unique ID within this document.
     pub id: NodeId,
 
@@ -152,9 +152,9 @@ pub struct LayoutResult {
     /// Clip rect from nearest overflow:hidden/scroll ancestor.
     pub clip: Option<Rect>,
     /// Resolved padding in px.
-    pub padding: crate::cxrd::value::EdgeInsets,
+    pub padding: crate::prd::value::EdgeInsets,
     /// Resolved margin in px.
-    pub margin: crate::cxrd::value::EdgeInsets,
+    pub margin: crate::prd::value::EdgeInsets,
     /// Scroll offset (set by InputHandler, read by layout engine).
     pub scroll_y: f32,
 }
@@ -199,7 +199,7 @@ pub enum EventAction {
     WindowDrag,
 }
 
-impl CxrdNode {
+impl PrdNode {
     /// Create a new container node.
     pub fn container(id: NodeId) -> Self {
         Self {
@@ -246,3 +246,4 @@ impl CxrdNode {
         }
     }
 }
+

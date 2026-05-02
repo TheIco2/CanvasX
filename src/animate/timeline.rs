@@ -1,10 +1,10 @@
-// openrender-runtime/src/animate/timeline.rs
+﻿// prism-runtime/src/animate/timeline.rs
 //
 // Animation timeline — manages active animations and advances them each frame.
 
-use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::animation::{AnimationDef, AnimationDirection, AnimationFillMode};
-use crate::cxrd::node::NodeId;
+use crate::prd::document::PrdDocument;
+use crate::prd::animation::{AnimationDef, AnimationDirection, AnimationFillMode};
+use crate::prd::node::NodeId;
 use crate::animate::easing::evaluate;
 use crate::animate::interpolate::{interpolate, apply_animated_property};
 
@@ -47,7 +47,7 @@ impl AnimationTimeline {
     }
 
     /// Start all animations configured on nodes in the document.
-    pub fn start_all(&mut self, doc: &CxrdDocument) {
+    pub fn start_all(&mut self, doc: &PrdDocument) {
         for node in &doc.nodes {
             for &anim_idx in &node.animations {
                 self.start(anim_idx, node.id);
@@ -57,7 +57,7 @@ impl AnimationTimeline {
 
     /// Advance all active animations by `dt` seconds.
     /// Modifies node styles in the document to reflect current animation state.
-    pub fn advance(&mut self, doc: &mut CxrdDocument, dt: f32) {
+    pub fn advance(&mut self, doc: &mut PrdDocument, dt: f32) {
         let dt_ms = dt * 1000.0;
 
         for anim in &mut self.active {
@@ -133,7 +133,7 @@ impl AnimationTimeline {
 
 /// Apply interpolated keyframe properties to a node at the given progress (0.0–1.0).
 fn apply_keyframe_at(
-    doc: &mut CxrdDocument,
+    doc: &mut PrdDocument,
     def: &AnimationDef,
     node_id: NodeId,
     progress: f32,
@@ -181,3 +181,4 @@ fn apply_keyframe_at(
         }
     }
 }
+

@@ -1,11 +1,11 @@
-// openrender-runtime/src/cxrd/animation.rs
+// prism-runtime/src/prd/animation.rs
 //
-// Animation definitions within a CXRD document.
+// Animation definitions within a PRD document.
 // These are compiled from CSS @keyframes and transition definitions.
 
 use serde::{Serialize, Deserialize};
-use crate::cxrd::style::EasingFunction;
-use crate::cxrd::value::Color;
+use crate::prd::style::EasingFunction;
+use crate::prd::value::Color;
 
 /// A compiled animation track.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -132,3 +132,4 @@ impl AnimatableProperty {
         }
     }
 }
+

@@ -1,20 +1,20 @@
-// openrender-runtime/src/layout/engine.rs
+﻿// prism-runtime/src/layout/engine.rs
 //
-// Top-level layout engine — traverses the CXRD node tree and
+// Top-level layout engine — traverses the PRD node tree and
 // computes layout positions for each node using block flow or flexbox.
 
-use crate::cxrd::document::CxrdDocument;
-use crate::cxrd::input::InputKind;
-use crate::cxrd::node::{NodeId, NodeKind};
-use crate::cxrd::style::{Display, FlexDirection, Position, GridTrackSize};
-use crate::cxrd::value::{Dimension, Rect, EdgeInsets};
+use crate::prd::document::PrdDocument;
+use crate::prd::input::InputKind;
+use crate::prd::node::{NodeId, NodeKind};
+use crate::prd::style::{Display, FlexDirection, Position, GridTrackSize};
+use crate::prd::value::{Dimension, Rect, EdgeInsets};
 use crate::layout::types::LayoutConstraints;
 
-/// Perform a full layout pass on a CXRD document.
+/// Perform a full layout pass on a PRD document.
 ///
 /// After this, every node's `layout.rect` is populated with its
 /// absolute pixel position and size.
-pub fn compute_layout(doc: &mut CxrdDocument, viewport_width: f32, viewport_height: f32) {
+pub fn compute_layout(doc: &mut PrdDocument, viewport_width: f32, viewport_height: f32) {
     log::trace!("[layout] ═══ compute_layout START  vp={viewport_width:.0}×{viewport_height:.0}  nodes={}", doc.nodes.len());
     let constraints = LayoutConstraints::new(viewport_width, viewport_height);
 
@@ -40,7 +40,7 @@ pub fn compute_layout(doc: &mut CxrdDocument, viewport_width: f32, viewport_heig
 /// references to multiple nodes simultaneously in a Vec.  We collect
 /// child info, compute layout, then write results back.
 fn layout_node_recursive(
-    doc: &mut CxrdDocument,
+    doc: &mut PrdDocument,
     node_id: NodeId,
     constraints: &LayoutConstraints,
     clip: Option<Rect>,
@@ -70,7 +70,7 @@ fn layout_node_recursive(
     );
 
     // Set clip for overflow: hidden or scroll containers.
-    let child_clip = if matches!(style.overflow, crate::cxrd::style::Overflow::Hidden | crate::cxrd::style::Overflow::Scroll) {
+    let child_clip = if matches!(style.overflow, crate::prd::style::Overflow::Hidden | crate::prd::style::Overflow::Scroll) {
         Some(container_rect)
     } else {
         clip
@@ -81,8 +81,8 @@ fn layout_node_recursive(
     }
 
     // Determine layout mode.
-    let is_flex = matches!(style.display, Display::Flex);
-    let is_grid = matches!(style.display, Display::Grid);
+    let is_flex = matches!(style.display, Display::Flex | Display::InlineFlex);
+    let is_grid = matches!(style.display, Display::Grid | Display::InlineGrid);
 
     if is_grid {
         // --- CSS Grid layout ---
@@ -182,6 +182,35 @@ fn layout_node_recursive(
         layout_node_recursive(doc, child_id, constraints, child_clip);
     }
 
+    // Apply relative positioning offsets (position: relative + top/left/right/bottom).
+    for &child_id in &children {
+        if let Some(child) = doc.nodes.get_mut(child_id as usize) {
+            if matches!(child.style.position, Position::Relative) {
+                let fs = child.style.font_size;
+                let dx = if !child.style.left.is_auto() {
+                    child.style.left.resolve(container_rect.width, constraints.viewport_width, constraints.viewport_height, fs, constraints.root_font_size)
+                } else if !child.style.right.is_auto() {
+                    -child.style.right.resolve(container_rect.width, constraints.viewport_width, constraints.viewport_height, fs, constraints.root_font_size)
+                } else {
+                    0.0
+                };
+                let dy = if !child.style.top.is_auto() {
+                    child.style.top.resolve(container_rect.height, constraints.viewport_width, constraints.viewport_height, fs, constraints.root_font_size)
+                } else if !child.style.bottom.is_auto() {
+                    -child.style.bottom.resolve(container_rect.height, constraints.viewport_width, constraints.viewport_height, fs, constraints.root_font_size)
+                } else {
+                    0.0
+                };
+                if dx.abs() > f32::EPSILON || dy.abs() > f32::EPSILON {
+                    child.layout.rect.x += dx;
+                    child.layout.rect.y += dy;
+                    child.layout.content_rect.x += dx;
+                    child.layout.content_rect.y += dy;
+                }
+            }
+        }
+    }
+
     // After recursive layout, shrink absolute/fixed elements that had
     // auto dimensions without opposing insets.
     for (child_id, sw, sh) in abs_shrink {
@@ -194,7 +223,7 @@ fn layout_node_recursive(
     }
 }
 
-fn apply_scale_to_subtree(doc: &mut CxrdDocument, root_id: NodeId, origin_x: f32, origin_y: f32, scale: f32) {
+fn apply_scale_to_subtree(doc: &mut PrdDocument, root_id: NodeId, origin_x: f32, origin_y: f32, scale: f32) {
     let mut stack = vec![root_id];
     while let Some(node_id) = stack.pop() {
         if let Some(node) = doc.nodes.get_mut(node_id as usize) {
@@ -232,7 +261,7 @@ fn apply_scale_to_subtree(doc: &mut CxrdDocument, root_id: NodeId, origin_x: f32
 ///   - Auto-placement for children without explicit positioning
 ///   - Auto-sized rows expand to fit content
 fn layout_grid_children(
-    doc: &mut CxrdDocument,
+    doc: &mut PrdDocument,
     parent_id: NodeId,
     container_rect: Rect,
     child_ids: &[NodeId],
@@ -330,7 +359,6 @@ fn layout_grid_children(
             auto_cursor_col = c1;
         }
     }
-
 
     // Phase 2: Resolve track sizes.
     // 2a. Resolve column widths.
@@ -436,7 +464,7 @@ fn layout_grid_children(
         // For content-box, add padding+border to get the outer rect size.
         let w = if !cs.width.is_auto() {
             let raw = resolve(cs.width, cell_w);
-            if matches!(cs.box_sizing, crate::cxrd::style::BoxSizing::ContentBox) {
+            if matches!(cs.box_sizing, crate::prd::style::BoxSizing::ContentBox) {
                 raw + padding.horizontal() + border.horizontal()
             } else { raw }
         } else {
@@ -444,7 +472,7 @@ fn layout_grid_children(
         };
         let h = if !cs.height.is_auto() {
             let raw = resolve(cs.height, cell_h);
-            if matches!(cs.box_sizing, crate::cxrd::style::BoxSizing::ContentBox) {
+            if matches!(cs.box_sizing, crate::prd::style::BoxSizing::ContentBox) {
                 raw + padding.vertical() + border.vertical()
             } else { raw }
         } else {
@@ -559,7 +587,7 @@ fn resolve_track_sizes(templates: &[GridTrackSize], available: f32, num_tracks: 
 /// Recursively sums children heights or uses font metrics for text.
 /// Returns the node's border-box height (padding + border + content), NOT including margins.
 /// Callers are responsible for adding margins when positioning.
-fn estimate_content_height(doc: &CxrdDocument, node_id: NodeId, constraints: &LayoutConstraints) -> f32 {
+fn estimate_content_height(doc: &PrdDocument, node_id: NodeId, constraints: &LayoutConstraints) -> f32 {
     let node = match doc.nodes.get(node_id as usize) {
         Some(n) => n,
         None => return 0.0,
@@ -617,9 +645,9 @@ fn estimate_content_height(doc: &CxrdDocument, node_id: NodeId, constraints: &La
 
     // Sum children heights (block flow) or max (flex-row).
     let gap = cs.gap;
-    let is_flex_row = matches!(cs.display, Display::Flex)
+    let is_flex_row = matches!(cs.display, Display::Flex | Display::InlineFlex)
         && matches!(cs.flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
-    let is_wrap_row = is_flex_row && !matches!(cs.flex_wrap, crate::cxrd::style::FlexWrap::NoWrap);
+    let is_wrap_row = is_flex_row && !matches!(cs.flex_wrap, crate::prd::style::FlexWrap::NoWrap);
     let is_paragraph_like = node.tag.as_deref() == Some("p");
 
     // Narrow max_width for children: subtract this node's horizontal padding/border
@@ -724,7 +752,7 @@ fn estimate_content_height(doc: &CxrdDocument, node_id: NodeId, constraints: &La
 ///
 /// For leaf text/data-bound nodes, uses a heuristic based on font metrics.
 /// For containers, sums children widths (flex-row) or takes max (block/column).
-fn estimate_content_width(doc: &CxrdDocument, node_id: NodeId, constraints: &LayoutConstraints) -> f32 {
+fn estimate_content_width(doc: &PrdDocument, node_id: NodeId, constraints: &LayoutConstraints) -> f32 {
     let node = match doc.nodes.get(node_id as usize) {
         Some(n) => n,
         None => return 0.0,
@@ -799,7 +827,7 @@ fn estimate_content_width(doc: &CxrdDocument, node_id: NodeId, constraints: &Lay
     }
 
     // Container node.
-    let is_flex_row = matches!(cs.display, Display::Flex)
+    let is_flex_row = matches!(cs.display, Display::Flex | Display::InlineFlex)
         && matches!(cs.flex_direction, FlexDirection::Row | FlexDirection::RowReverse);
     let gap = cs.gap;
     let mut total_w: f32 = 0.0;
@@ -831,7 +859,7 @@ fn estimate_content_width(doc: &CxrdDocument, node_id: NodeId, constraints: &Lay
 /// size consumed by all flex lines, *excluding* the container's own padding
 /// and border.  The caller can use these to shrink-wrap auto-sized containers.
 fn layout_flex_children(
-    doc: &mut CxrdDocument,
+    doc: &mut PrdDocument,
     parent_id: NodeId,
     container_rect: Rect,
     child_ids: &[NodeId],
@@ -850,7 +878,7 @@ fn layout_flex_children(
     }
 
     // Collect non-absolute child IDs for flex layout.
-    let flex_children: Vec<NodeId> = child_ids.iter()
+    let mut flex_children: Vec<NodeId> = child_ids.iter()
         .copied()
         .filter(|&cid| {
             doc.nodes.get(cid as usize)
@@ -859,6 +887,11 @@ fn layout_flex_children(
                 .unwrap_or(false)
         })
         .collect();
+
+    // Sort by CSS `order` property (stable sort preserves DOM order for equal values).
+    flex_children.sort_by_key(|&cid| {
+        doc.nodes.get(cid as usize).map(|c| c.style.order).unwrap_or(0)
+    });
 
     if flex_children.is_empty() {
         return (0.0, 0.0);
@@ -869,10 +902,10 @@ fn layout_flex_children(
     let parent_style = doc.nodes[parent_id as usize].style.clone();
 
     // Pre-resolve child sizes and flex properties, then use a simplified
-    // inline flex algorithm (since we can't pass &mut [&mut CxrdNode]).
+    // inline flex algorithm (since we can't pass &mut [&mut PrdNode]).
     let gap = parent_style.gap;
     let dir = parent_style.flex_direction;
-    let is_row = matches!(dir, crate::cxrd::style::FlexDirection::Row | crate::cxrd::style::FlexDirection::RowReverse);
+    let is_row = matches!(dir, crate::prd::style::FlexDirection::Row | crate::prd::style::FlexDirection::RowReverse);
     let main_size = if is_row { container_rect.width } else { container_rect.height };
     let cross_size = if is_row { container_rect.height } else { container_rect.width };
 
@@ -894,7 +927,7 @@ fn layout_flex_children(
         c_end: f32,
         padding: EdgeInsets,
         border: EdgeInsets,
-        align: crate::cxrd::style::AlignItems,
+        align: crate::prd::style::AlignItems,
     }
 
     // Use container-aware constraints so text wrapping estimates use
@@ -928,7 +961,7 @@ fn layout_flex_children(
             (margin.top, margin.bottom, margin.left, margin.right)
         };
 
-        let is_content_box = matches!(cs.box_sizing, crate::cxrd::style::BoxSizing::ContentBox);
+        let is_content_box = matches!(cs.box_sizing, crate::prd::style::BoxSizing::ContentBox);
         let cb_main_extra = if is_content_box {
             if is_row { padding.horizontal() + border.horizontal() }
             else { padding.vertical() + border.vertical() }
@@ -961,13 +994,13 @@ fn layout_flex_children(
             0.0
         };
 
-        let align = if cs.align_self != crate::cxrd::style::AlignSelf::Auto {
+        let align = if cs.align_self != crate::prd::style::AlignSelf::Auto {
             match cs.align_self {
-                crate::cxrd::style::AlignSelf::FlexStart => crate::cxrd::style::AlignItems::FlexStart,
-                crate::cxrd::style::AlignSelf::FlexEnd => crate::cxrd::style::AlignItems::FlexEnd,
-                crate::cxrd::style::AlignSelf::Center => crate::cxrd::style::AlignItems::Center,
-                crate::cxrd::style::AlignSelf::Stretch => crate::cxrd::style::AlignItems::Stretch,
-                crate::cxrd::style::AlignSelf::Auto => parent_style.align_items,
+                crate::prd::style::AlignSelf::FlexStart => crate::prd::style::AlignItems::FlexStart,
+                crate::prd::style::AlignSelf::FlexEnd => crate::prd::style::AlignItems::FlexEnd,
+                crate::prd::style::AlignSelf::Center => crate::prd::style::AlignItems::Center,
+                crate::prd::style::AlignSelf::Stretch => crate::prd::style::AlignItems::Stretch,
+                crate::prd::style::AlignSelf::Auto => parent_style.align_items,
             }
         } else {
             parent_style.align_items
@@ -1015,7 +1048,7 @@ fn layout_flex_children(
 
     // ── Wrap: group items into lines ──────────────────────────────────
     let wrap = parent_style.flex_wrap;
-    let lines: Vec<Vec<usize>> = if matches!(wrap, crate::cxrd::style::FlexWrap::NoWrap) {
+    let lines: Vec<Vec<usize>> = if matches!(wrap, crate::prd::style::FlexWrap::NoWrap) {
         // Single line containing all items.
         vec![(0..items.len()).collect()]
     } else {
@@ -1035,7 +1068,7 @@ fn layout_flex_children(
             }
         }
         if !cur.is_empty() { lines.push(cur); }
-        if matches!(wrap, crate::cxrd::style::FlexWrap::WrapReverse) {
+        if matches!(wrap, crate::prd::style::FlexWrap::WrapReverse) {
             lines.reverse();
         }
         lines
@@ -1046,7 +1079,7 @@ fn layout_flex_children(
         lines.iter().map(|l| l.len().to_string()).collect::<Vec<_>>().join(","),
     );
 
-    let wrapped_lines = !matches!(wrap, crate::cxrd::style::FlexWrap::NoWrap);
+    let wrapped_lines = !matches!(wrap, crate::prd::style::FlexWrap::NoWrap);
     let line_crosses: Vec<f32> = if wrapped_lines {
         lines.iter().map(|line| {
             let mut max_cross = 0.0f32;
@@ -1069,6 +1102,35 @@ fn layout_flex_children(
     };
     let mut cross_pos = 0.0f32;
     let mut max_main_used = 0.0f32;
+
+    // Compute total cross size used by all lines for align-content distribution.
+    let total_lines_cross: f32 = line_crosses.iter().sum::<f32>()
+        + if wrapped_lines && lines.len() > 1 { gap * (lines.len() - 1) as f32 } else { 0.0 };
+    let cross_free = (cross_size - total_lines_cross).max(0.0);
+
+    // align-content: distribute lines along the cross axis.
+    let (mut cross_offset, cross_extra_gap) = if wrapped_lines && lines.len() > 1 {
+        match parent_style.align_content {
+            crate::prd::style::AlignContent::FlexStart => (0.0, 0.0),
+            crate::prd::style::AlignContent::FlexEnd => (cross_free, 0.0),
+            crate::prd::style::AlignContent::Center => (cross_free / 2.0, 0.0),
+            crate::prd::style::AlignContent::SpaceBetween => {
+                (0.0, cross_free / (lines.len() - 1) as f32)
+            }
+            crate::prd::style::AlignContent::SpaceAround => {
+                let sp = cross_free / lines.len() as f32;
+                (sp / 2.0, sp)
+            }
+            crate::prd::style::AlignContent::SpaceEvenly => {
+                let sp = cross_free / (lines.len() + 1) as f32;
+                (sp, sp)
+            }
+            crate::prd::style::AlignContent::Stretch => (0.0, 0.0),
+        }
+    } else {
+        (0.0, 0.0)
+    };
+    cross_pos = cross_offset;
 
     for (line_index, line) in lines.iter().enumerate() {
         if line.is_empty() { continue; }
@@ -1107,17 +1169,17 @@ fn layout_flex_children(
         let remaining_l = (main_size - used_l).max(0.0);
 
         let (mut offset, extra_gap) = match parent_style.justify_content {
-            crate::cxrd::style::JustifyContent::FlexStart => (0.0, 0.0),
-            crate::cxrd::style::JustifyContent::FlexEnd => (remaining_l, 0.0),
-            crate::cxrd::style::JustifyContent::Center => (remaining_l / 2.0, 0.0),
-            crate::cxrd::style::JustifyContent::SpaceBetween => {
+            crate::prd::style::JustifyContent::FlexStart => (0.0, 0.0),
+            crate::prd::style::JustifyContent::FlexEnd => (remaining_l, 0.0),
+            crate::prd::style::JustifyContent::Center => (remaining_l / 2.0, 0.0),
+            crate::prd::style::JustifyContent::SpaceBetween => {
                 if line.len() > 1 { (0.0, remaining_l / (line.len() - 1) as f32) } else { (0.0, 0.0) }
             }
-            crate::cxrd::style::JustifyContent::SpaceAround => {
+            crate::prd::style::JustifyContent::SpaceAround => {
                 let sp = remaining_l / line.len() as f32;
                 (sp / 2.0, sp)
             }
-            crate::cxrd::style::JustifyContent::SpaceEvenly => {
+            crate::prd::style::JustifyContent::SpaceEvenly => {
                 let sp = remaining_l / (line.len() + 1) as f32;
                 (sp, sp)
             }
@@ -1131,7 +1193,7 @@ fn layout_flex_children(
 
             let c = if item.base_cross > 0.0 {
                 item.base_cross
-            } else if matches!(item.align, crate::cxrd::style::AlignItems::Stretch) {
+            } else if matches!(item.align, crate::prd::style::AlignItems::Stretch) {
                 line_cross - item.c_start - item.c_end
             } else {
                 let intrinsic = if is_row {
@@ -1143,9 +1205,9 @@ fn layout_flex_children(
             };
 
             let item_cross_offset = match item.align {
-                crate::cxrd::style::AlignItems::FlexStart => item.c_start,
-                crate::cxrd::style::AlignItems::FlexEnd => line_cross - c - item.c_end,
-                crate::cxrd::style::AlignItems::Center => (line_cross - c) / 2.0,
+                crate::prd::style::AlignItems::FlexStart => item.c_start,
+                crate::prd::style::AlignItems::FlexEnd => line_cross - c - item.c_end,
+                crate::prd::style::AlignItems::Center => (line_cross - c) / 2.0,
                 _ => item.c_start,
             };
 
@@ -1181,7 +1243,7 @@ fn layout_flex_children(
             "[layout]   flex line {line_index} done  used_l={used_l:.1} remaining={remaining_l:.1} offset={offset:.1}",
         );
 
-        cross_pos += line_cross + if wrapped_lines { gap } else { 0.0 };
+        cross_pos += line_cross + if wrapped_lines { gap + cross_extra_gap } else { 0.0 };
     }
 
     log::trace!("[layout]   flex result  main_used={max_main_used:.1}  cross_used={cross_pos:.1}");
@@ -1190,7 +1252,7 @@ fn layout_flex_children(
 
 /// Layout children using simple block flow (stack vertically).
 fn layout_block_children(
-    doc: &mut CxrdDocument,
+    doc: &mut PrdDocument,
     container_rect: Rect,
     child_ids: &[NodeId],
     constraints: &LayoutConstraints,
@@ -1225,7 +1287,7 @@ fn layout_block_children(
             let raw = resolve(cs.width, container_rect.width);
             // box-sizing: content-box means width specifies content area only;
             // add padding+border to get the outer (border-box) rect width.
-            if matches!(cs.box_sizing, crate::cxrd::style::BoxSizing::ContentBox) {
+            if matches!(cs.box_sizing, crate::prd::style::BoxSizing::ContentBox) {
                 raw + padding.horizontal() + border.horizontal()
             } else {
                 raw
@@ -1236,7 +1298,7 @@ fn layout_block_children(
 
         let h = if !cs.height.is_auto() {
             let raw = resolve(cs.height, container_rect.height);
-            if matches!(cs.box_sizing, crate::cxrd::style::BoxSizing::ContentBox) {
+            if matches!(cs.box_sizing, crate::prd::style::BoxSizing::ContentBox) {
                 raw + padding.vertical() + border.vertical()
             } else {
                 raw
@@ -1247,6 +1309,23 @@ fn layout_block_children(
             // For leaf nodes, use text line height.
             let inner_constraints = constraints.with_max(container_rect.width, container_rect.height);
             estimate_content_height(doc, cid, &inner_constraints)
+        };
+
+        // Apply aspect-ratio if height is auto and width is known.
+        let h = if cs.height.is_auto() {
+            if let Some(ratio) = cs.aspect_ratio {
+                if ratio > 0.0 {
+                    let content_w = (w - padding.horizontal() - border.horizontal()).max(0.0);
+                    let content_h = content_w / ratio;
+                    content_h + padding.vertical() + border.vertical()
+                } else {
+                    h
+                }
+            } else {
+                h
+            }
+        } else {
+            h
         };
 
         y_cursor += margin.top;
@@ -1293,7 +1372,7 @@ fn layout_block_children(
 /// shrunk to content after recursive layout (true when the dimension is
 /// `auto` and NOT constrained by opposing insets).
 fn layout_absolute_child(
-    doc: &mut CxrdDocument,
+    doc: &mut PrdDocument,
     child_id: NodeId,
     containing: Rect,
     constraints: &LayoutConstraints,
@@ -1312,7 +1391,7 @@ fn layout_absolute_child(
     };
     let border = cs.border_width;
 
-    let is_content_box = matches!(cs.box_sizing, crate::cxrd::style::BoxSizing::ContentBox);
+    let is_content_box = matches!(cs.box_sizing, crate::prd::style::BoxSizing::ContentBox);
 
     // Width: explicit > opposing insets > right-anchor intrinsic > shrink-to-fit
     let (w, shrink_w) = if !cs.width.is_auto() {
@@ -1382,7 +1461,7 @@ fn layout_absolute_child(
 /// After recursive layout, shrink an absolute/fixed element's rect to
 /// fit its children when the dimension was auto-sized without opposing insets.
 fn shrink_absolute_to_content(
-    doc: &mut CxrdDocument,
+    doc: &mut PrdDocument,
     node_id: NodeId,
     shrink_w: bool,
     shrink_h: bool,
@@ -1455,3 +1534,4 @@ fn shrink_absolute_to_content(
         }
     }
 }
+

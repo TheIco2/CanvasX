@@ -1,11 +1,11 @@
-// openrender-runtime/src/cxrd/asset.rs
+// prism-runtime/src/prd/asset.rs
 //
-// Asset table for bundled resources within a CXRD document.
+// Asset table for bundled resources within a PRD document.
 // All assets are embedded — no network fetches at runtime.
 
 use serde::{Serialize, Deserialize};
 
-/// The complete asset bundle for a CXRD document.
+/// The complete asset bundle for a PRD document.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AssetBundle {
     /// Image assets (textures).
@@ -108,3 +108,4 @@ mod serde_bytes_compat {
         Vec::<u8>::deserialize(d)
     }
 }
+

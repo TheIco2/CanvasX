@@ -1,6 +1,6 @@
-// openrender-runtime/src/cxrd/value.rs
+// prism-runtime/src/prd/value.rs
 //
-// Fundamental value types used across the CXRD format.
+// Fundamental value types used across the PRD format.
 
 use serde::{Serialize, Deserialize};
 
@@ -201,3 +201,4 @@ pub struct Size {
     pub width: f32,
     pub height: f32,
 }
+

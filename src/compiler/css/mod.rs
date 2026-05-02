@@ -1,4 +1,4 @@
-// openrender-runtime/src/compiler/css/mod.rs
+﻿// prism-runtime/src/compiler/css/mod.rs
 //
 // CSS compiler module — versioned CSS specification support.
 //
@@ -21,7 +21,7 @@ pub mod parsing;
 // continue to work without changes.
 pub use parsing::{parse_color, resolve_var_pub};
 
-use crate::cxrd::style::*;
+use crate::prd::style::*;
 use std::collections::HashMap;
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -364,3 +364,4 @@ fn find_matching_brace(source: &str, start: usize) -> Option<usize> {
     }
     None
 }
+

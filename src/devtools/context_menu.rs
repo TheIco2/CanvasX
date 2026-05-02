@@ -1,9 +1,9 @@
-// openrender-runtime/src/devtools/context_menu.rs
+﻿// prism-runtime/src/devtools/context_menu.rs
 //
 // In-window right-click context menu rendered as a GPU overlay.
 // Provides access to DevTools, Reload, and Exit without a system tray.
 
-use crate::cxrd::value::Color;
+use crate::prd::value::Color;
 use crate::gpu::vertex::UiInstance;
 use super::DevToolsTextEntry;
 
@@ -38,10 +38,18 @@ pub enum ContextMenuEntry {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ContextAction {
     ToggleDevTools,
+    PopoutDevTools,
     InspectElement,
     DebugServer,
     Reload,
+    Home,
+    Back,
+    Forward,
     Exit,
+    /// Navigate to a named page/route.
+    NavigateTo(String),
+    /// Evaluate a JavaScript expression in the active page.
+    Eval(String),
 }
 
 /// The in-window context menu state.
@@ -69,39 +77,88 @@ impl ContextMenu {
     }
 
     fn default_entries() -> Vec<ContextMenuEntry> {
-        vec![
-            ContextMenuEntry::Item {
-                label: "Inspect Element".to_string(),
-                shortcut: Some("Ctrl+Shift+C".to_string()),
-                action: ContextAction::InspectElement,
+        Self::built_in_entries(&[])
+    }
+
+    /// Built-in entries with optional name-based hiding. Recognised hide
+    /// names (case-insensitive): `inspect`, `devtools`, `popout-devtools`,
+    /// `debug-server`, `home`, `back`, `forward`, `reload`, `exit`.
+    fn built_in_entries(hide: &[String]) -> Vec<ContextMenuEntry> {
+        let hidden: std::collections::HashSet<String> =
+            hide.iter().map(|s| s.trim().to_ascii_lowercase()).collect();
+
+        let candidates: &[(&str, &str, Option<&str>, ContextAction)] = &[
+            ("inspect",         "Inspect Element", Some("Ctrl+Shift+C"), ContextAction::InspectElement),
+            ("devtools",        "DevTools",        Some("F12"),          ContextAction::ToggleDevTools),
+            ("popout-devtools", "Pop Out DevTools", None,                ContextAction::PopoutDevTools),
+            ("debug-server",    "Debug Server",    None,                 ContextAction::DebugServer),
+        ];
+        let nav_candidates: &[(&str, &str, Option<&str>, ContextAction)] = &[
+            ("home",    "Home",    None,              ContextAction::Home),
+            ("back",    "Back",    Some("Alt+Left"),  ContextAction::Back),
+            ("forward", "Forward", Some("Alt+Right"), ContextAction::Forward),
+            ("reload",  "Reload",  Some("Ctrl+R"),    ContextAction::Reload),
+        ];
+
+        let mut out: Vec<ContextMenuEntry> = Vec::new();
+        for (id, label, sc, action) in candidates {
+            if hidden.contains(*id) { continue; }
+            out.push(ContextMenuEntry::Item {
+                label: label.to_string(),
+                shortcut: sc.map(|s| s.to_string()),
+                action: action.clone(),
                 enabled: true,
-            },
-            ContextMenuEntry::Item {
-                label: "DevTools".to_string(),
-                shortcut: Some("F12".to_string()),
-                action: ContextAction::ToggleDevTools,
+            });
+        }
+        if !out.is_empty() {
+            out.push(ContextMenuEntry::Separator);
+        }
+        let nav_start = out.len();
+        for (id, label, sc, action) in nav_candidates {
+            if hidden.contains(*id) { continue; }
+            out.push(ContextMenuEntry::Item {
+                label: label.to_string(),
+                shortcut: sc.map(|s| s.to_string()),
+                action: action.clone(),
                 enabled: true,
-            },
-            ContextMenuEntry::Item {
-                label: "Debug Server".to_string(),
-                shortcut: None,
-                action: ContextAction::DebugServer,
-                enabled: true,
-            },
-            ContextMenuEntry::Separator,
-            ContextMenuEntry::Item {
-                label: "Reload".to_string(),
-                shortcut: Some("Ctrl+R".to_string()),
-                action: ContextAction::Reload,
-                enabled: true,
-            },
-            ContextMenuEntry::Item {
+            });
+        }
+        if out.len() > nav_start {
+            out.push(ContextMenuEntry::Separator);
+        }
+        if !hidden.contains("exit") {
+            out.push(ContextMenuEntry::Item {
                 label: "Exit".to_string(),
                 shortcut: None,
                 action: ContextAction::Exit,
                 enabled: true,
-            },
-        ]
+            });
+        }
+        // Trim trailing separator if any.
+        if matches!(out.last(), Some(ContextMenuEntry::Separator)) {
+            out.pop();
+        }
+        out
+    }
+
+    /// Build a context menu from a list of built-in hide names + extra items.
+    pub fn with_config(extra_items: Vec<ContextMenuEntry>, hide_defaults: &[String]) -> Self {
+        let mut entries = Self::built_in_entries(hide_defaults);
+        if !extra_items.is_empty() {
+            // Insert one separator between built-ins and extras (unless the
+            // built-in list is empty or already ends in one).
+            if !entries.is_empty() && !matches!(entries.last(), Some(ContextMenuEntry::Separator)) {
+                entries.push(ContextMenuEntry::Separator);
+            }
+            entries.extend(extra_items);
+        }
+        Self {
+            open: false,
+            x: 0.0,
+            y: 0.0,
+            hovered: None,
+            entries,
+        }
     }
 
     /// Show the context menu at the given position.
@@ -323,3 +380,4 @@ fn make_rect(
         _pad: 0,
     }
 }
+
