@@ -8,7 +8,7 @@ use crate::compiler::css::apply_property;
 use crate::prd::document::PrdDocument;
 use crate::prd::node::{NodeId, NodeKind, PrdNode};
 use crate::prd::input::{InputKind, ButtonVariant, CheckboxStyle};
-use crate::prd::style::{BorderStyle, ComputedStyle, Display, Background, GradientStop, ObjectFit};
+use crate::prd::style::{BorderStyle, ComputedStyle, Display, Background, GradientStop};
 use crate::gpu::vertex::UiInstance;
 use std::collections::HashMap;
 
@@ -331,12 +331,8 @@ fn paint_node(doc: &PrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, gra
             let spread = shadow.spread_radius.max(0.0);
             let blur = shadow.blur_radius.max(0.0);
 
-            // Inset shadow: shrink inward by spread, offset, then draw inner edges.
-            // We approximate with layered rects inside the element.
-            let inner_x = r.x + spread + shadow.offset_x.max(0.0);
-            let inner_y = r.y + spread + shadow.offset_y.max(0.0);
-            let inner_w = (r.width - spread * 2.0 - shadow.offset_x.abs()).max(0.0);
-            let inner_h = (r.height - spread * 2.0 - shadow.offset_y.abs()).max(0.0);
+            // Inset shadow: shrink inward by spread, offset, then draw inner edges
+            // via the layered loop below.
 
             // Base inset body — covers the inset region with shadow color.
             let base_alpha = c[3] * 0.18;

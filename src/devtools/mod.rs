@@ -297,9 +297,6 @@ impl DevTools {
         if let Some(nid) = elements::node_id_at_line(doc, line_idx, &self.expanded_nodes) {
             // If clicking on a node with children, toggle expand/collapse
             if elements::node_has_children_at_line(doc, line_idx, &self.expanded_nodes) {
-                // Check if click is in the arrow region (roughly the first 16px of the line)
-                let depth_line = line_idx as f32 * line_h;
-                let _indent = 12.0 + line_idx as f32; // rough
                 // Simple: if already selected, toggle expand. Otherwise, select.
                 if self.selected_node == Some(nid) {
                     // Toggle expand/collapse

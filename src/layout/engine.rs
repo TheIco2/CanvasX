@@ -1100,7 +1100,6 @@ fn layout_flex_children(
     } else {
         vec![cross_size]
     };
-    let mut cross_pos = 0.0f32;
     let mut max_main_used = 0.0f32;
 
     // Compute total cross size used by all lines for align-content distribution.
@@ -1109,7 +1108,7 @@ fn layout_flex_children(
     let cross_free = (cross_size - total_lines_cross).max(0.0);
 
     // align-content: distribute lines along the cross axis.
-    let (mut cross_offset, cross_extra_gap) = if wrapped_lines && lines.len() > 1 {
+    let (cross_offset, cross_extra_gap) = if wrapped_lines && lines.len() > 1 {
         match parent_style.align_content {
             crate::prd::style::AlignContent::FlexStart => (0.0, 0.0),
             crate::prd::style::AlignContent::FlexEnd => (cross_free, 0.0),
@@ -1130,7 +1129,7 @@ fn layout_flex_children(
     } else {
         (0.0, 0.0)
     };
-    cross_pos = cross_offset;
+    let mut cross_pos = cross_offset;
 
     for (line_index, line) in lines.iter().enumerate() {
         if line.is_empty() { continue; }

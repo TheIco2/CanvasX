@@ -105,7 +105,7 @@ impl HostedApp {
                 .unwrap_or(1.0);
             let vw = ctx.size.0 as f32 / scale;
             let vh = ctx.size.1 as f32 / scale;
-            let events = self.host.tick(vw, vh, dt, &mut renderer.font_system);
+            let events = self.host.tick(vw, vh, dt, &mut renderer.font_system, scale);
             (vw, vh, scale, events)
         };
 
@@ -129,13 +129,58 @@ impl HostedApp {
             Vec::new()
         };
 
+        // Shape DevTools / context-menu text (logical positions; the renderer
+        // scales positions+bounds by scale_factor at draw time, and we shape
+        // glyphs at physical font metrics for crisp output on high-DPI).
+        let devtools_text_entries = self.host.devtools_text_entries(vw, vh);
+        let mut devtools_buffers: Vec<glyphon::Buffer> = Vec::with_capacity(devtools_text_entries.len());
+        for entry in &devtools_text_entries {
+            let font_size = entry.font_size * scale;
+            let line_height = font_size * 1.3;
+            let metrics = glyphon::Metrics::new(font_size, line_height);
+            let mut buffer = glyphon::Buffer::new(&mut renderer.font_system, metrics);
+            let weight = if entry.bold { glyphon::Weight(700) } else { glyphon::Weight(400) };
+            let attrs = glyphon::Attrs::new()
+                .family(glyphon::Family::SansSerif)
+                .weight(weight);
+            buffer.set_size(&mut renderer.font_system, Some(entry.width * scale), None);
+            buffer.set_text(&mut renderer.font_system, &entry.text, &attrs, glyphon::Shaping::Advanced, None);
+            buffer.shape_until_scroll(&mut renderer.font_system, false);
+            devtools_buffers.push(buffer);
+        }
+        let mut devtools_text_areas: Vec<glyphon::TextArea<'_>> = Vec::with_capacity(devtools_buffers.len());
+        for (i, entry) in devtools_text_entries.iter().enumerate() {
+            if let Some(buf) = devtools_buffers.get(i) {
+                let c = entry.color;
+                devtools_text_areas.push(glyphon::TextArea {
+                    buffer: buf,
+                    left: entry.x,
+                    top: entry.y,
+                    scale: 1.0,
+                    bounds: glyphon::TextBounds {
+                        left: 0,
+                        top: 0,
+                        right: vw as i32,
+                        bottom: vh as i32,
+                    },
+                    default_color: glyphon::Color::rgba(
+                        (c.r * 255.0) as u8,
+                        (c.g * 255.0) as u8,
+                        (c.b * 255.0) as u8,
+                        (c.a * 255.0) as u8,
+                    ),
+                    custom_glyphs: &[],
+                });
+            }
+        }
+
         renderer.begin_frame(ctx, dt, scale);
         let _ = renderer.render_triple_layered(
             ctx,
             &scene_instances,
             text_areas,
             &devtools_instances,
-            Vec::new(),
+            devtools_text_areas,
             &[],
             Vec::new(),
             clear_color,

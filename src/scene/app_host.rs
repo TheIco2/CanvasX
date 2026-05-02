@@ -749,6 +749,7 @@ impl AppHost {
         viewport_height: f32,
         dt: f32,
         font_system: &mut glyphon::FontSystem,
+        scale_factor: f32,
     ) -> Vec<AppEvent> {
         // Handle pending context menu actions.
         if let Some(action) = self.pending_context_action.take() {
@@ -852,13 +853,13 @@ impl AppHost {
                     page.dirty = false;
                 }
 
-                let _ = page.scene.tick(content_width, viewport_height, dt, font_system);
+                let _ = page.scene.tick(content_width, viewport_height, dt, font_system, scale_factor);
             }
         }
 
         // Tick custom title bar if present.
         if let Some(ref mut tb) = self.title_bar {
-            let _ = tb.scene.tick(viewport_width, tb.height, dt, font_system);
+            let _ = tb.scene.tick(viewport_width, tb.height, dt, font_system, scale_factor);
         }
 
         // Drain pending events.

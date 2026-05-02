@@ -342,7 +342,6 @@ fn paint_fps_graph(
     }
 
     // Bars
-    let count = devtools.fps_history.len();
     let bar_w = (graph_w / 120.0).max(1.0);
     for (i, &fps) in devtools.fps_history.iter().enumerate() {
         let ratio = (fps / max_fps).clamp(0.0, 1.0);

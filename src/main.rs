@@ -1238,7 +1238,7 @@ impl App {
         // Tick the scene graph: layout → animate → paint.
         // Split into two phases to avoid borrow conflicts:
         // 1. Run tick (mutates scene, updates cached_instances and gradient_textures)
-        scene.tick(vw, vh, dt, &mut renderer.font_system);
+        scene.tick(vw, vh, dt, &mut renderer.font_system, scale);
 
         // 2. Upload gradient textures (before borrowing cached_instances)
         if scene.take_gradient_textures_dirty() {
@@ -1296,7 +1296,9 @@ impl App {
         let devtools_text_entries = self.devtools.text_entries(&scene.document, vw, vh);
         let mut devtools_buffers: Vec<glyphon::Buffer> = Vec::new();
         for entry in &devtools_text_entries {
-            let font_size = entry.font_size;
+            // Shape at physical pixel size — the renderer scales TextArea
+            // positions/bounds by scale_factor at draw time.
+            let font_size = entry.font_size * scale;
             let line_height = font_size * 1.3;
             let metrics = glyphon::Metrics::new(font_size, line_height);
             let mut buffer = glyphon::Buffer::new(&mut renderer.font_system, metrics);
@@ -1304,7 +1306,7 @@ impl App {
             let attrs = glyphon::Attrs::new()
                 .family(glyphon::Family::SansSerif)
                 .weight(weight);
-            buffer.set_size(&mut renderer.font_system, Some(entry.width), None);
+            buffer.set_size(&mut renderer.font_system, Some(entry.width * scale), None);
             buffer.set_text(&mut renderer.font_system, &entry.text, &attrs, glyphon::Shaping::Advanced, None);
             buffer.shape_until_scroll(&mut renderer.font_system, false);
             devtools_buffers.push(buffer);

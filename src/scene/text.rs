@@ -229,6 +229,7 @@ impl TextPainter {
                         style.font_weight.0.hash(&mut hasher);
                         (rect.width as u32).hash(&mut hasher);
                         center_align.hash(&mut hasher);
+                        scale_factor.to_bits().hash(&mut hasher);
                         hasher.finish()
                     };
 

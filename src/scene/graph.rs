@@ -188,6 +188,7 @@ impl SceneGraph {
         viewport_height: f32,
         dt: f32,
         font_system: &mut glyphon::FontSystem,
+        scale_factor: f32,
     ) {
         // 1. Re-layout if dirty.
         if self.layout_dirty {
@@ -202,8 +203,8 @@ impl SceneGraph {
             self.paint_dirty = true;
         }
 
-        // 3. Prepare text.
-        self.text_painter.prepare(&self.document, font_system, &self.data_values);
+        // 3. Prepare text (shape glyphs at physical pixel size for crisp output).
+        self.text_painter.prepare(&self.document, font_system, &self.data_values, scale_factor);
 
         // 4. Paint only when necessary.
         if self.paint_dirty {

@@ -130,7 +130,7 @@ fn writer_loop_custom(app_name: &str, segment: &str, rx: mpsc::Receiver<String>,
     }
 
     let mut current_date = today();
-    let mut file = open_log_file_custom(&dir, app_name, segment, &current_date);
+    let mut file = open_log_file_custom(&dir, app_name, &current_date);
 
     if file.is_none() {
         eprintln!("[Prism][Logger] Failed to open log file in {}", dir.display());
@@ -140,7 +140,7 @@ fn writer_loop_custom(app_name: &str, segment: &str, rx: mpsc::Receiver<String>,
         let now_date = today();
         if now_date != current_date {
             current_date = now_date;
-            file = open_log_file_custom(&dir, app_name, segment, &current_date);
+            file = open_log_file_custom(&dir, app_name, &current_date);
         }
         if let Some(ref mut f) = file {
             let _ = writeln!(f, "{line}");
@@ -152,7 +152,6 @@ fn writer_loop_custom(app_name: &str, segment: &str, rx: mpsc::Receiver<String>,
 fn open_log_file_custom(
     dir: &PathBuf,
     app_name: &str,
-    segment: &str,
     date: &str,
 ) -> Option<fs::File> {
     let path = dir.join(format!("{app_name}-{date}.log"));
@@ -294,47 +293,6 @@ fn logs_dir(app_name: &str, segment: &str) -> PathBuf {
 
 /// Build the log filename for a given date:
 /// `<date>_<app_name>_<segment>.log`
-fn log_filename(app_name: &str, segment: &str, date: &str) -> String {
-    format!("{date}_{app_name}_{segment}.log")
-}
-
-/// Background writer loop. Opens a new file each day.
-fn writer_loop(app_name: &str, segment: &str, rx: mpsc::Receiver<String>) {
-    let dir = logs_dir(app_name, segment);
-    let _ = fs::create_dir_all(&dir);
-
-    let mut current_date = today();
-    let mut file = open_log_file(&dir, app_name, segment, &current_date);
-
-    while let Ok(line) = rx.recv() {
-        let now_date = today();
-        if now_date != current_date {
-            // Day changed — rotate to a new file.
-            current_date = now_date;
-            file = open_log_file(&dir, app_name, segment, &current_date);
-        }
-
-        if let Some(ref mut f) = file {
-            let _ = writeln!(f, "{line}");
-            let _ = f.flush();
-        }
-    }
-}
-
-fn open_log_file(
-    dir: &PathBuf,
-    app_name: &str,
-    segment: &str,
-    date: &str,
-) -> Option<fs::File> {
-    let path = dir.join(log_filename(app_name, segment, date));
-    OpenOptions::new()
-        .create(true)
-        .append(true)
-        .open(&path)
-        .ok()
-}
-
 fn today() -> String {
     chrono::Local::now().format("%Y-%m-%d").to_string()
 }

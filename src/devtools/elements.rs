@@ -7,7 +7,7 @@
 use std::collections::HashSet;
 use crate::prd::document::PrdDocument;
 use crate::prd::node::{NodeKind, NodeId};
-use crate::prd::style::{Display, ComputedStyle, Background, Position, FlexDirection, JustifyContent, AlignItems, AlignSelf, FlexWrap, Overflow, Visibility};
+use crate::prd::style::{Display, ComputedStyle, Background, Position, AlignSelf, FlexWrap, Overflow, Visibility};
 use crate::prd::value::Color;
 use super::DevToolsTextEntry;
 
