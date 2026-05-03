@@ -22,6 +22,7 @@ pub mod platform;
 pub mod scripting;
 pub mod devtools;
 pub mod capabilities;
+pub mod env;
 pub mod tray;
 pub mod instance;
 pub mod config;

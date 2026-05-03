@@ -113,6 +113,7 @@ impl ConsoleLog {
     }
 
     /// Check if an entry passes the current filter.
+    #[allow(dead_code)] // Used by future console rewrite.
     fn passes_filter(&self, entry: &ConsoleEntry) -> bool {
         match self.filter {
             ConsoleFilter::All => true,
@@ -146,111 +147,40 @@ impl ConsoleLog {
 /// Height of the filter bar above console entries.
 pub const CONSOLE_FILTER_BAR_HEIGHT: f32 = 24.0;
 
-/// Generate text entries for the console panel.
+/// Phase-1 placeholder. The full Console panel rewrite (formatted objects,
+/// stack traces, eager eval, etc.) lives in a follow-up. For now we just
+/// render a centered "Coming soon" message.
 pub fn text_entries_console(
     out: &mut Vec<DevToolsTextEntry>,
     console: &ConsoleLog,
-    x: f32,
+    _x: f32,
     content_y: f32,
     viewport_width: f32,
     content_h: f32,
-    scroll: f32,
+    _scroll: f32,
 ) {
-    let filter_y = content_y;
-    let entries_y = content_y + CONSOLE_FILTER_BAR_HEIGHT;
-    let entries_h = content_h - CONSOLE_FILTER_BAR_HEIGHT;
-
-    // Filter bar: [All] [Errors (N)] [Warnings (N)]  and clear button
-    let filter_label = match console.filter {
-        ConsoleFilter::All => format!("Filter: All ({})", console.entries.len()),
-        ConsoleFilter::Errors => format!("Filter: Errors ({})", console.error_count),
-        ConsoleFilter::Warnings => format!("Filter: Warnings ({})", console.warn_count),
-        ConsoleFilter::Info => format!("Filter: Info"),
-    };
+    let cx = viewport_width * 0.5 - 160.0;
+    let cy = content_y + content_h * 0.5 - 24.0;
     out.push(DevToolsTextEntry {
-        text: filter_label,
-        x: x + 4.0,
-        y: filter_y + 4.0,
-        width: 200.0,
+        text: "Console — coming soon".to_string(),
+        x: cx,
+        y: cy,
+        width: 320.0,
+        font_size: 14.0,
+        color: Color::new(0.85, 0.86, 0.90, 1.0),
+        bold: true,
+    });
+    out.push(DevToolsTextEntry {
+        text: format!(
+            "Buffered {} entries ({} errors, {} warnings) — UI under reconstruction.",
+            console.entries.len(), console.error_count, console.warn_count,
+        ),
+        x: cx - 80.0,
+        y: cy + 22.0,
+        width: 480.0,
         font_size: 11.0,
         color: Color::new(0.55, 0.55, 0.60, 1.0),
         bold: false,
     });
-
-    // Error/warning summary on the right side of filter bar
-    if console.error_count > 0 || console.warn_count > 0 {
-        let summary = format!(
-            "{}{}",
-            if console.error_count > 0 { format!("{} errors  ", console.error_count) } else { String::new() },
-            if console.warn_count > 0 { format!("{} warnings", console.warn_count) } else { String::new() },
-        );
-        out.push(DevToolsTextEntry {
-            text: summary,
-            x: viewport_width - 180.0,
-            y: filter_y + 4.0,
-            width: 170.0,
-            font_size: 11.0,
-            color: if console.error_count > 0 {
-                Color::new(1.0, 0.35, 0.35, 0.8)
-            } else {
-                Color::new(1.0, 0.85, 0.3, 0.8)
-            },
-            bold: false,
-        });
-    }
-
-    let line_h = 18.0;
-    let visible_start = scroll;
-    let visible_end = scroll + entries_h;
-
-    // Collect filtered entries
-    let filtered: Vec<(usize, &ConsoleEntry)> = console.entries.iter()
-        .enumerate()
-        .filter(|(_, e)| console.passes_filter(e))
-        .collect();
-
-    if filtered.is_empty() {
-        out.push(DevToolsTextEntry {
-            text: "No console output.".to_string(),
-            x: x + 4.0,
-            y: entries_y + 12.0,
-            width: viewport_width - x - 16.0,
-            font_size: 12.0,
-            color: Color::new(0.4, 0.4, 0.4, 1.0),
-            bold: false,
-        });
-        return;
-    }
-
-    for (vi, (_orig_idx, entry)) in filtered.iter().enumerate() {
-        let entry_y = vi as f32 * line_h;
-        if entry_y + line_h < visible_start || entry_y > visible_end {
-            continue;
-        }
-        let render_y = entries_y + 4.0 + entry_y - scroll;
-
-        // Format timestamp
-        let secs = entry.timestamp_ms / 1000.0;
-        let mins = (secs / 60.0).floor() as u32;
-        let s = secs % 60.0;
-        let ts = format!("{:02}:{:05.2}", mins, s);
-
-        let (prefix, color) = match entry.level {
-            LogLevel::Log => ("", Color::new(0.75, 0.75, 0.75, 1.0)),
-            LogLevel::Info => ("[info] ", Color::new(0.4, 0.7, 1.0, 1.0)),
-            LogLevel::Warn => ("[warn] ", Color::new(1.0, 0.85, 0.3, 1.0)),
-            LogLevel::Error => ("[error] ", Color::new(1.0, 0.35, 0.35, 1.0)),
-        };
-
-        out.push(DevToolsTextEntry {
-            text: format!("{} {}{}", ts, prefix, entry.message),
-            x: x + 4.0,
-            y: render_y,
-            width: viewport_width - x - 16.0,
-            font_size: 11.0,
-            color,
-            bold: matches!(entry.level, LogLevel::Error),
-        });
-    }
 }
 

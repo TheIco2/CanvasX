@@ -67,13 +67,13 @@ pub struct PrdDocument {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub title: Option<String>,
 
-    /// Icon paths declared via `<include type="icon">`.
+    /// Icon paths declared via `<link rel="icon">` / `<link rel="shortcut icon">`.
     /// `target` is "window", "system", or "" (both).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub icons: Vec<IconDecl>,
 }
 
-/// An icon declaration from `<include type="icon" target="..." src="..." />`.
+/// An icon declaration extracted from a `<link rel="icon" href="...">` tag.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IconDecl {
     /// "window", "system", "app", or "" (both window+system).

@@ -25,6 +25,11 @@ pub struct TrayConfig {
     pub tooltip: String,
     /// Menu entries shown on right-click.
     pub menu: TrayMenu,
+    /// Path to an HTML file containing a custom tray menu. Resolved
+    /// against the embedded `pages/` bundle first, then the filesystem.
+    /// When set, the native right-click menu is suppressed and a
+    /// frameless popup window renders this HTML instead.
+    pub menu_html_path: Option<String>,
 }
 
 impl Default for TrayConfig {
@@ -35,6 +40,7 @@ impl Default for TrayConfig {
             icon_rgba: None,
             tooltip: "OpenRender".to_string(),
             menu: TrayMenu::default(),
+            menu_html_path: None,
         }
     }
 }
@@ -205,6 +211,12 @@ pub enum TrayMenuAction {
     Reload,
     /// Show/hide the main window.
     ToggleWindow,
+    /// Always show the main window (built-in "Open" item).
+    Open,
+    /// Toggle the OS-level run-at-startup hook (built-in).
+    ToggleAutostart,
+    /// Trigger an application-defined update check (built-in).
+    CheckForUpdate,
     /// Custom action identified by a string ID (fires a JS event).
     Custom(String),
 }
@@ -224,6 +236,14 @@ pub enum TrayEvent {
     Reload,
     /// User selected Show/Hide from the menu.
     ToggleWindow,
+    /// User selected the built-in "Run at startup" item.
+    ToggleAutostart,
+    /// User selected the built-in "Check for update" item.
+    CheckForUpdate,
+    /// User right-clicked the tray icon and a custom HTML menu is
+    /// configured — the host should pop up its tray menu window at the
+    /// physical screen position `(x, y)`.
+    ShowCustomMenuAt { x: f64, y: f64 },
     /// User selected a custom menu item.
     CustomAction(String),
 }
@@ -263,7 +283,7 @@ impl SystemTray {
     }
 
     fn build(config: &TrayConfig) -> Result<Self, Box<dyn std::error::Error>> {
-        use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
+        use tray_icon::menu::{Menu, PredefinedMenuItem};
         use tray_icon::TrayIconBuilder;
 
         let menu = Menu::new();
@@ -277,14 +297,9 @@ impl SystemTray {
             menu.append(&PredefinedMenuItem::separator())?;
         }
 
-        // Built-in: Reload and Exit.
-        let reload_item = MenuItem::new("Reload", true, None);
-        menu_actions.push((reload_item.id().clone(), TrayMenuAction::Reload));
-        menu.append(&reload_item)?;
-
-        let exit_item = MenuItem::new("Exit", true, None);
-        menu_actions.push((exit_item.id().clone(), TrayMenuAction::Exit));
-        menu.append(&exit_item)?;
+        // Built-in defaults — permanent, but the embedding app can extend
+        // them via `update_menu` (user items are inserted *above* this set).
+        Self::append_default_items(&menu, &mut menu_actions)?;
 
         // Load icon — try custom path first, then fallback to a generated icon.
         let icon = if let Some((rgba, w, h)) = config.icon_rgba.clone() {
@@ -295,11 +310,15 @@ impl SystemTray {
             create_default_icon()
         };
 
-        let tray_icon = TrayIconBuilder::new()
-            .with_menu(Box::new(menu))
+        // When a custom HTML menu is configured, suppress the native menu so
+        // we can intercept right-clicks ourselves and show the popup window.
+        let mut builder = TrayIconBuilder::new()
             .with_tooltip(&config.tooltip)
-            .with_icon(icon)
-            .build()?;
+            .with_icon(icon);
+        if config.menu_html_path.is_none() {
+            builder = builder.with_menu(Box::new(menu));
+        }
+        let tray_icon = builder.build()?;
 
         Ok(Self {
             tray_icon: Some(tray_icon),
@@ -379,7 +398,7 @@ impl SystemTray {
 
     /// Update the tray menu with new entries. Preserves built-in Reload/Exit items.
     pub fn update_menu(&mut self, items: &[TrayMenuEntry]) {
-        use tray_icon::menu::{Menu, MenuItem, PredefinedMenuItem};
+        use tray_icon::menu::{Menu, PredefinedMenuItem};
 
         let Some(ref tray) = self.tray_icon else { return };
 
@@ -395,17 +414,45 @@ impl SystemTray {
             let _ = menu.append(&PredefinedMenuItem::separator());
         }
 
-        let reload_item = MenuItem::new("Reload", true, None);
-        new_actions.push((reload_item.id().clone(), TrayMenuAction::Reload));
-        let _ = menu.append(&reload_item);
-
-        let exit_item = MenuItem::new("Exit", true, None);
-        new_actions.push((exit_item.id().clone(), TrayMenuAction::Exit));
-        let _ = menu.append(&exit_item);
+        let _ = Self::append_default_items(&menu, &mut new_actions);
 
         tray.set_menu(Some(Box::new(menu)));
         self.menu_actions = new_actions;
         log::info!("Tray menu updated");
+    }
+
+    /// Append the permanent built-in items (Open, Run at startup, Check for
+    /// update, Reload, Close). Called by both `build` and `update_menu` so
+    /// the defaults always sit at the bottom of the menu.
+    fn append_default_items(
+        menu: &tray_icon::menu::Menu,
+        actions: &mut Vec<(tray_icon::menu::MenuId, TrayMenuAction)>,
+    ) -> Result<(), Box<dyn std::error::Error>> {
+        use tray_icon::menu::{MenuItem, PredefinedMenuItem};
+
+        let open_item = MenuItem::new("Open", true, None);
+        actions.push((open_item.id().clone(), TrayMenuAction::Open));
+        menu.append(&open_item)?;
+
+        let autostart_item = MenuItem::new("Run at startup", true, None);
+        actions.push((autostart_item.id().clone(), TrayMenuAction::ToggleAutostart));
+        menu.append(&autostart_item)?;
+
+        let update_item = MenuItem::new("Check for update", true, None);
+        actions.push((update_item.id().clone(), TrayMenuAction::CheckForUpdate));
+        menu.append(&update_item)?;
+
+        menu.append(&PredefinedMenuItem::separator())?;
+
+        let reload_item = MenuItem::new("Reload", true, None);
+        actions.push((reload_item.id().clone(), TrayMenuAction::Reload));
+        menu.append(&reload_item)?;
+
+        let close_item = MenuItem::new("Close", true, None);
+        actions.push((close_item.id().clone(), TrayMenuAction::Exit));
+        menu.append(&close_item)?;
+
+        Ok(())
     }
 
     /// Poll for tray events. Should be called once per frame.
@@ -418,8 +465,25 @@ impl SystemTray {
 
         // Check for tray icon events (double-click, etc.).
         while let Ok(event) = tray_icon::TrayIconEvent::receiver().try_recv() {
-            if matches!(event, tray_icon::TrayIconEvent::DoubleClick { .. }) {
-                events.push(TrayEvent::ShowWindow);
+            match event {
+                tray_icon::TrayIconEvent::DoubleClick { .. } => {
+                    events.push(TrayEvent::ShowWindow);
+                }
+                // Right-click release. Native menu (if any) is shown by the
+                // OS automatically; we additionally fire a ShowCustomMenuAt
+                // so the host can pop up its HTML menu when configured.
+                tray_icon::TrayIconEvent::Click {
+                    button: tray_icon::MouseButton::Right,
+                    button_state: tray_icon::MouseButtonState::Up,
+                    position,
+                    ..
+                } => {
+                    events.push(TrayEvent::ShowCustomMenuAt {
+                        x: position.x,
+                        y: position.y,
+                    });
+                }
+                _ => {}
             }
         }
 
@@ -431,6 +495,9 @@ impl SystemTray {
                         TrayMenuAction::Exit => events.push(TrayEvent::Exit),
                         TrayMenuAction::Reload => events.push(TrayEvent::Reload),
                         TrayMenuAction::ToggleWindow => events.push(TrayEvent::ToggleWindow),
+                        TrayMenuAction::Open => events.push(TrayEvent::ShowWindow),
+                        TrayMenuAction::ToggleAutostart => events.push(TrayEvent::ToggleAutostart),
+                        TrayMenuAction::CheckForUpdate => events.push(TrayEvent::CheckForUpdate),
                         TrayMenuAction::Custom(s) => events.push(TrayEvent::CustomAction(s.clone())),
                     }
                     break;

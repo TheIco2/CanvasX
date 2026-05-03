@@ -34,22 +34,20 @@ std::thread_local! {
     static COLLECTED_SCRIPTS: std::cell::RefCell<Vec<ScriptBlock>> = std::cell::RefCell::new(Vec::new());
 }
 
-/// Preprocess `<include>` tags with optional `type` and `immediate` attributes.
+/// Preprocess HTML to inline native asset references and component includes.
 ///
 /// Supported forms:
-///   `<include src="path" />`                     — resolve relative to `base_dir` (legacy)
-///   `<include type="component" src="name" />`    — resolve from `base_dir/components/`
-///   `<include type="asset" src="path" />`        — resolve from `base_dir/assets/`
+///   `<link rel="stylesheet" href="path">`             — inlined as `<style>…</style>`
+///   `<link rel="icon"|"shortcut icon" href="path">`   — emitted as `<meta name="icon">`
+///   `<script src="path"></script>`                    — inlined at position
+///   `<script src="path" defer></script>`              — appended at end of document
+///   `<include type="component" src="name" />`         — recursively inlined as HTML
+///   `<include src="name" />`                          — alias for component include
 ///
-/// Asset includes handle file extensions:
-///   `.css` → wrapped in `<style>…</style>`
-///   `.js`  → wrapped in `<script>…</script>` (deferred by default, `immediate` to inline)
-///   other  → inlined as HTML
-///
-/// Recursion depth is capped at 16 to prevent infinite loops.
+/// `<style>`, inline `<script>`, and other `<link>` rels are passed through
+/// unchanged. Recursion depth is capped at 16.
 fn preprocess_includes(html: &str, base_dir: Option<&Path>, depth: u32) -> String {
     let (mut result, deferred) = preprocess_includes_inner(html, base_dir, depth);
-    // Append deferred scripts at the very end of the document.
     for script in &deferred {
         result.push_str("\n<script data-deferred=\"true\">\n");
         result.push_str(script);
@@ -62,15 +60,13 @@ fn preprocess_includes_inner(html: &str, base_dir: Option<&Path>, depth: u32) ->
     preprocess_includes_inner_with_embed(html, base_dir, None, depth)
 }
 
-/// Embed-aware include preprocessor.
+/// Embed-aware preprocessor — same rules as [`preprocess_includes`] but
+/// resolves `href`/`src` paths against the in-memory `pages/` bundle via
+/// [`crate::embed::read_page_str`] instead of the filesystem.
 ///
-/// `embed_base` is a relative path within the embedded `pages/` bundle that
-/// acts as the resolution root for `<include src="...">` tags (e.g. `""` for
-/// pages at the bundle root, or `"settings"` for pages under `pages/settings/`).
-///
-/// When `embed_base` is `Some(_)`, asset/component/HTML includes are resolved
-/// against the in-memory embedded bundle via [`crate::embed::read_page_str`].
-/// When it is `None`, the legacy filesystem-based behaviour is used.
+/// `embed_base` is a relative path within the embedded bundle that acts as
+/// the resolution root (e.g. `""` for pages at the bundle root, or
+/// `"settings"` for pages under `pages/settings/`).
 pub fn preprocess_includes_embedded(html: &str, embed_base: &str, depth: u32) -> String {
     let (mut result, deferred) =
         preprocess_includes_inner_with_embed(html, None, Some(embed_base), depth);
@@ -80,6 +76,34 @@ pub fn preprocess_includes_embedded(html: &str, embed_base: &str, depth: u32) ->
         result.push_str("\n</script>");
     }
     result
+}
+
+/// Read an asset (relative path) from either the embedded bundle or filesystem.
+fn read_asset(src: &str, base_dir: Option<&Path>, embed_base: Option<&str>) -> Option<String> {
+    let src = src.trim();
+    if let Some(eb) = embed_base {
+        let rel = join_embed(eb, "", src);
+        crate::embed::read_page_str(&rel).map(|s| s.to_string())
+    } else {
+        let path = match base_dir {
+            Some(b) => b.join(src),
+            None => Path::new(src).to_path_buf(),
+        };
+        std::fs::read_to_string(&path).ok()
+    }
+}
+
+/// Compute a display path string for icon metadata (no file read).
+fn resolve_asset_path(src: &str, base_dir: Option<&Path>, embed_base: Option<&str>) -> String {
+    let src = src.trim();
+    if let Some(eb) = embed_base {
+        join_embed(eb, "", src)
+    } else {
+        match base_dir {
+            Some(b) => b.join(src).to_string_lossy().replace('\\', "/"),
+            None => src.replace('\\', "/"),
+        }
+    }
 }
 
 fn preprocess_includes_inner_with_embed(
@@ -99,190 +123,241 @@ fn preprocess_includes_inner_with_embed(
     let bytes = html.as_bytes();
     let mut pos = 0;
 
-    while pos < bytes.len() {
-        if let Some(idx) = lower[pos..].find("<include") {
-            let abs = pos + idx;
-            // Copy everything before this tag.
-            result.push_str(&html[pos..abs]);
-
-            // Find the end of the tag: either /> or >
-            let after_tag = abs + "<include".len();
-            let tag_end = if let Some(sc) = html[after_tag..].find("/>") {
-                after_tag + sc + 2
-            } else if let Some(gt) = html[after_tag..].find('>') {
-                // Look for </include>
-                let content_start = after_tag + gt + 1;
-                if let Some(close) = lower[content_start..].find("</include>") {
-                    content_start + close + "</include>".len()
-                } else {
-                    after_tag + gt + 1
+    // Find the next occurrence of any of the recognised tag prefixes.
+    // The character after the prefix must be whitespace, `>`, or `/` to avoid
+    // matching custom tags like `<link-preview>` or `<scripted>`.
+    fn next_tag(lower: &str, pos: usize) -> Option<(usize, &'static str)> {
+        let candidates: &[&'static str] = &["<include", "<link", "<script", "<style"];
+        let bytes = lower.as_bytes();
+        let mut best: Option<(usize, &'static str)> = None;
+        for &needle in candidates {
+            let mut search = pos;
+            while let Some(i) = lower[search..].find(needle) {
+                let abs = search + i;
+                let next_byte = bytes.get(abs + needle.len()).copied().unwrap_or(b' ');
+                if next_byte == b' ' || next_byte == b'\t' || next_byte == b'\n'
+                    || next_byte == b'\r' || next_byte == b'>' || next_byte == b'/'
+                {
+                    if best.map(|(b, _)| abs < b).unwrap_or(true) {
+                        best = Some((abs, needle));
+                    }
+                    break;
                 }
-            } else {
-                // Malformed, just output as-is.
-                result.push_str(&html[abs..abs + "<include".len()]);
+                search = abs + needle.len();
+            }
+        }
+        best
+    }
+
+    while pos < bytes.len() {
+        let (abs, kind) = match next_tag(&lower, pos) {
+            Some(t) => t,
+            None => {
+                result.push_str(&html[pos..]);
+                break;
+            }
+        };
+        result.push_str(&html[pos..abs]);
+
+        // Locate the end of the opening tag — the first `>` outside of a
+        // quoted attribute value. Using `find("/>")` here is unsafe because
+        // it would jump to the next `/>` *anywhere* in the document if this
+        // particular tag isn't self-closing.
+        let after_tag = abs + kind.len();
+        let open_end = match find_tag_end(html, after_tag) {
+            Some(e) => e,
+            None => {
+                result.push_str(&html[abs..after_tag]);
                 pos = after_tag;
                 continue;
-            };
+            }
+        };
+        let open_text = &html[abs..open_end];
+        let self_closing = open_text.trim_end_matches('>').trim_end().ends_with('/');
 
-            // Extract attributes from the tag.
-            let tag_text = &html[abs..tag_end];
-            let src = extract_attribute(tag_text, "src");
-            let include_type = extract_attribute(tag_text, "type");
-            let immediate = has_attribute(tag_text, "immediate");
+        match kind {
+            "<include" => {
+                // Find the closing </include> (only matters when not self-closing).
+                let tag_end = if self_closing {
+                    open_end
+                } else if let Some(close) = lower[open_end..].find("</include>") {
+                    open_end + close + "</include>".len()
+                } else {
+                    open_end
+                };
+                let tag_text = &html[abs..tag_end];
+                let src = extract_attribute(tag_text, "src");
+                let include_type = extract_attribute(tag_text, "type");
 
-            if let Some(src_path) = src {
-                // Embedded resolution path -------------------------------------
-                if let Some(eb) = embed_base {
-                    let sub = match include_type.as_deref() {
-                        Some("component") => "components",
-                        Some("asset") => "assets",
-                        Some("icon") => "icons",
-                        _ => "",
-                    };
-                    let resolved_rel = join_embed(eb, sub, &src_path);
-
-                    if include_type.as_deref() == Some("icon") {
-                        let target = extract_attribute(tag_text, "target").unwrap_or_default();
+                // Reject legacy types so old templates fail loudly.
+                match include_type.as_deref() {
+                    Some("asset") | Some("icon") => {
+                        log::error!(
+                            "include: type=\"{}\" is no longer supported — use <link>/<script> instead ({})",
+                            include_type.as_deref().unwrap_or(""), tag_text,
+                        );
                         result.push_str(&format!(
-                            "<meta name=\"icon\" data-target=\"{}\" content=\"{}\" />",
-                            target, resolved_rel
+                            "<!-- unsupported include type=\"{}\"; use native <link>/<script> -->",
+                            include_type.as_deref().unwrap_or(""),
                         ));
-                    } else {
-                        let target_attr = extract_attribute(tag_text, "target");
-                        let is_immediate = immediate || target_attr.as_deref() == Some("start");
-
-                        match crate::embed::read_page_str(&resolved_rel) {
-                            Some(contents) => {
-                                let ext = resolved_rel
-                                    .rsplit('.')
-                                    .next()
-                                    .unwrap_or("")
-                                    .to_lowercase();
-                                match ext.as_str() {
-                                    "css" => {
-                                        result.push_str("<style>\n");
-                                        result.push_str(contents);
-                                        result.push_str("\n</style>");
-                                    }
-                                    "js" => {
-                                        if is_immediate {
-                                            result.push_str("<script>\n");
-                                            result.push_str(contents);
-                                            result.push_str("\n</script>");
-                                        } else {
-                                            deferred_scripts.push(contents.to_string());
-                                        }
-                                    }
-                                    _ => {
-                                        let child_base = parent_of(&resolved_rel);
-                                        let (expanded, child_deferred) =
-                                            preprocess_includes_inner_with_embed(
-                                                contents,
-                                                None,
-                                                Some(&child_base),
-                                                depth + 1,
-                                            );
-                                        result.push_str(&expanded);
-                                        deferred_scripts.extend(child_deferred);
-                                    }
-                                }
-                            }
-                            None => {
-                                log::error!(
-                                    "include: failed to read embedded '{}'",
-                                    resolved_rel
-                                );
-                                result.push_str(&format!(
-                                    "<!-- include error: embedded '{}' not found -->",
-                                    resolved_rel
-                                ));
-                            }
-                        }
+                        pos = tag_end;
+                        continue;
                     }
-
-                    pos = tag_end;
-                    continue;
+                    _ => {}
                 }
 
-                // Filesystem resolution path -----------------------------------
-                // Resolve base directory based on type.
-                let resolve_base = match include_type.as_deref() {
-                    Some("component") => base_dir.map(|b| b.join("components")),
-                    Some("asset") => base_dir.map(|b| b.join("assets")),
-                    Some("icon") => base_dir.map(|b| b.join("icons")),
-                    _ => base_dir.map(|b| b.to_path_buf()),
+                let src_path = match src {
+                    Some(s) => s,
+                    None => {
+                        log::warn!("include tag without src attribute: {}", tag_text);
+                        pos = tag_end;
+                        continue;
+                    }
                 };
 
-                let resolved = if let Some(ref base) = resolve_base {
-                    base.join(&src_path)
+                // Both `type="component"` and bare `<include>` resolve from the
+                // `components/` subdirectory.
+                if let Some(eb) = embed_base {
+                    let resolved_rel = join_embed(eb, "components", &src_path);
+                    match crate::embed::read_page_str(&resolved_rel) {
+                        Some(contents) => {
+                            let child_base = parent_of(&resolved_rel);
+                            let (expanded, child_deferred) =
+                                preprocess_includes_inner_with_embed(
+                                    contents, None, Some(&child_base), depth + 1,
+                                );
+                            result.push_str(&expanded);
+                            deferred_scripts.extend(child_deferred);
+                        }
+                        None => {
+                            log::error!("include: failed to read embedded '{}'", resolved_rel);
+                            result.push_str(&format!(
+                                "<!-- include error: embedded '{}' not found -->",
+                                resolved_rel
+                            ));
+                        }
+                    }
                 } else {
-                    Path::new(&src_path).to_path_buf()
-                };
-
-                if include_type.as_deref() == Some("icon") {
-                    // Icon includes: emit a meta tag for extraction at compile time.
-                    let target = extract_attribute(tag_text, "target").unwrap_or_default();
-                    let abs_path = resolved.to_string_lossy().replace('\\', "/");
-                    result.push_str(&format!(
-                        "<meta name=\"icon\" data-target=\"{}\" content=\"{}\" />",
-                        target, abs_path
-                    ));
-                } else {
-                    // Determine if the asset target overrides deferred/immediate.
-                    let target_attr = extract_attribute(tag_text, "target");
-                    let is_immediate = immediate || target_attr.as_deref() == Some("start");
-
+                    let resolved = base_dir
+                        .map(|b| b.join("components").join(&src_path))
+                        .unwrap_or_else(|| Path::new(&src_path).to_path_buf());
                     match std::fs::read_to_string(&resolved) {
-                    Ok(contents) => {
-                        let ext = resolved.extension()
-                            .and_then(|e| e.to_str())
-                            .unwrap_or("")
-                            .to_lowercase();
-                        match ext.as_str() {
-                            "css" => {
-                                // CSS assets are wrapped in <style> tags so the
-                                // existing inline CSS extraction picks them up.
+                        Ok(contents) => {
+                            let child_dir = resolved.parent().or(base_dir);
+                            let (expanded, child_deferred) =
+                                preprocess_includes_inner_with_embed(
+                                    &contents, child_dir, None, depth + 1,
+                                );
+                            result.push_str(&expanded);
+                            deferred_scripts.extend(child_deferred);
+                        }
+                        Err(e) => {
+                            log::error!("include: failed to read '{}': {}", resolved.display(), e);
+                            result.push_str(&format!("<!-- include error: {} -->", e));
+                        }
+                    }
+                }
+                pos = tag_end;
+            }
+
+            "<link" => {
+                let rel = extract_attribute(open_text, "rel")
+                    .map(|s| s.to_ascii_lowercase())
+                    .unwrap_or_default();
+                let href = extract_attribute(open_text, "href");
+
+                if rel == "stylesheet" {
+                    if let Some(h) = href {
+                        match read_asset(&h, base_dir, embed_base) {
+                            Some(contents) => {
                                 result.push_str("<style>\n");
                                 result.push_str(&contents);
                                 result.push_str("\n</style>");
                             }
-                            "js" => {
-                                if is_immediate {
-                                    // Immediate: inline as a regular <script>.
-                                    result.push_str("<script>\n");
-                                    result.push_str(&contents);
-                                    result.push_str("\n</script>");
-                                } else {
-                                    // Deferred: collect and append after all other content.
-                                    deferred_scripts.push(contents);
-                                }
-                            }
-                            _ => {
-                                // HTML content — recurse for nested includes.
-                                let child_dir = resolved.parent().or(base_dir);
-                                let (expanded, child_deferred) =
-                                    preprocess_includes_inner_with_embed(
-                                        &contents, child_dir, None, depth + 1,
-                                    );
-                                result.push_str(&expanded);
-                                deferred_scripts.extend(child_deferred);
+                            None => {
+                                log::error!("link: failed to read stylesheet '{}'", h);
+                                result.push_str(&format!(
+                                    "<!-- stylesheet not found: {} -->", h
+                                ));
                             }
                         }
                     }
-                    Err(e) => {
-                        log::error!("include: failed to read '{}': {}", resolved.display(), e);
-                        result.push_str(&format!("<!-- include error: {} -->", e));
+                } else if rel == "icon" || rel == "shortcut icon" {
+                    if let Some(h) = href {
+                        let path = resolve_asset_path(&h, base_dir, embed_base);
+                        let target = extract_attribute(open_text, "data-target")
+                            .unwrap_or_default();
+                        result.push_str(&format!(
+                            "<meta name=\"icon\" data-target=\"{}\" content=\"{}\" />",
+                            target, path
+                        ));
                     }
+                } else {
+                    // Other rels (preconnect, manifest, etc.) — pass through.
+                    result.push_str(open_text);
                 }
-                } // close icon else
-            } else {
-                log::warn!("include tag without src attribute: {}", tag_text);
+                pos = open_end;
             }
 
-            pos = tag_end;
-        } else {
-            result.push_str(&html[pos..]);
-            break;
+            "<script" => {
+                let src = extract_attribute(open_text, "src");
+                if let Some(s) = src {
+                    // External script — locate the matching </script> so we
+                    // consume any (typically empty) body too.
+                    let body_end = if self_closing {
+                        open_end
+                    } else if let Some(close) = lower[open_end..].find("</script>") {
+                        open_end + close + "</script>".len()
+                    } else {
+                        open_end
+                    };
+                    let defer = has_attribute(open_text, "defer");
+                    match read_asset(&s, base_dir, embed_base) {
+                        Some(contents) => {
+                            if defer {
+                                deferred_scripts.push(contents);
+                            } else {
+                                result.push_str("<script>\n");
+                                result.push_str(&contents);
+                                result.push_str("\n</script>");
+                            }
+                        }
+                        None => {
+                            log::error!("script: failed to read '{}'", s);
+                            result.push_str(&format!("<!-- script not found: {} -->", s));
+                        }
+                    }
+                    pos = body_end;
+                } else {
+                    // Inline script — copy the entire <script>...</script>
+                    // block verbatim so JS contents aren't re-scanned for our
+                    // tag prefixes.
+                    let body_end = if self_closing {
+                        open_end
+                    } else if let Some(close) = lower[open_end..].find("</script>") {
+                        open_end + close + "</script>".len()
+                    } else {
+                        open_end
+                    };
+                    result.push_str(&html[abs..body_end]);
+                    pos = body_end;
+                }
+            }
+
+            "<style" => {
+                // Pass through the entire <style>...</style> block verbatim.
+                let body_end = if self_closing {
+                    open_end
+                } else if let Some(close) = lower[open_end..].find("</style>") {
+                    open_end + close + "</style>".len()
+                } else {
+                    open_end
+                };
+                result.push_str(&html[abs..body_end]);
+                pos = body_end;
+            }
+
+            _ => unreachable!(),
         }
     }
 
@@ -325,6 +400,20 @@ fn parent_of(rel: &str) -> String {
 /// `<page-content default="devices" />` becomes:
 /// `<page-content data-default="devices" data-active-content="devices">[devices.html content]</page-content>`
 fn preprocess_page_content(html: &str, base_dir: Option<&Path>) -> String {
+    preprocess_page_content_with_embed(html, base_dir, None)
+}
+
+/// Embed-aware variant — when `embed_base` is `Some`, the default fragment is
+/// resolved against the in-memory `pages/` bundle.
+pub fn preprocess_page_content_embedded(html: &str, embed_base: &str) -> String {
+    preprocess_page_content_with_embed(html, None, Some(embed_base))
+}
+
+fn preprocess_page_content_with_embed(
+    html: &str,
+    base_dir: Option<&Path>,
+    embed_base: Option<&str>,
+) -> String {
     let mut result = String::with_capacity(html.len());
     let lower = html.to_lowercase();
     let bytes = html.as_bytes();
@@ -336,30 +425,57 @@ fn preprocess_page_content(html: &str, base_dir: Option<&Path>) -> String {
             result.push_str(&html[pos..abs]);
 
             let after_tag = abs + "<page-content".len();
-            let tag_end = if let Some(sc) = html[after_tag..].find("/>") {
-                after_tag + sc + 2
-            } else if let Some(gt) = html[after_tag..].find('>') {
-                let content_start = after_tag + gt + 1;
-                if let Some(close) = lower[content_start..].find("</page-content>") {
-                    content_start + close + "</page-content>".len()
-                } else {
-                    after_tag + gt + 1
+            let open_end = match find_tag_end(html, after_tag) {
+                Some(e) => e,
+                None => {
+                    result.push_str(&html[abs..after_tag]);
+                    pos = after_tag;
+                    continue;
                 }
+            };
+            let self_closing = html[..open_end]
+                .trim_end_matches('>')
+                .trim_end()
+                .ends_with('/');
+            let tag_end = if self_closing {
+                open_end
+            } else if let Some(close) = lower[open_end..].find("</page-content>") {
+                open_end + close + "</page-content>".len()
             } else {
-                result.push_str(&html[abs..abs + "<page-content".len()]);
-                pos = after_tag;
-                continue;
+                open_end
             };
 
             let tag_text = &html[abs..tag_end];
             let default_page = extract_attribute(tag_text, "default");
+            // If the tag has already been expanded (carries `data-default`),
+            // pass it through verbatim so a second preprocessing pass is a
+            // no-op rather than wiping the inlined content.
+            let already_expanded = extract_attribute(tag_text, "data-default").is_some()
+                || extract_attribute(tag_text, "data-active-content").is_some();
 
-            if let Some(ref default_id) = default_page {
-                // Load the default content fragment.
-                let content = base_dir
-                    .map(|b| b.join(format!("{}.html", default_id)))
-                    .and_then(|p| std::fs::read_to_string(&p).ok())
-                    .unwrap_or_default();
+            if already_expanded {
+                result.push_str(tag_text);
+            } else if let Some(ref default_id) = default_page {
+                // Load the default content fragment from either the embedded
+                // bundle or filesystem.
+                let content = if let Some(eb) = embed_base {
+                    let rel = if eb.is_empty() {
+                        format!("{}.html", default_id)
+                    } else {
+                        format!("{}/{}.html", eb.trim_matches('/'), default_id)
+                    };
+                    crate::embed::read_page_str(&rel)
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| {
+                            log::error!("page-content: embedded fragment '{}' not found", rel);
+                            String::new()
+                        })
+                } else {
+                    base_dir
+                        .map(|b| b.join(format!("{}.html", default_id)))
+                        .and_then(|p| std::fs::read_to_string(&p).ok())
+                        .unwrap_or_default()
+                };
                 result.push_str(&format!(
                     "<page-content data-default=\"{}\" data-active-content=\"{}\">\n{}\n</page-content>",
                     default_id, default_id, content
@@ -410,7 +526,8 @@ fn extract_redirect(html: &str) -> Option<String> {
 }
 
 /// Extract icon declarations from `<meta name="icon" ...>` tags
-/// (emitted by `<include type="icon">` preprocessing).
+/// (emitted by the native `<link rel="icon">` / `<link rel="shortcut icon">`
+/// preprocessing).
 fn extract_icons(html: &str) -> Vec<crate::prd::document::IconDecl> {
     let lower = html.to_lowercase();
     let mut icons = Vec::new();
@@ -462,11 +579,48 @@ fn extract_title(html: &str) -> Option<String> {
     title
 }
 
+/// Find the byte index just past the closing `>` of an HTML opening tag,
+/// starting at `after_tag` (the byte index immediately after the tag name).
+/// Skips over `>` characters that appear inside quoted attribute values.
+/// Returns `None` if no closing `>` is found.
+fn find_tag_end(html: &str, after_tag: usize) -> Option<usize> {
+    let bytes = html.as_bytes();
+    let mut i = after_tag;
+    let mut quote: Option<u8> = None;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if let Some(q) = quote {
+            if b == q { quote = None; }
+        } else if b == b'"' || b == b'\'' {
+            quote = Some(b);
+        } else if b == b'>' {
+            return Some(i + 1);
+        }
+        i += 1;
+    }
+    None
+}
+
 /// Extract a named attribute value from a tag string.
 fn extract_attribute(tag: &str, attr_name: &str) -> Option<String> {
     let lower = tag.to_lowercase();
+    let bytes = lower.as_bytes();
     let needle = format!("{}=", attr_name);
-    if let Some(idx) = lower.find(&needle) {
+    let mut search = 0;
+    while let Some(rel) = lower[search..].find(&needle) {
+        let idx = search + rel;
+        // Require a word boundary before the attribute name so that
+        // `default=` doesn't accidentally match inside `data-default=`,
+        // and `src=` doesn't match inside e.g. `data-src=`.
+        let prev = if idx == 0 { b' ' } else { bytes[idx - 1] };
+        let is_boundary = matches!(
+            prev,
+            b' ' | b'\t' | b'\n' | b'\r' | b'/' | b'<'
+        );
+        if !is_boundary {
+            search = idx + needle.len();
+            continue;
+        }
         let after_eq = idx + needle.len();
         let rest = tag[after_eq..].trim_start();
         if rest.starts_with('"') {
@@ -479,7 +633,14 @@ fn extract_attribute(tag: &str, attr_name: &str) -> Option<String> {
             if let Some(end) = inner.find('\'') {
                 return Some(inner[..end].to_string());
             }
+        } else {
+            // Unquoted value — read up to whitespace or `>`.
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == '>' || c == '/')
+                .unwrap_or(rest.len());
+            return Some(rest[..end].to_string());
         }
+        search = after_eq;
     }
     None
 }
@@ -527,7 +688,8 @@ pub fn compile_html(
     doc.redirect = extract_redirect(&html_source);
     // 0d. Extract <title> tag (last one wins).
     doc.title = extract_title(&html_source);
-    // 0e. Extract icon declarations from <include type="icon"> meta tags.
+    // 0e. Extract icon declarations from <meta name="icon"> tags emitted
+    //     by the native <link rel="icon"> preprocessing.
     doc.icons = extract_icons(&html_source);
     let html_source = html_source.as_str();
 

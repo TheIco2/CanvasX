@@ -536,6 +536,12 @@ impl ApplicationHandler for App {
                     self.devtools.panel_height = new_h;
                 }
 
+                // Elements panel sidebar splitter drag.
+                let vw = self.window.as_ref()
+                    .map(|w| w.inner_size().width as f32 / w.scale_factor() as f32)
+                    .unwrap_or(800.0);
+                self.devtools.drag_elements_splitter(x, vw);
+
                 // Elements hover tracking.
                 self.devtools.update_elements_hover(y, vh);
 
@@ -561,6 +567,24 @@ impl ApplicationHandler for App {
                     let vw = self.window.as_ref()
                         .map(|w| w.inner_size().width as f32 / w.scale_factor() as f32)
                         .unwrap_or(800.0);
+
+                    // Command palette: hit-test first so it intercepts everything.
+                    if self.devtools.palette.open {
+                        match prism_runtime::devtools::palette::hit_test(&self.devtools.palette, vw, vh, x, y) {
+                            Some(usize::MAX) => return, // inside panel but not a row
+                            Some(i) => {
+                                self.devtools.palette.hovered = i;
+                                if let Some(action) = self.devtools.palette.invoke_selected() {
+                                    if matches!(self.devtools.invoke_palette_action(action),
+                                        prism_runtime::devtools::PaletteFollowup::Reload) {
+                                        self.reload_scene();
+                                    }
+                                }
+                                return;
+                            }
+                            None => { self.devtools.palette.close(); /* fall through */ }
+                        }
+                    }
 
                     // Context menu: if open, handle click (action or dismiss).
                     if self.devtools.context_menu.open {
@@ -624,6 +648,7 @@ impl ApplicationHandler for App {
                     winit::event::ElementState::Released => {
                         // Stop resize drag on any mouse release.
                         self.devtools.resizing = false;
+                        self.devtools.end_elements_drag();
                         RawInputEvent::MouseUp { x, y, button: btn }
                     }
                 };
@@ -659,6 +684,16 @@ impl ApplicationHandler for App {
                             self.devtools.context_menu.hide();
                             return;
                         }
+                        if self.devtools.handle_elements_key_special(prism_runtime::devtools::ElementsKey::Escape) {
+                            return;
+                        }
+                    }
+
+                    // Backspace in the Elements search box.
+                    if matches!(event.logical_key, winit::keyboard::Key::Named(winit::keyboard::NamedKey::Backspace))
+                        && self.devtools.handle_elements_key_special(prism_runtime::devtools::ElementsKey::Backspace)
+                    {
+                        return;
                     }
 
                     // F12 — Toggle DevTools.
@@ -674,6 +709,42 @@ impl ApplicationHandler for App {
                     {
                         self.devtools.toggle();
                         return;
+                    }
+
+                    // Ctrl+Shift+P — Toggle command palette.
+                    if self.current_modifiers.control_key()
+                        && self.current_modifiers.shift_key()
+                        && matches!(event.logical_key, winit::keyboard::Key::Character(ref c) if c.as_str().eq_ignore_ascii_case("p"))
+                    {
+                        self.devtools.toggle_palette();
+                        return;
+                    }
+
+                    // While the palette is open, swallow navigation/typing keys.
+                    if self.devtools.palette.open {
+                        use winit::keyboard::{Key, NamedKey};
+                        match &event.logical_key {
+                            Key::Named(NamedKey::Escape) => { self.devtools.palette.close(); return; }
+                            Key::Named(NamedKey::ArrowUp) => { self.devtools.palette.move_up(); return; }
+                            Key::Named(NamedKey::ArrowDown) => { self.devtools.palette.move_down(); return; }
+                            Key::Named(NamedKey::Enter) => {
+                                if let Some(action) = self.devtools.palette.invoke_selected() {
+                                    if matches!(self.devtools.invoke_palette_action(action),
+                                        prism_runtime::devtools::PaletteFollowup::Reload) {
+                                        self.reload_scene();
+                                    }
+                                }
+                                return;
+                            }
+                            Key::Named(NamedKey::Backspace) => { self.devtools.palette.backspace(); return; }
+                            _ => {}
+                        }
+                        if let Some(text) = &event.text {
+                            for c in text.chars() {
+                                if !c.is_control() { self.devtools.palette.type_char(c); }
+                            }
+                            return;
+                        }
                     }
 
                     // Ctrl+Shift+C — Inspect Element (switch to Elements tab).
@@ -709,6 +780,11 @@ impl ApplicationHandler for App {
                         if !s.is_empty() && !mods.ctrl && !mods.alt {
                             let ch = s.chars().next().unwrap_or('\0');
                             if !ch.is_control() {
+                                // Route to the Elements search box if it's focused;
+                                // otherwise forward to the page as text input.
+                                if self.devtools.handle_elements_key_char(ch) {
+                                    return;
+                                }
                                 self.dispatch_input(RawInputEvent::TextInput { text: s });
                             }
                         }
@@ -1157,6 +1233,33 @@ impl App {
                                 "<tray>",
                             );
                         }
+                    }
+                    ev @ (TrayEvent::ToggleAutostart | TrayEvent::CheckForUpdate) => {
+                        // CLI mode: forward to JS as a generic trayaction so
+                        // user scripts can react. Embedded mode handles these
+                        // via dedicated AppEvent variants.
+                        let id = match ev {
+                            TrayEvent::ToggleAutostart => "autostart",
+                            TrayEvent::CheckForUpdate => "checkforupdate",
+                            _ => unreachable!(),
+                        };
+                        if let Some(ref mut js_rt) = self.js_runtime {
+                            js_rt.execute(
+                                &format!(
+                                    r#"(function(){{
+                                        if(typeof __or_globalListeners==='object' && __or_globalListeners['trayaction']){{
+                                            var fns=__or_globalListeners['trayaction'].slice();
+                                            for(var i=0;i<fns.length;i++){{try{{fns[i]({{type:'trayaction',id:'{}'}});}}catch(e){{}}}}
+                                        }}
+                                    }})()"#,
+                                    id
+                                ),
+                                "<tray>",
+                            );
+                        }
+                    }
+                    TrayEvent::ShowCustomMenuAt { .. } => {
+                        // CLI mode has no embedded HTML menu support — ignore.
                     }
                 }
             }

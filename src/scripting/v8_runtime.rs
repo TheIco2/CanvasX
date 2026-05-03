@@ -3143,5 +3143,175 @@ function __or_dispatchDomEvent(nodeId, eventType) {
         if (isNaN(nid)) break;
     }
 }
+
+// ─── PRISM Toast system ───
+// Toasts render into `.prism-toast-container` (auto-created if missing).
+// `toast.show(opts)` returns a Promise:
+//   - timeout-style toasts (info/success/warning/error)  → resolves null on
+//     timeout, or to the value the developer passes to t.resolve(value).
+//   - persistent toasts (alert)                          → resolves true on
+//     user click, never times out.
+//   - confirm  → resolves true (Yes) / false (No) / null on timeout.
+//   - prompt   → resolves the entered string / null on timeout or Cancel.
+//
+// IMPORTANT: any callback the developer chains (.then) WILL run on timeout
+// with the resolved value of `null`. Developers can detect cancellation by
+// checking for `null`.
+var __or_toastSeq = 0;
+function __or_ensureToastContainer() {
+    // Look up existing container by class. Fall back to creating one and
+    // appending it to the document body.
+    try {
+        var found = (typeof document.querySelector === 'function')
+            ? document.querySelector('.prism-toast-container')
+            : null;
+        if (found) return found;
+    } catch (e) {}
+    var c = document.createElement('div');
+    c.className = 'prism-toast-container';
+    try { document.body.appendChild(c); } catch (e) {}
+    return c;
+}
+
+function __or_clampTimeout(ms) {
+    if (ms === undefined || ms === null) return 4000;
+    var n = Number(ms);
+    if (!isFinite(n)) return 4000;
+    // Public contract: between 1s and 10s for timeout-style toasts.
+    if (n < 1000)  n = 1000;
+    if (n > 10000) n = 10000;
+    return n;
+}
+
+function __or_toastShow(opts) {
+    opts = opts || {};
+    var id = ++__or_toastSeq;
+    var container = __or_ensureToastContainer();
+    var variant   = String(opts.variant || 'info').toLowerCase();
+    var persistent = !!opts.persistent;
+    var title    = opts.title    !== undefined ? String(opts.title)   : '';
+    var message  = opts.message  !== undefined ? String(opts.message) : '';
+    var input    = !!opts.input;
+    var inputPlaceholder = opts.inputPlaceholder || '';
+    var confirm  = !!opts.confirm;
+    var confirmLabel = opts.confirmLabel || 'Yes';
+    var cancelLabel  = opts.cancelLabel  || 'No';
+    var dismissLabel = opts.dismissLabel || 'OK';
+    var timeoutMs = persistent ? 0 : __or_clampTimeout(opts.timeoutMs);
+
+    var node = document.createElement('div');
+    var cls = 'prism-toast prism-toast--' + variant;
+    if (persistent) cls += ' prism-toast--persistent';
+    node.className = cls;
+    node.setAttribute('data-toast-id', String(id));
+
+    var html = '';
+    if (title)   html += '<div class="prism-toast__title">'   + title   + '</div>';
+    if (message) html += '<div class="prism-toast__body">'    + message + '</div>';
+    if (input)   html += '<input class="prism-toast__input" type="text" placeholder="' + inputPlaceholder + '" />';
+    if (input || confirm) {
+        html += '<div class="prism-toast__actions">';
+        if (input || confirm) {
+            html += '<button class="prism-toast__btn" data-toast-act="cancel">' + cancelLabel + '</button>';
+            html += '<button class="prism-toast__btn prism-toast__btn--primary" data-toast-act="confirm">' + confirmLabel + '</button>';
+        } else if (persistent) {
+            html += '<button class="prism-toast__btn prism-toast__btn--primary" data-toast-act="confirm">' + dismissLabel + '</button>';
+        }
+        html += '</div>';
+    }
+    if (timeoutMs > 0) {
+        html += '<div class="prism-toast__progress"><div class="prism-toast__progress-bar" style="animation-duration:' + timeoutMs + 'ms"></div></div>';
+    }
+    node.innerHTML = html;
+    container.appendChild(node);
+
+    return new Promise(function(resolve) {
+        var settled = false;
+        var timer = null;
+
+        function dismiss(value) {
+            if (settled) return;
+            settled = true;
+            if (timer !== null) { clearTimeout(timer); timer = null; }
+            try { node.classList.add('prism-toast--leaving'); } catch (e) {}
+            // Remove after the leave animation; resolve immediately so the
+            // developer's .then runs without waiting on the visual.
+            setTimeout(function() {
+                try { container.removeChild(node); } catch (e) {}
+            }, 200);
+            resolve(value);
+        }
+
+        // Wire button handlers (cancel / confirm).
+        var btnCancel  = node.querySelector ? node.querySelector('[data-toast-act="cancel"]')  : null;
+        var btnConfirm = node.querySelector ? node.querySelector('[data-toast-act="confirm"]') : null;
+        var inputEl    = node.querySelector ? node.querySelector('.prism-toast__input')        : null;
+
+        if (btnCancel) {
+            btnCancel.addEventListener('click', function(ev) {
+                ev.stopPropagation && ev.stopPropagation();
+                dismiss(input ? null : false);
+            });
+        }
+        if (btnConfirm) {
+            btnConfirm.addEventListener('click', function(ev) {
+                ev.stopPropagation && ev.stopPropagation();
+                if (input) {
+                    var v = (inputEl && inputEl.value !== undefined) ? inputEl.value : '';
+                    dismiss(v);
+                } else {
+                    dismiss(true);
+                }
+            });
+        }
+
+        // Persistent (alert) toasts: clicking anywhere on the toast dismisses.
+        if (persistent && !input && !confirm) {
+            node.addEventListener('click', function() { dismiss(true); });
+        }
+
+        if (timeoutMs > 0) {
+            // On timeout: cancel any developer .then chain by resolving null.
+            timer = setTimeout(function() { dismiss(null); }, timeoutMs);
+        }
+    });
+}
+
+var toast = {
+    show:    function(o)        { return __or_toastShow(o || {}); },
+    info:    function(msg, o)   { o = o || {}; o.message = msg; o.variant = 'info';    return __or_toastShow(o); },
+    success: function(msg, o)   { o = o || {}; o.message = msg; o.variant = 'success'; return __or_toastShow(o); },
+    warning: function(msg, o)   { o = o || {}; o.message = msg; o.variant = 'warning'; return __or_toastShow(o); },
+    error:   function(msg, o)   { o = o || {}; o.message = msg; o.variant = 'danger';  return __or_toastShow(o); },
+    confirm: function(msg, o)   {
+        o = o || {}; o.message = msg; o.variant = o.variant || 'info'; o.confirm = true;
+        return __or_toastShow(o);
+    },
+    prompt:  function(msg, o)   {
+        o = o || {}; o.message = msg; o.variant = o.variant || 'info'; o.input = true; o.confirm = true;
+        return __or_toastShow(o);
+    },
+};
+window.toast = toast;
+
+// Hijack window.alert → persistent toast (variant: danger). Resolves only
+// when the user clicks the toast.
+function alert(msg) {
+    return __or_toastShow({
+        title:      'Alert',
+        message:    String(msg === undefined ? '' : msg),
+        variant:    'danger',
+        persistent: true,
+    });
+}
+window.alert = alert;
+
+// window.confirm / window.prompt — fire-and-forget convenience wrappers
+// returning a Promise (NOT the synchronous browser API; sync blocking
+// dialogs would freeze the render loop).
+window.confirm = function(msg) { return toast.confirm(String(msg || '')); };
+window.prompt  = function(msg, def) {
+    return toast.prompt(String(msg || ''), { inputPlaceholder: def || '' });
+};
 "#;
 

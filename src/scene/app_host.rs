@@ -16,6 +16,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use crate::capabilities::CapabilitySet;
+use crate::env::Environment;
 use crate::compiler::css::CssRule;
 use crate::compiler::html::{compile_html, ScriptBlock};
 use crate::compiler::editable::EditableContext;
@@ -117,7 +118,15 @@ struct PageInstance {
     /// CSS rules from compilation (for JS runtime).
     css_rules: Vec<CssRule>,
     /// Source directory for resolving external script paths.
+    /// Optional source directory used as a base for relative paths inside
+    /// the loaded HTML scene (e.g. `<link href="theme.css">`).
     source_dir: Option<PathBuf>,
+    /// For pages loaded from the embedded `pages/` bundle, the directory
+    /// (relative to the bundle root) the page lives in. Used by
+    /// `swap_page_content` to resolve sibling fragment files like
+    /// `settings.html` for `<page-content>` swaps when there's no
+    /// filesystem `source_dir`.
+    embed_base: Option<String>,
 }
 
 /// The main application host — orchestrates multi-page navigation,
@@ -156,6 +165,9 @@ pub struct AppHost {
     js_runtime: Option<JsRuntime>,
     /// System tray icon and menu (created from capabilities).
     system_tray: Option<SystemTray>,
+    /// Path to the custom tray menu HTML file (when configured). Used by
+    /// the runner to spawn a frameless popup window on right-click.
+    tray_menu_html_path: Option<String>,
     /// Whether the window is currently visible (for tray hide/show).
     pub window_visible: bool,
     /// Pending context action from right-click menu.
@@ -182,6 +194,14 @@ pub struct AppHost {
     /// Active theme CSS — injected into every page that gets compiled.
     /// `None` means no themed overrides.
     theme_css: Option<String>,
+    /// Surface kind. Drives capability defaults and `prism.env`.
+    pub environment: Environment,
+    /// Extra CSS injected into every loaded page (after `theme_css`).
+    /// Populated by [`AppHost::inject_css`]; survives navigation.
+    injected_css: Vec<String>,
+    /// Extra JavaScript executed once per page load, after the page's own
+    /// scripts. Populated by [`AppHost::inject_js`].
+    injected_js: Vec<String>,
 }
 
 /// A compiled custom title bar scene.
@@ -215,6 +235,14 @@ pub enum AppEvent {
     TrayShowWindow,
     /// Tray: toggle window visibility.
     TrayToggleWindow,
+    /// Tray: user toggled "Run at startup".
+    TrayToggleAutostart,
+    /// Tray: user clicked "Check for update".
+    TrayCheckForUpdate,
+    /// Tray: user right-clicked the tray icon and a custom HTML menu is
+    /// configured — the host runner should pop up its tray menu window at
+    /// the physical screen position `(x, y)`.
+    ShowCustomTrayMenu { x: f64, y: f64 },
     /// Tray: custom action fired.
     TrayAction(String),
     /// Content was swapped inside a `<page-content>` container.
@@ -234,6 +262,13 @@ pub enum AppEvent {
 impl AppHost {
     /// Create a new application host.
     pub fn new(title: impl Into<String>) -> Self {
+        Self::with_environment(title, Environment::Application)
+    }
+
+    /// Create a new application host targeting a specific [`Environment`].
+    /// The environment seeds capability defaults, controls tray availability,
+    /// and is exposed to scripts as `prism.env`.
+    pub fn with_environment(title: impl Into<String>, env: Environment) -> Self {
         Self {
             routes: Vec::new(),
             pages: HashMap::new(),
@@ -247,10 +282,11 @@ impl AppHost {
             title: title.into(),
             pending_events: Vec::new(),
             shared_data: Arc::new(Mutex::new(HashMap::new())),
-            capabilities: CapabilitySet::new(),
+            capabilities: env.default_capabilities(),
             devtools: DevTools::new(),
             js_runtime: None,
             system_tray: None,
+            tray_menu_html_path: None,
             window_visible: true,
             pending_context_action: None,
             home_route: None,
@@ -263,8 +299,44 @@ impl AppHost {
             instance_guard: None,
             assets_dirty: false,
             theme_css: None,
+            environment: env,
+            injected_css: Vec::new(),
+            injected_js: Vec::new(),
         }
     }
+
+    /// Append a CSS string to be injected into every page (after `theme_css`).
+    /// Persists across navigation. Useful for hosts that want to push a
+    /// site-wide stylesheet without owning the page HTML (e.g. WCP StatusBar
+    /// pushing widget chrome rules into PRISM Widget scenes).
+    pub fn inject_css(&mut self, css: impl Into<String>) {
+        self.injected_css.push(css.into());
+        self.assets_dirty = true;
+    }
+
+    /// Append a JavaScript snippet executed after each page's own scripts.
+    /// Persists across navigation. Use to bridge host-specific globals (e.g.
+    /// `window.WCP = ...`) into pages without modifying their source.
+    pub fn inject_js(&mut self, js: impl Into<String>) {
+        self.injected_js.push(js.into());
+        self.assets_dirty = true;
+    }
+
+    /// Read-only access to the accumulated CSS injections.
+    pub fn injected_css(&self) -> &[String] { &self.injected_css }
+
+    /// Read-only access to the accumulated JS injections.
+    pub fn injected_js(&self) -> &[String] { &self.injected_js }
+
+    /// Clear all CSS/JS injections.
+    pub fn clear_injections(&mut self) {
+        self.injected_css.clear();
+        self.injected_js.clear();
+        self.assets_dirty = true;
+    }
+
+    /// The active surface kind for this host.
+    pub fn environment(&self) -> Environment { self.environment }
 
     /// Register a navigation route.
     pub fn add_route(&mut self, route: Route) {
@@ -291,6 +363,11 @@ impl AppHost {
     /// stylesheet. Pass `None` to disable themed overrides.
     pub fn set_theme_css(&mut self, css: Option<String>) {
         self.theme_css = css;
+    }
+
+    /// Currently active theme CSS, if any.
+    pub fn theme_css(&self) -> Option<&str> {
+        self.theme_css.as_deref()
     }
 
     /// Load a custom title bar from a `title-bar.html` file.
@@ -500,6 +577,55 @@ impl AppHost {
         &[]
     }
 
+    /// Get the active page's `<title>` value, if any.
+    pub fn active_window_title(&self) -> Option<String> {
+        let pid = self.active_page.as_ref()?;
+        let page = self.pages.get(pid)?;
+        page.scene.document.title.clone()
+    }
+
+    /// Decode the first usable icon declared by the active page (matching
+    /// `target` "", "window", or "app") into raw RGBA8 bytes.
+    /// Returns `(rgba, width, height)` or `None` if no icon is declared,
+    /// the file cannot be read, or the format is unsupported.
+    pub fn active_app_icon_rgba(&self) -> Option<(Vec<u8>, u32, u32)> {
+        let icons = self.icon_declarations();
+        if icons.is_empty() {
+            return None;
+        }
+        // Prefer window/app/empty-target icons over system-only icons.
+        let preferred = icons
+            .iter()
+            .find(|i| {
+                let t = i.target.as_str();
+                t.is_empty() || t == "window" || t == "app"
+            })
+            .or_else(|| icons.first())?;
+
+        // Try embedded bundle first (paths like `pages/icons/icon.ico`),
+        // fall back to filesystem.
+        let bytes: Vec<u8> = if let Some(b) = crate::embed::read_page_bytes(&preferred.path) {
+            b.to_vec()
+        } else if let Ok(b) = std::fs::read(&preferred.path) {
+            b
+        } else {
+            log::warn!("active_app_icon_rgba: could not read icon at '{}'", preferred.path);
+            return None;
+        };
+
+        match image::load_from_memory(&bytes) {
+            Ok(img) => {
+                let rgba = img.to_rgba8();
+                let (w, h) = rgba.dimensions();
+                Some((rgba.into_raw(), w, h))
+            }
+            Err(e) => {
+                log::warn!("active_app_icon_rgba: decode failed for '{}': {}", preferred.path, e);
+                None
+            }
+        }
+    }
+
     /// Get the list of registered routes.
     pub fn routes(&self) -> &[Route] {
         &self.routes
@@ -549,7 +675,40 @@ impl AppHost {
 
                 // Block clicks inside the DevTools panel from reaching the page.
                 if self.devtools.hit_test_panel(x, y, viewport_height) {
+                    // Forward to Elements panel (expand/collapse, search box,
+                    // splitter, sidebar tabs, force-state chips, highlight).
+                    if let Some(page) = self
+                        .active_page
+                        .as_ref()
+                        .and_then(|id| self.pages.get(id))
+                    {
+                        // Clone the document so we can borrow `self.devtools`
+                        // mutably without aliasing.
+                        let doc = page.scene.document.clone();
+                        self.devtools.handle_elements_click_ex(
+                            x,
+                            y,
+                            viewport_width,
+                            viewport_height,
+                            &doc,
+                        );
+                    } else {
+                        let doc = PrdDocument::new("empty", SceneType::ConfigPanel);
+                        self.devtools.handle_elements_click_ex(
+                            x,
+                            y,
+                            viewport_width,
+                            viewport_height,
+                            &doc,
+                        );
+                    }
                     return;
+                }
+
+                // Click landed outside the DevTools panel — clear any
+                // selected element so the highlight overlay disappears.
+                if self.devtools.selected_node.is_some() {
+                    self.devtools.selected_node = None;
                 }
             }
         }
@@ -643,15 +802,18 @@ impl AppHost {
                 for ui_event in ui_events {
                     match ui_event {
                         UiEvent::NavigateRequest { scene_id } => {
-                            if self.routes.iter().any(|r| r.id == scene_id) {
-                                self.pending_events.push(AppEvent::NavigateTo(scene_id));
-                            } else if page.scene.document.find_page_content_node().is_some() {
-                                // Active page has a <page-content> container — swap content
-                                // instead of doing a full page navigation.
+                            // Prefer fragment swap when the active page is a shell
+                            // with a <page-content> container — sidebar/nav clicks
+                            // should swap the inner content rather than reload the
+                            // whole window. Fall back to a full route navigation
+                            // when the active page has no shell.
+                            if page.scene.document.find_page_content_node().is_some() {
                                 self.pending_events.push(AppEvent::ContentSwap {
                                     page: page_id.clone(),
                                     content_id: scene_id,
                                 });
+                            } else if self.routes.iter().any(|r| r.id == scene_id) {
+                                self.pending_events.push(AppEvent::NavigateTo(scene_id));
                             } else {
                                 self.pending_events.push(AppEvent::LinkClicked {
                                     url: scene_id,
@@ -937,8 +1099,19 @@ impl AppHost {
             return;
         }
         let tooltip = config.tooltip.clone();
+        self.tray_menu_html_path = config.menu_html_path.clone();
         self.system_tray = Some(SystemTray::new(&config));
         log::info!("System tray created for '{}'", tooltip);
+    }
+
+    /// Path to the configured custom tray menu HTML file, if any.
+    pub fn tray_menu_html_path(&self) -> Option<&str> {
+        self.tray_menu_html_path.as_deref()
+    }
+
+    /// Set or clear the custom tray menu HTML path at runtime.
+    pub fn set_tray_menu_html_path(&mut self, path: Option<String>) {
+        self.tray_menu_html_path = path;
     }
 
     /// Update the tray menu items dynamically (preserves built-in Reload/Exit).
@@ -1244,6 +1417,75 @@ impl AppHost {
         self.devtools.context_menu_text_entries()
     }
 
+    /// GPU instances that must paint after the DevTools text pass (e.g.
+    /// the Elements breadcrumb cover rect). Caller should append these
+    /// to the overlay rect layer (paints after devtools text, before
+    /// context menu).
+    pub fn devtools_post_text_instances(
+        &self,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Vec<UiInstance> {
+        self.devtools.post_text_instances(viewport_width, viewport_height)
+    }
+
+    /// Text entries paired with [`Self::devtools_post_text_instances`] so
+    /// the breadcrumb label re-paints on top of the cover rect.
+    pub fn devtools_post_text_entries(
+        &self,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) -> Vec<crate::devtools::DevToolsTextEntry> {
+        let doc = if let Some(scene) = self.active_scene() {
+            scene.document.clone()
+        } else {
+            PrdDocument::new("empty", SceneType::ConfigPanel)
+        };
+        self.devtools.post_text_entries(&doc, viewport_width, viewport_height)
+    }
+
+    /// Fire a PRISM toast from Rust. Returns immediately; the toast is
+    /// rendered by the JS runtime via the embedded toast shim. Variant
+    /// must be one of: `"info"`, `"success"`, `"warning"`, `"danger"`.
+    /// `timeout_ms` is clamped to `[1000, 10000]` (or `0` for persistent).
+    pub fn show_toast(&mut self, title: &str, message: &str, variant: &str, timeout_ms: Option<u32>) {
+        // Minimal JSON string escape — sufficient for embedding into a JS
+        // string literal. Handles backslash, quote, and control chars.
+        fn esc(s: &str) -> String {
+            let mut out = String::with_capacity(s.len() + 2);
+            out.push('"');
+            for c in s.chars() {
+                match c {
+                    '\\' => out.push_str("\\\\"),
+                    '"'  => out.push_str("\\\""),
+                    '\n' => out.push_str("\\n"),
+                    '\r' => out.push_str("\\r"),
+                    '\t' => out.push_str("\\t"),
+                    c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+                    c => out.push(c),
+                }
+            }
+            out.push('"');
+            out
+        }
+        let persistent = matches!(timeout_ms, Some(0));
+        let timeout = timeout_ms.unwrap_or(4000);
+        let script = format!(
+            "try {{ if (typeof toast !== 'undefined') {{ \
+                toast.show({{ title: {title}, message: {message}, variant: {variant}, \
+                    persistent: {persistent}, timeoutMs: {timeout} }}); \
+            }} }} catch (e) {{ if (typeof console !== 'undefined') console.error('show_toast failed:', e); }}",
+            title = esc(title),
+            message = esc(message),
+            variant = esc(variant),
+            persistent = persistent,
+            timeout = timeout,
+        );
+        if let Some(ref mut js) = self.js_runtime {
+            js.execute(&script, "<show_toast>");
+        }
+    }
+
     /// Get dirty canvas textures from JS runtime for GPU upload.
     pub fn dirty_canvases(&self) -> Vec<(u32, Option<NodeId>, u32, u32, Vec<u8>)> {
         if let Some(ref js_rt) = self.js_runtime {
@@ -1339,6 +1581,20 @@ impl AppHost {
                     TrayEvent::Reload => {
                         self.reload_active_page();
                     }
+                    TrayEvent::ToggleAutostart => {
+                        events.push(AppEvent::TrayToggleAutostart);
+                    }
+                    TrayEvent::CheckForUpdate => {
+                        events.push(AppEvent::TrayCheckForUpdate);
+                    }
+                    TrayEvent::ShowCustomMenuAt { x, y } => {
+                        // Only forward when a custom HTML menu is actually
+                        // configured \u2014 otherwise the OS already showed the
+                        // native menu and there's nothing for us to pop up.
+                        if self.tray_menu_html_path.is_some() {
+                            events.push(AppEvent::ShowCustomTrayMenu { x, y });
+                        }
+                    }
                     TrayEvent::CustomAction(id) => {
                         events.push(AppEvent::TrayAction(id));
                     }
@@ -1374,18 +1630,33 @@ impl AppHost {
             return;
         }
 
-        let source_dir = match page.source_dir.as_ref() {
-            Some(d) => d.clone(),
-            None => return,
-        };
-
-        let fragment_path = source_dir.join(format!("{}.html", target_id));
-        let (frag_doc, _frag_scripts, _) = match load_html_document_full(&fragment_path, target_id) {
-            Ok(result) => result,
-            Err(e) => {
-                log::error!("Failed to load content fragment '{}': {}", target_id, e);
-                return;
+        // Resolve the fragment from either a filesystem source dir (when
+        // the host page came from disk) or the embedded `pages/` bundle.
+        let (frag_doc, _frag_scripts, _) = if let Some(source_dir) = page.source_dir.as_ref() {
+            let fragment_path = source_dir.join(format!("{}.html", target_id));
+            match load_html_document_full(&fragment_path, target_id) {
+                Ok(result) => result,
+                Err(e) => {
+                    log::error!("Failed to load content fragment '{}': {}", target_id, e);
+                    return;
+                }
             }
+        } else if let Some(embed_base) = page.embed_base.clone() {
+            let rel = if embed_base.is_empty() {
+                format!("{}.html", target_id)
+            } else {
+                format!("{}/{}.html", embed_base.trim_end_matches('/'), target_id)
+            };
+            match load_embedded_document_full(&rel, target_id, self.theme_css.as_deref()) {
+                Ok(result) => result,
+                Err(e) => {
+                    log::error!("Failed to load embedded content fragment '{}': {}", target_id, e);
+                    return;
+                }
+            }
+        } else {
+            log::warn!("swap_page_content: page '{}' has neither source_dir nor embed_base", page_id);
+            return;
         };
 
         // Check for redirect in the fragment.
@@ -1438,6 +1709,7 @@ impl AppHost {
     }
 
     fn load_page(&mut self, route: &Route) {
+        let mut embed_base: Option<String> = None;
         let (doc, scripts, css_rules, source_dir) = match &route.source {
             PageSource::Document(d) => ((**d).clone(), Vec::new(), Vec::new(), None),
 
@@ -1455,6 +1727,13 @@ impl AppHost {
             }
 
             PageSource::Embedded(rel) => {
+                // Record the embedded directory (relative to bundle root) so
+                // page-content fragment swaps can resolve sibling files.
+                let parent = std::path::Path::new(rel)
+                    .parent()
+                    .map(|p| p.to_string_lossy().replace('\\', "/"))
+                    .unwrap_or_default();
+                embed_base = Some(parent);
                 match load_embedded_document_full(rel, &route.id, self.theme_css.as_deref()) {
                     Ok((d, s, r)) => (d, s, r, None),
                     Err(e) => {
@@ -1522,6 +1801,7 @@ impl AppHost {
             scripts,
             css_rules,
             source_dir,
+            embed_base,
         });
     }
 
@@ -1618,11 +1898,12 @@ fn load_embedded_document_full(
         css.push_str(theme);
     }
 
-    // Preprocess <include> tags against the embedded bundle BEFORE handing
-    // off to `compile_html` (which would otherwise try to read includes from
-    // the filesystem and fail).
+    // Preprocess <include> and <page-content> tags against the embedded
+    // bundle BEFORE handing off to `compile_html` (which would otherwise try
+    // to read includes from the filesystem and fail).
     let embed_base = parent_dir(rel_path).unwrap_or("");
     let expanded = crate::compiler::html::preprocess_includes_embedded(html, embed_base, 0);
+    let expanded = crate::compiler::html::preprocess_page_content_embedded(&expanded, embed_base);
 
     compile_html(&expanded, &css, name, SceneType::ConfigPanel, None)
         .map_err(|e| e.to_string())
@@ -1685,6 +1966,27 @@ impl OpenDesktopAppBuilder {
     /// Declare runtime capabilities for this application.
     pub fn capabilities(mut self, caps: CapabilitySet) -> Self {
         self.host.capabilities = caps;
+        self
+    }
+
+    /// Set the surface environment (`Application`/`Desktop`/`Overlay`/`Widget`).
+    /// Replaces the capability set with the env's defaults; call
+    /// [`AppHostBuilder::capabilities`] *after* this to override.
+    pub fn environment(mut self, env: Environment) -> Self {
+        self.host.environment = env;
+        self.host.capabilities = env.default_capabilities();
+        self
+    }
+
+    /// Push a CSS string to be injected into every page after compilation.
+    pub fn inject_css(mut self, css: impl Into<String>) -> Self {
+        self.host.inject_css(css);
+        self
+    }
+
+    /// Push a JS snippet to run after every page's scripts.
+    pub fn inject_js(mut self, js: impl Into<String>) -> Self {
+        self.host.inject_js(js);
         self
     }
 

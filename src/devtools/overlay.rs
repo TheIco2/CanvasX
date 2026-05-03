@@ -67,7 +67,7 @@ fn make_rect_instance(
     }
 }
 
-/// Paint the "OpenRender" badge — no background/border, just a hit target.
+/// Paint the "PRISM" badge — no background/border, just a hit target.
 pub fn paint_badge(
     _out: &mut Vec<UiInstance>,
     _viewport_width: f32,
@@ -111,20 +111,19 @@ pub fn paint_panel(
         0.0,
     ));
 
-    // Tab buttons
-    let tabs = devtools.visible_tabs();
-    for (i, tab) in tabs.iter().enumerate() {
-        let tx = i as f32 * TAB_WIDTH;
-        let is_active = *tab == devtools.active_tab;
+    // Tab buttons — widths come from `DevTools::tab_layout()` so the active
+    // pill matches the label rendered in `mod.rs::text_entries`.
+    for (tab, tx, tw, _label) in devtools.tab_layout() {
+        let is_active = tab == devtools.active_tab;
         if is_active {
             out.push(make_rect_instance(
-                tx, panel_y, TAB_WIDTH, TAB_BAR_HEIGHT,
+                tx, panel_y, tw, TAB_BAR_HEIGHT,
                 BG_TAB_ACTIVE,
                 None,
                 0.0,
             ));
             out.push(make_rect_instance(
-                tx, panel_y + TAB_BAR_HEIGHT - 2.0, TAB_WIDTH, 2.0,
+                tx, panel_y + TAB_BAR_HEIGHT - 2.0, tw, 2.0,
                 ACCENT,
                 None,
                 0.0,
@@ -169,26 +168,21 @@ pub fn paint_panel(
             paint_scrollbar(out, viewport_width, scroll_area_y, scroll_area_h, total, devtools.console_scroll);
         }
         DevToolsTab::Elements => {
-            // Elements scrollbar
-            let line_count = super::elements::tree_line_count(doc, &devtools.expanded_nodes);
-            let total = line_count as f32 * 16.0;
-            paint_scrollbar(out, viewport_width, content_y, content_h, total, devtools.elements_scroll);
+            // Delegate the entire panel content (tree, sidebar, breadcrumb,
+            // scrollbar, search box, etc.) to the new elements pipeline.
+            let state = devtools.elements_state();
+            super::elements::paint_rects_with_state(
+                out, doc, &state,
+                /*content_x*/ 0.0, content_y,
+                viewport_width, content_h,
+            );
 
-            // Highlight checkbox (top-right of panel content area).
+            // Highlight checkbox (top-right of panel content area) — kept
+            // separate because its hit-test lives in mod.rs.
             paint_highlight_checkbox(out, viewport_width, content_y, devtools.highlight_enabled);
 
-            // Sidebar separator (if a node is selected)
-            if devtools.selected_node.is_some() {
-                let sidebar_x = (viewport_width - super::elements::STYLES_SIDEBAR_WIDTH).max(200.0);
-                out.push(make_rect_instance(
-                    sidebar_x, content_y, 1.0, content_h,
-                    BORDER_COLOR,
-                    None,
-                    0.0,
-                ));
-            }
-
-            // Element highlight overlay on the viewport (above the scene, below the panel)
+            // Element highlight overlay on the viewport (above the scene, below
+            // the panel) — Chrome-style margin/padding/content tinting.
             if devtools.highlight_enabled {
             if let Some(sel_id) = devtools.selected_node {
                 if let Some(node) = doc.get_node(sel_id) {
