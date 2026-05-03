@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">OpenRender</h1>
+  <h1 align="center">Prism</h1>
   <p align="center">
     <strong>GPU-native 2D scene graph renderer for desktop UIs, widgets, and interactive content.</strong>
   </p>
@@ -7,9 +7,9 @@
     Written in Rust &nbsp;·&nbsp; Powered by <a href="https://wgpu.rs/">wgpu</a> (Vulkan / DX12) &nbsp;·&nbsp; V8 JavaScript engine
   </p>
   <p align="center">
-    <a href="https://github.com/The-Ico2/OpenRender/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License"></a>
-    <a href="https://github.com/The-Ico2/OpenRender"><img src="https://img.shields.io/badge/status-v0.1.0-orange" alt="Version"></a>
-    <a href="https://github.com/The-Ico2/OpenRender">
+    <a href="https://github.com/The-Ico2/Prism/blob/master/LICENSE"><img src="https://img.shields.io/badge/license-Apache%202.0-blue" alt="License"></a>
+    <a href="https://github.com/The-Ico2/Prism"><img src="https://img.shields.io/badge/status-v0.1.0-orange" alt="Version"></a>
+    <a href="https://github.com/The-Ico2/Prism">
       <img src="https://img.shields.io/badge/platform-Windows%2010%2F11-brightgreen" alt="Platform">
     </a>
   </p>
@@ -105,7 +105,7 @@ Global uniforms provide viewport size, elapsed time, and DPI scale factor.
 
 ## Web Standard Compatibility
 
-OpenRender implements a practical subset of web standards optimized for high-performance GPU-rendered desktop UIs. The tables below document exact coverage against HTML, CSS, and JavaScript specifications.
+Prism implements a practical subset of web standards optimized for high-performance GPU-rendered desktop UIs. The tables below document exact coverage against HTML, CSS, and JavaScript specifications.
 
 > **Legend:**&ensp; ✅ Fully supported &ensp;|&ensp; ⚠️ Partial / parsed but limited &ensp;|&ensp; ❌ Not supported
 
@@ -199,7 +199,7 @@ OpenRender implements a practical subset of web standards optimized for high-per
 </details>
 
 <details open>
-<summary><strong>OpenRender Custom Elements</strong></summary>
+<summary><strong>Prism Custom Elements</strong></summary>
 
 | Element | Status | Notes |
 |:--------|:------:|:------|
@@ -484,7 +484,7 @@ OpenRender implements a practical subset of web standards optimized for high-per
 
 ### JavaScript Support
 
-OpenRender includes a full V8 JavaScript engine. Scripts can be embedded inline or loaded via `src` attribute.
+Prism includes a full V8 JavaScript engine. Scripts can be embedded inline or loaded via `src` attribute.
 
 <details open>
 <summary><strong>DOM API</strong></summary>
@@ -548,14 +548,14 @@ OpenRender includes a full V8 JavaScript engine. Scripts can be embedded inline 
 
 ```toml
 [dependencies]
-prism-runtime = { path = "../OpenRender" }
+prism-runtime = { path = "../Prism" }
 ```
 
 ```rust
-use openrender_runtime::{GpuContext, SceneGraph};
-use openrender_runtime::compiler::html::compile_html;
-use openrender_runtime::gpu::renderer::Renderer;
-use openrender_runtime::cxrd::document::SceneType;
+use Prism_runtime::{GpuContext, SceneGraph};
+use Prism_runtime::compiler::html::compile_html;
+use Prism_runtime::gpu::renderer::Renderer;
+use Prism_runtime::cxrd::document::SceneType;
 
 // Compile HTML/CSS to PRD
 let doc = compile_html(&html, &css, "my-scene", SceneType::Wallpaper, Some(&asset_dir));
@@ -593,7 +593,7 @@ prism-rt --config --source settings.html
 
 ## IPC Data Binding
 
-OpenRender nodes can bind to live data via the IPC bridge. Data keys use dot-notation paths.
+Prism nodes can bind to live data via the IPC bridge. Data keys use dot-notation paths.
 
 ```html
 <data-bind binding="cpu.usage" format="{value}%"></data-bind>
