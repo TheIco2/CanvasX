@@ -39,7 +39,7 @@ Development of PRISM originally began for [VEIL](https://github.com/TheIco2/VEIL
 ## Key Features
 
 | Feature | Description |
-|:--------|:------------|
+| :-------- | :------------ |
 | **GPU-native rendering** | Every UI element is a single instanced quad. The WGSL fragment shader evaluates SDF rounded rectangles with analytic anti-aliasing — no CPU tessellation, no MSAA. |
 | **HTML/CSS compiler** | Parses a subset of HTML and CSS into a fully resolved binary document (PRD). Supports flexbox, grid, variables, gradients, animations, and 50+ CSS properties. |
 | **V8 JavaScript engine** | Full ECMAScript support via Google's V8 JIT compiler. DOM querying, class manipulation, Canvas 2D API, timers, and IPC bridge. |
@@ -74,8 +74,8 @@ Each frame follows the same path:
 ### Module Map
 
 | Module | Responsibility |
-|:-------|:---------------|
-| `compiler/` | HTML/CSS → CXRD compilation, asset bundling, editable property bridging |
+| :------- | :--------------- |
+| `compiler/` | HTML/CSS → PRD compilation, asset bundling, editable property bridging |
 | `prd/` | Binary scene graph format: nodes, styles, animations, assets, input types |
 | `gpu/` | wgpu context, render pipeline, SDF shader, texture manager, instanced rendering |
 | `layout/` | Block flow, Flexbox, CSS Grid, absolute/fixed positioning |
@@ -101,8 +101,8 @@ Global uniforms provide viewport size, elapsed time, and DPI scale factor.
 ### Distribution Formats
 
 | Format | Extension | Description |
-|:-------|:----------|:------------|
-| **PRD** | `.cxrd` | Single compiled document (binary, serde + bincode) |
+| :------- | :---------- | :------------ |
+| **PRD** | `.prd` | Single compiled document (binary, serde + bincode) |
 
 ---
 
@@ -118,7 +118,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Containers &amp; Semantic Structure</strong></summary>
 
 | Element | Status | Notes |
-|:--------|:------:|:------|
+| :-------- | :------: | :------ |
 | `<div>` | ✅ | Block container (flex/grid via CSS) |
 | `<section>` | ✅ | Semantic block container |
 | `<nav>` | ✅ | Navigation container |
@@ -136,7 +136,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Text &amp; Inline Content</strong></summary>
 
 | Element | Status | Notes |
-|:--------|:------:|:------|
+| :-------- | :------: | :------ |
 | `<span>` | ✅ | Inline container |
 | `<p>` | ✅ | Paragraph — flex row with wrap for inline content |
 | `<h1>` – `<h6>` | ✅ | Headings with default sizes (32px – 10.72px), bold |
@@ -157,7 +157,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Lists</strong></summary>
 
 | Element | Status | Notes |
-|:--------|:------:|:------|
+| :-------- | :------: | :------ |
 | `<ul>` | ✅ | Unordered list (rendered as block container) |
 | `<ol>` | ✅ | Ordered list (rendered as block container, no auto-numbering) |
 | `<li>` | ✅ | List item (rendered as block) |
@@ -168,7 +168,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Media</strong></summary>
 
 | Element | Status | Notes |
-|:--------|:------:|:------|
+| :-------- | : ------: | :------ |
 | `<img>` | ✅ | PNG, JPEG, WebP, ICO from asset bundle. Object-fit: fill, contain, cover, none |
 | `<svg>` | ✅ | Auto-rasterized to texture via resvg |
 | `<path>`, `<circle>`, `<rect>`, `<line>`, `<ellipse>`, `<polygon>`, `<polyline>` | ✅ | SVG primitives (rasterized, not individually styleable via CSS) |
@@ -183,7 +183,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Forms &amp; Input</strong></summary>
 
 | Element | Status | Notes |
-|:--------|:------:|:------|
+| :-------- | :------: | :------ |
 | `<button>` | ✅ | Primary, Secondary, Danger, Ghost, Link variants via `data-variant` |
 | `<input type="text">` | ✅ | Text input with placeholder, maxlength, readonly |
 | `<input type="password">` | ✅ | Masked input |
@@ -205,7 +205,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Prism Custom Elements</strong></summary>
 
 | Element | Status | Notes |
-|:--------|:------:|:------|
+| :-------- | :------: | :------ |
 | `<data-bind>` | ✅ | Live data display — `binding="cpu.usage"` with format string |
 | `<data-bar>` | ✅ | Progress bar bound to IPC data (binding + max-binding + color) |
 | `<data-bar-stack>` | ✅ | Multi-segment stacked bar with per-segment bindings |
@@ -218,7 +218,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Not Supported</strong></summary>
 
 | Element | Status | Notes |
-|:--------|:------:|:------|
+| :-------- | :------: | :------ |
 | `<table>`, `<tr>`, `<td>`, `<th>`, `<thead>`, `<tbody>`, `<tfoot>` | ❌ | No table layout engine — use CSS Grid |
 | `<iframe>`, `<embed>`, `<object>` | ❌ | No embedded content model |
 | `<dialog>`, `<details>`, `<summary>` | ❌ | Not supported |
@@ -237,7 +237,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Layout &amp; Box Model</strong></summary>
 
 | Property | Status | Notes |
-|:---------|:------:|:------|
+| :--------- | :------: | :------ |
 | `display` | ✅ | `flex`, `grid`, `block`, `inline-block`, `none` |
 | `position` | ✅ | `relative`, `absolute`, `fixed` (`static` default, `sticky` not supported) |
 | `top`, `right`, `bottom`, `left` | ✅ | For absolute/fixed positioning |
@@ -258,7 +258,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Flexbox</strong></summary>
 
 | Property | Status | Notes |
-|:---------|:------:|:------|
+| :--------- | :------: | :------ |
 | `flex-direction` | ✅ | `row`, `column`, `row-reverse`, `column-reverse` |
 | `flex-wrap` | ✅ | `wrap`, `nowrap`, `wrap-reverse` |
 | `flex-flow` | ✅ | Shorthand |
@@ -279,7 +279,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>CSS Grid</strong></summary>
 
 | Property | Status | Notes |
-|:---------|:------:|:------|
+| :--------- | :------: | :------ |
 | `grid-template-columns` | ✅ | `px`, `%`, `fr`, `auto`, `min-content`, `max-content`, `repeat()` |
 | `grid-template-rows` | ✅ | Same as columns |
 | `grid-column`, `grid-row` | ✅ | Span and line-based placement |
@@ -296,7 +296,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Typography</strong></summary>
 
 | Property | Status | Notes |
-|:---------|:------:|:------|
+| :--------- | :------: | :------ |
 | `font-family` | ✅ | System fonts + bundled fonts |
 | `font-size` | ✅ | All units |
 | `font-weight` | ✅ | 100–900 and keyword values |
@@ -320,7 +320,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Background</strong></summary>
 
 | Property | Status | Notes |
-|:---------|:------:|:------|
+| :--------- | :------: | :------ |
 | `background-color` | ✅ | Solid colors — rendered in GPU instance |
 | `background-image` | ✅ | `linear-gradient()`, `radial-gradient()` — rasterized to texture |
 | `background` | ✅ | Shorthand (color and image) |
@@ -335,7 +335,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Border &amp; Outline</strong></summary>
 
 | Property | Status | Notes |
-|:---------|:------:|:------|
+| :--------- | :------: | :------ |
 | `border-width` | ✅ | Per-side widths — rendered in GPU instance |
 | `border-color` | ✅ | Per-side colors — rendered in GPU instance |
 | `border-radius` | ✅ | Per-corner radii — SDF-based rendering in shader |
@@ -351,7 +351,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Visual Effects</strong></summary>
 
 | Property | Status | Notes |
-|:---------|:------:|:------|
+| :--------- | :------: | :------ |
 | `opacity` | ✅ | Per-instance in GPU — fully rendered |
 | `box-shadow` | ✅ | Offset, blur, spread — rendered as layered rects |
 | `cursor` | ⚠️ | Parsed and forwarded to OS — not engine-rendered |
@@ -369,7 +369,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Transform</strong></summary>
 
 | Property | Status | Notes |
-|:---------|:------:|:------|
+| :--------- | :------: | :------ |
 | `transform` | ⚠️ | Parsed to style struct but not applied to GPU instances — no visual effect |
 | `transform-origin` | ⚠️ | Parsed only |
 | `rotate`, `scale`, `translate` | ⚠️ | Individual properties parsed but not rendered |
@@ -382,7 +382,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Animation &amp; Transition</strong></summary>
 
 | Property | Status | Notes |
-|:---------|:------:|:------|
+| :--------- | :------: | :------ |
 | `animation` | ✅ | Shorthand |
 | `animation-name` | ✅ | References `@keyframes` |
 | `animation-duration` | ✅ | Time values |
@@ -405,7 +405,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Selectors</strong></summary>
 
 | Selector | Syntax | Status | Notes |
-|:---------|:-------|:------:|:------|
+| :--------- | :------- | :------: | :------ |
 | Universal | `*` | ✅ | Matches all elements |
 | Type | `div`, `p` | ✅ | Tag name matching |
 | Class | `.name` | ✅ | Class matching |
@@ -432,7 +432,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Units</strong></summary>
 
 | Unit | Status | Notes |
-|:-----|:------:|:------|
+| :----- | :------: | :------ |
 | `px` | ✅ | Absolute pixels |
 | `%` | ✅ | Percentage of parent |
 | `em` | ✅ | Relative to element font-size |
@@ -452,7 +452,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>At-Rules</strong></summary>
 
 | Rule | Status | Notes |
-|:-----|:------:|:------|
+| :----- | :------: | :------ |
 | `@keyframes` | ✅ | Full animation keyframe support |
 | `@media` | ⚠️ | Parsed; limited runtime query matching |
 | `@import` | ⚠️ | Recognized for URL-based stylesheet imports |
@@ -467,7 +467,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 <summary><strong>Functions &amp; Colors</strong></summary>
 
 | Function | Status | Notes |
-|:---------|:------:|:------|
+| :--------- | :------: | :------ |
 | `rgb()`, `rgba()` | ✅ | Full support |
 | `hsl()`, `hsla()` | ✅ | Full support |
 | `#RGB`, `#RRGGBB`, `#RRGGBBAA` | ✅ | Hex colors |
@@ -493,7 +493,7 @@ Prism includes a full V8 JavaScript engine. Scripts can be embedded inline or lo
 <summary><strong>DOM API</strong></summary>
 
 | API | Status | Notes |
-|:----|:------:|:------|
+| :---- | :------: | :------ |
 | `document.getElementById(id)` | ✅ | Node lookup by ID |
 | `document.querySelector(sel)` | ✅ | CSS selector query |
 | `document.querySelectorAll(sel)` | ✅ | Multiple element query |
@@ -513,7 +513,7 @@ Prism includes a full V8 JavaScript engine. Scripts can be embedded inline or lo
 <summary><strong>Canvas 2D API</strong></summary>
 
 | Category | Methods | Status |
-|:---------|:--------|:------:|
+| :--------- | :-------- | :------: |
 | **Drawing** | `fillRect()`, `strokeRect()`, `clearRect()` | ✅ |
 | **Paths** | `beginPath()`, `closePath()`, `moveTo()`, `lineTo()`, `arc()`, `bezierCurveTo()`, `quadraticCurveTo()`, `fill()`, `stroke()` | ✅ |
 | **Transform** | `save()`, `restore()`, `translate()`, `rotate()`, `scale()`, `transform()` | ✅ |
@@ -530,7 +530,7 @@ Prism includes a full V8 JavaScript engine. Scripts can be embedded inline or lo
 <summary><strong>Globals &amp; Timers</strong></summary>
 
 | API | Status | Notes |
-|:----|:------:|:------|
+| :---- | :------: | :------ |
 | `console.log()`, `.warn()`, `.error()` | ✅ | Output to host logger |
 | `setTimeout()`, `setInterval()` | ✅ | Timer scheduling |
 | `requestAnimationFrame()` | ✅ | Per-frame callback |
@@ -558,7 +558,7 @@ prism-runtime = { path = "../Prism" }
 use Prism_runtime::{GpuContext, SceneGraph};
 use Prism_runtime::compiler::html::compile_html;
 use Prism_runtime::gpu::renderer::Renderer;
-use Prism_runtime::cxrd::document::SceneType;
+use Prism_runtime::prd::document::SceneType;
 
 // Compile HTML/CSS to PRD
 let doc = compile_html(&html, &css, "my-scene", SceneType::Wallpaper, Some(&asset_dir));
@@ -582,7 +582,7 @@ prism-rt --config --source settings.html
 ```
 
 | Flag | Description |
-|:-----|:------------|
+| :----- | :------------ |
 | `--wallpaper` | Embed into desktop (WorkerW) |
 | `--statusbar` | Status bar mode |
 | `--widget` | Floating widget window |
@@ -622,7 +622,7 @@ When connected to OpenDesktop, the bridge polls 16+ data sections (time, CPU, GP
 ## Dependencies
 
 | Category | Crate | Version |
-|:---------|:------|:--------|
+| :--------- | :------ | :-------- |
 | GPU | `wgpu` | 28.0 |
 | Windowing | `winit` | 0.30 |
 | Text rendering | `glyphon` | 0.10 |
