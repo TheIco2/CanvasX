@@ -114,7 +114,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 ### HTML Element Support
 
-<details open>
+<details closed>
 <summary><strong>Containers &amp; Semantic Structure</strong></summary>
 
 | Element | Status | Notes |
