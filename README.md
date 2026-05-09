@@ -132,7 +132,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Text &amp; Inline Content</strong></summary>
 
 | Element | Status | Notes |
@@ -153,7 +153,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Lists</strong></summary>
 
 | Element | Status | Notes |
@@ -164,7 +164,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Media</strong></summary>
 
 | Element | Status | Notes |
@@ -179,7 +179,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Forms &amp; Input</strong></summary>
 
 | Element | Status | Notes |
@@ -201,7 +201,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Prism Custom Elements</strong></summary>
 
 | Element | Status | Notes |
@@ -214,7 +214,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Not Supported</strong></summary>
 
 | Element | Status | Notes |
@@ -233,7 +233,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 ### CSS Property Support
 
-<details open>
+<details closed>
 <summary><strong>Layout &amp; Box Model</strong></summary>
 
 | Property | Status | Notes |
@@ -254,7 +254,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Flexbox</strong></summary>
 
 | Property | Status | Notes |
@@ -275,7 +275,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>CSS Grid</strong></summary>
 
 | Property | Status | Notes |
@@ -292,7 +292,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Typography</strong></summary>
 
 | Property | Status | Notes |
@@ -316,7 +316,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Background</strong></summary>
 
 | Property | Status | Notes |
@@ -331,7 +331,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Border &amp; Outline</strong></summary>
 
 | Property | Status | Notes |
@@ -347,7 +347,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Visual Effects</strong></summary>
 
 | Property | Status | Notes |
@@ -365,7 +365,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Transform</strong></summary>
 
 | Property | Status | Notes |
@@ -378,7 +378,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Animation &amp; Transition</strong></summary>
 
 | Property | Status | Notes |
@@ -401,7 +401,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Selectors</strong></summary>
 
 | Selector | Syntax | Status | Notes |
@@ -428,7 +428,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Units</strong></summary>
 
 | Unit | Status | Notes |
@@ -448,7 +448,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>At-Rules</strong></summary>
 
 | Rule | Status | Notes |
@@ -463,7 +463,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Functions &amp; Colors</strong></summary>
 
 | Function | Status | Notes |
@@ -489,7 +489,7 @@ Prism implements a practical subset of web standards optimized for high-performa
 
 Prism includes a full V8 JavaScript engine. Scripts can be embedded inline or loaded via `src` attribute.
 
-<details open>
+<details closed>
 <summary><strong>DOM API</strong></summary>
 
 | API | Status | Notes |
@@ -509,7 +509,7 @@ Prism includes a full V8 JavaScript engine. Scripts can be embedded inline or lo
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Canvas 2D API</strong></summary>
 
 | Category | Methods | Status |
@@ -526,7 +526,7 @@ Prism includes a full V8 JavaScript engine. Scripts can be embedded inline or lo
 
 </details>
 
-<details open>
+<details closed>
 <summary><strong>Globals &amp; Timers</strong></summary>
 
 | API | Status | Notes |
