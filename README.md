@@ -645,7 +645,6 @@ When connected to OpenDesktop, the bridge polls 16+ data sections (time, CPU, GP
 
 - **OS:** Windows 10 or 11
 - **GPU:** Vulkan or DirectX 12 capable
-- **Runtime:** OpenDesktop Backend — only required for live data binding
 
 ---
 
