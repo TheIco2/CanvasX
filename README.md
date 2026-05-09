@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">Prism</h1>
+  <h1 align="center">Prism</h1> 
   <p align="center">
     <strong>GPU-native 2D scene graph renderer for desktop UIs, widgets, and interactive content.</strong>
   </p>
@@ -15,6 +15,9 @@
   </p>
 </p>
 
+> Disclaimer:
+> AI is technically being used on this project, but it will mostly be used for git comments, conceptualizing, quick edits and locating bugs that arent shown when running `Cargo build`.
+> The final product/major update will be fully written by me using no AI tools what so ever
 ---
 
 ## Overview
@@ -27,9 +30,9 @@ HTML/CSS/JS  →  Compiler  →  PRD Document  →  Layout  →  Animate  →  P
                                              IPC (live data)             wgpu (Vulkan/DX12)
 ```
 
-Prism ships as both a library crate (`prism_runtime`) for embedding into any Rust application and a standalone binary (`prism-rt`) for direct use.
+PRISM is available both as an embeddable Rust library crate (prism_runtime) and as a standalone runtime binary (prism-rt) for direct usage.
 
-Part of the [OpenDesktop](https://github.com/The-Ico2/OpenDesktop) desktop customization platform.
+Development of PRISM originally began for [VEIL](https://github.com/TheIco2/VEIL), a Windows desktop customization platform whose interface relied on WebView2. Existing solutions did not provide the level of rendering performance or system efficiency required, often resulting in higher-than-desired resource usage and inconsistent responsiveness.
 
 ---
 
