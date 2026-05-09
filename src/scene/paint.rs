@@ -476,7 +476,10 @@ fn paint_node(doc: &PrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, gra
         }
     }
 
-    // Paint children — use pre-existing order if no z-index is set (avoid sort).
+    // Paint children. Effective stacking depth combines the auto-assigned
+    // tree depth with any explicit `z-index`. We only sort when at least one
+    // child carries an explicit `z-index`; otherwise document order already
+    // matches the auto_z order so a sort would be a no-op.
     let children = &node.children;
     let needs_sort = children.iter().any(|&cid| {
         doc.get_node(cid).map(|c| c.style.z_index != 0).unwrap_or(false)
@@ -485,7 +488,9 @@ fn paint_node(doc: &PrdDocument, node_id: NodeId, out: &mut Vec<UiInstance>, gra
     if needs_sort {
         let mut child_ids = children.clone();
         child_ids.sort_by_key(|&cid| {
-            doc.get_node(cid).map(|c| c.style.z_index).unwrap_or(0)
+            doc.get_node(cid)
+                .map(|c| c.style.z_index.saturating_add(c.layout.auto_z))
+                .unwrap_or(0)
         });
         for cid in child_ids {
             paint_node(doc, cid, out, grad_textures, gradient_cache);

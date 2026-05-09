@@ -178,7 +178,7 @@ pub fn text_entries(out: &mut Vec<DevToolsTextEntry>, state: &PaletteState, view
         width: w - 28.0,
         font_size: theme::FONT_HEADER,
         color: query_color,
-        bold: false,
+        bold: false, clip: None,
     });
 
     // Commands
@@ -193,7 +193,7 @@ pub fn text_entries(out: &mut Vec<DevToolsTextEntry>, state: &PaletteState, view
             width: w - 140.0,
             font_size: theme::FONT_BODY,
             color: if i == state.hovered { theme::TEXT_PRIMARY } else { theme::TEXT_SECONDARY },
-            bold: i == state.hovered,
+            bold: i == state.hovered, clip: None,
         });
         if !cmd.shortcut.is_empty() {
             out.push(DevToolsTextEntry {
@@ -203,7 +203,7 @@ pub fn text_entries(out: &mut Vec<DevToolsTextEntry>, state: &PaletteState, view
                 width: 96.0,
                 font_size: theme::FONT_SMALL,
                 color: theme::TEXT_MUTED,
-                bold: false,
+                bold: false, clip: None,
             });
         }
     }
@@ -216,7 +216,7 @@ pub fn text_entries(out: &mut Vec<DevToolsTextEntry>, state: &PaletteState, view
             width: w - 36.0,
             font_size: theme::FONT_BODY,
             color: theme::TEXT_MUTED,
-            bold: false,
+            bold: false, clip: None,
         });
     }
 }

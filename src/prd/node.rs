@@ -157,6 +157,11 @@ pub struct LayoutResult {
     pub margin: crate::prd::value::EdgeInsets,
     /// Scroll offset (set by InputHandler, read by layout engine).
     pub scroll_y: f32,
+    /// Auto-assigned stacking depth derived from tree position. Computed in a
+    /// post-layout pass so each step down the tree adds 1, and each later
+    /// sibling (and its subtree) is bumped by 1 relative to earlier siblings.
+    /// Painters add this to `style.z_index` to get the effective z order.
+    pub auto_z: i32,
 }
 
 /// An event binding compiled from JS.

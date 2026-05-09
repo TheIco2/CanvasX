@@ -75,7 +75,7 @@ pub fn vline(x: f32, y: f32, h: f32, color: Color) -> UiInstance {
 #[inline]
 pub fn text(out: &mut Vec<DevToolsTextEntry>, s: impl Into<String>, x: f32, y: f32, w: f32, size: f32, color: Color) {
     out.push(DevToolsTextEntry {
-        text: s.into(), x, y, width: w.max(1.0), font_size: size, color, bold: false,
+        text: s.into(), x, y, width: w.max(1.0), font_size: size, color, bold: false, clip: None,
     });
 }
 
@@ -83,7 +83,7 @@ pub fn text(out: &mut Vec<DevToolsTextEntry>, s: impl Into<String>, x: f32, y: f
 #[inline]
 pub fn text_bold(out: &mut Vec<DevToolsTextEntry>, s: impl Into<String>, x: f32, y: f32, w: f32, size: f32, color: Color) {
     out.push(DevToolsTextEntry {
-        text: s.into(), x, y, width: w.max(1.0), font_size: size, color, bold: true,
+        text: s.into(), x, y, width: w.max(1.0), font_size: size, color, bold: true, clip: None,
     });
 }
 
@@ -157,6 +157,20 @@ pub fn vscrollbar(
     let scroll_range = (total_content - area_h).max(1.0);
     let thumb_y = area_y + (scroll / scroll_range).clamp(0.0, 1.0) * (area_h - thumb_h);
     rects.push(rect(track_x, thumb_y, theme::SCROLLBAR_W, thumb_h, theme::alpha(theme::TEXT_MUTED, 0.6), None, 3.0));
+}
+
+/// Paint a horizontal scrollbar (track + thumb). No-op when content fits.
+pub fn hscrollbar(
+    rects: &mut Vec<UiInstance>,
+    area_x: f32, track_y: f32, area_w: f32,
+    total_content: f32, scroll: f32,
+) {
+    if total_content <= area_w || area_w <= 1.0 { return; }
+    rects.push(rect(area_x, track_y, area_w, theme::SCROLLBAR_W, theme::alpha(theme::LINE_SOFT, 0.4), None, 3.0));
+    let thumb_w = ((area_w * area_w) / total_content).max(theme::SCROLLBAR_MIN);
+    let scroll_range = (total_content - area_w).max(1.0);
+    let thumb_x = area_x + (scroll / scroll_range).clamp(0.0, 1.0) * (area_w - thumb_w);
+    rects.push(rect(thumb_x, track_y, thumb_w, theme::SCROLLBAR_W, theme::alpha(theme::TEXT_MUTED, 0.6), None, 3.0));
 }
 
 // ---------------------------------------------------------------------------

@@ -327,6 +327,7 @@ impl ContextMenu {
                         font_size: 12.0,
                         color,
                         bold: matches!(action, ContextAction::InspectElement) && self.hovered == Some(i),
+                        clip: None,
                     });
                     // Shortcut hint (right-aligned, dimmer)
                     if let Some(sc) = shortcut {
@@ -342,6 +343,7 @@ impl ContextMenu {
                                 TEXT_DISABLED
                             },
                             bold: false,
+                            clip: None,
                         });
                     }
                     y += ITEM_HEIGHT;

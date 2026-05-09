@@ -33,6 +33,7 @@ const SCROLLBAR_MIN_THUMB: f32 = 16.0;
 const BG_DARK: Color = Color { r: 0.07, g: 0.07, b: 0.07, a: 0.95 };
 const BG_TAB_BAR: Color = Color { r: 0.10, g: 0.10, b: 0.10, a: 1.0 };
 const BG_TAB_ACTIVE: Color = Color { r: 0.15, g: 0.15, b: 0.15, a: 1.0 };
+const BG_TAB_HOVER: Color = Color { r: 0.13, g: 0.13, b: 0.16, a: 1.0 };
 const BORDER_COLOR: Color = Color { r: 0.2, g: 0.2, b: 0.2, a: 1.0 };
 const ACCENT: Color = Color { r: 0.39, g: 0.40, b: 0.95, a: 1.0 }; // #6366f1
 const SCROLLBAR_TRACK: Color = Color { r: 0.12, g: 0.12, b: 0.14, a: 0.5 };
@@ -128,6 +129,13 @@ pub fn paint_panel(
                 None,
                 0.0,
             ));
+        } else if devtools.hovered_tab == Some(tab) {
+            out.push(make_rect_instance(
+                tx, panel_y, tw, TAB_BAR_HEIGHT,
+                BG_TAB_HOVER,
+                None,
+                0.0,
+            ));
         }
     }
 
@@ -180,6 +188,8 @@ pub fn paint_panel(
             // Highlight checkbox (top-right of panel content area) — kept
             // separate because its hit-test lives in mod.rs.
             paint_highlight_checkbox(out, viewport_width, content_y, devtools.highlight_enabled);
+            // Wrap-lines checkbox sits to the left of the highlight checkbox.
+            paint_wrap_checkbox(out, viewport_width, content_y, devtools.elements_wrap_lines);
 
             // Element highlight overlay on the viewport (above the scene, below
             // the panel) — Chrome-style margin/padding/content tinting.
@@ -188,65 +198,84 @@ pub fn paint_panel(
                 if let Some(node) = doc.get_node(sel_id) {
                     let r = &node.layout.rect;
                     if r.width > 0.0 && r.height > 0.0 {
+                        // Clip every overlay rect to the page area
+                        // (viewport minus the DevTools panel); without this
+                        // the highlight bleeds across the panel and past
+                        // the right window edge.
+                        let max_x = viewport_width;
+                        let max_y = panel_y;
+                        let push_clipped = |out: &mut Vec<UiInstance>,
+                                            x: f32, y: f32, w: f32, h: f32,
+                                            fill: Color,
+                                            border: Option<Color>| {
+                            let x0 = x.max(0.0);
+                            let y0 = y.max(0.0);
+                            let x1 = (x + w).min(max_x);
+                            let y1 = (y + h).min(max_y);
+                            let cw = x1 - x0;
+                            let ch = y1 - y0;
+                            if cw > 0.0 && ch > 0.0 {
+                                out.push(make_rect_instance(x0, y0, cw, ch, fill, border, 0.0));
+                            }
+                        };
                         // Semi-transparent fill
-                        out.push(make_rect_instance(
+                        push_clipped(out,
                             r.x, r.y, r.width, r.height,
                             HIGHLIGHT_COLOR,
                             Some(HIGHLIGHT_BORDER),
-                            0.0,
-                        ));
+                        );
                         // Margin overlay (orange tint)
                         let m = &node.layout.margin;
                         if m.top > 0.0 {
-                            out.push(make_rect_instance(
+                            push_clipped(out,
                                 r.x - m.left, r.y - m.top, r.width + m.left + m.right, m.top,
-                                Color { r: 0.9, g: 0.6, b: 0.2, a: 0.15 }, None, 0.0,
-                            ));
+                                Color { r: 0.9, g: 0.6, b: 0.2, a: 0.15 }, None,
+                            );
                         }
                         if m.bottom > 0.0 {
-                            out.push(make_rect_instance(
+                            push_clipped(out,
                                 r.x - m.left, r.y + r.height, r.width + m.left + m.right, m.bottom,
-                                Color { r: 0.9, g: 0.6, b: 0.2, a: 0.15 }, None, 0.0,
-                            ));
+                                Color { r: 0.9, g: 0.6, b: 0.2, a: 0.15 }, None,
+                            );
                         }
                         if m.left > 0.0 {
-                            out.push(make_rect_instance(
+                            push_clipped(out,
                                 r.x - m.left, r.y, m.left, r.height,
-                                Color { r: 0.9, g: 0.6, b: 0.2, a: 0.15 }, None, 0.0,
-                            ));
+                                Color { r: 0.9, g: 0.6, b: 0.2, a: 0.15 }, None,
+                            );
                         }
                         if m.right > 0.0 {
-                            out.push(make_rect_instance(
+                            push_clipped(out,
                                 r.x + r.width, r.y, m.right, r.height,
-                                Color { r: 0.9, g: 0.6, b: 0.2, a: 0.15 }, None, 0.0,
-                            ));
+                                Color { r: 0.9, g: 0.6, b: 0.2, a: 0.15 }, None,
+                            );
                         }
                         // Padding overlay (green tint)
                         let p = &node.layout.padding;
                         let cr = &node.layout.content_rect;
                         if p.top > 0.0 {
-                            out.push(make_rect_instance(
+                            push_clipped(out,
                                 cr.x, r.y + node.style.border_width.top, cr.width, p.top,
-                                Color { r: 0.3, g: 0.8, b: 0.3, a: 0.15 }, None, 0.0,
-                            ));
+                                Color { r: 0.3, g: 0.8, b: 0.3, a: 0.15 }, None,
+                            );
                         }
                         if p.bottom > 0.0 {
-                            out.push(make_rect_instance(
+                            push_clipped(out,
                                 cr.x, cr.y + cr.height, cr.width, p.bottom,
-                                Color { r: 0.3, g: 0.8, b: 0.3, a: 0.15 }, None, 0.0,
-                            ));
+                                Color { r: 0.3, g: 0.8, b: 0.3, a: 0.15 }, None,
+                            );
                         }
                         if p.left > 0.0 {
-                            out.push(make_rect_instance(
+                            push_clipped(out,
                                 r.x + node.style.border_width.left, cr.y, p.left, cr.height,
-                                Color { r: 0.3, g: 0.8, b: 0.3, a: 0.15 }, None, 0.0,
-                            ));
+                                Color { r: 0.3, g: 0.8, b: 0.3, a: 0.15 }, None,
+                            );
                         }
                         if p.right > 0.0 {
-                            out.push(make_rect_instance(
+                            push_clipped(out,
                                 cr.x + cr.width, cr.y, p.right, cr.height,
-                                Color { r: 0.3, g: 0.8, b: 0.3, a: 0.15 }, None, 0.0,
-                            ));
+                                Color { r: 0.3, g: 0.8, b: 0.3, a: 0.15 }, None,
+                            );
                         }
                     }
                 }
@@ -369,10 +398,18 @@ fn paint_fps_graph(
 
 pub const HIGHLIGHT_CHECKBOX_SIZE: f32 = 14.0;
 pub const HIGHLIGHT_CHECKBOX_RIGHT_INSET: f32 = SCROLLBAR_WIDTH + 110.0;
+pub const WRAP_CHECKBOX_RIGHT_INSET: f32 = SCROLLBAR_WIDTH + 220.0;
 
 /// Top-left corner of the highlight checkbox box (square only — label sits to its left).
 pub fn highlight_checkbox_box(viewport_width: f32, content_y: f32) -> (f32, f32, f32) {
     let x = viewport_width - HIGHLIGHT_CHECKBOX_RIGHT_INSET;
+    let y = content_y + 6.0;
+    (x, y, HIGHLIGHT_CHECKBOX_SIZE)
+}
+
+/// Top-left corner of the wrap-lines checkbox box.
+pub fn wrap_checkbox_box(viewport_width: f32, content_y: f32) -> (f32, f32, f32) {
+    let x = viewport_width - WRAP_CHECKBOX_RIGHT_INSET;
     let y = content_y + 6.0;
     (x, y, HIGHLIGHT_CHECKBOX_SIZE)
 }
@@ -387,6 +424,25 @@ fn paint_highlight_checkbox(out: &mut Vec<UiInstance>, viewport_width: f32, cont
     ));
     if on {
         // Inner check square.
+        let pad = 3.0;
+        out.push(make_rect_instance(
+            cx + pad, cy + pad, size - pad * 2.0, size - pad * 2.0,
+            Color::WHITE,
+            None,
+            1.5,
+        ));
+    }
+}
+
+fn paint_wrap_checkbox(out: &mut Vec<UiInstance>, viewport_width: f32, content_y: f32, on: bool) {
+    let (cx, cy, size) = wrap_checkbox_box(viewport_width, content_y);
+    out.push(make_rect_instance(
+        cx, cy, size, size,
+        if on { ACCENT } else { Color { r: 0.18, g: 0.18, b: 0.22, a: 1.0 } },
+        Some(BORDER_COLOR),
+        3.0,
+    ));
+    if on {
         let pad = 3.0;
         out.push(make_rect_instance(
             cx + pad, cy + pad, size - pad * 2.0, size - pad * 2.0,

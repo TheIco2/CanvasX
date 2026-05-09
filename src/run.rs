@@ -202,17 +202,27 @@ impl HostedApp {
         for (i, entry) in devtools_text_entries.iter().enumerate() {
             if let Some(buf) = devtools_buffers.get(i) {
                 let c = entry.color;
+                let bounds = if let Some(cl) = entry.clip {
+                    glyphon::TextBounds {
+                        left:   (cl[0] * scale) as i32,
+                        top:    (cl[1] * scale) as i32,
+                        right:  (cl[2] * scale) as i32,
+                        bottom: (cl[3] * scale) as i32,
+                    }
+                } else {
+                    glyphon::TextBounds {
+                        left: 0,
+                        top: 0,
+                        right: vw as i32,
+                        bottom: vh as i32,
+                    }
+                };
                 devtools_text_areas.push(glyphon::TextArea {
                     buffer: buf,
                     left: entry.x,
                     top: entry.y,
                     scale: 1.0,
-                    bounds: glyphon::TextBounds {
-                        left: 0,
-                        top: 0,
-                        right: vw as i32,
-                        bottom: vh as i32,
-                    },
+                    bounds,
                     default_color: glyphon::Color::rgba(
                         (c.r * 255.0) as u8,
                         (c.g * 255.0) as u8,
@@ -256,17 +266,27 @@ impl HostedApp {
         for (i, entry) in overlay_entries.iter().enumerate() {
             if let Some(buf) = overlay_buffers.get(i) {
                 let c = entry.color;
+                let bounds = if let Some(cl) = entry.clip {
+                    glyphon::TextBounds {
+                        left:   (cl[0] * scale) as i32,
+                        top:    (cl[1] * scale) as i32,
+                        right:  (cl[2] * scale) as i32,
+                        bottom: (cl[3] * scale) as i32,
+                    }
+                } else {
+                    glyphon::TextBounds {
+                        left: 0,
+                        top: 0,
+                        right: vw as i32,
+                        bottom: vh as i32,
+                    }
+                };
                 overlay_text_areas.push(glyphon::TextArea {
                     buffer: buf,
                     left: entry.x,
                     top: entry.y,
                     scale: 1.0,
-                    bounds: glyphon::TextBounds {
-                        left: 0,
-                        top: 0,
-                        right: vw as i32,
-                        bottom: vh as i32,
-                    },
+                    bounds,
                     default_color: glyphon::Color::rgba(
                         (c.r * 255.0) as u8,
                         (c.g * 255.0) as u8,

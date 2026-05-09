@@ -1,4 +1,4 @@
-﻿// prism-runtime/src/devtools/mod.rs
+// prism-runtime/src/devtools/mod.rs
 //
 // Built-in developer tools for OpenRender Runtime.
 // Provides an Elements panel (DOM tree view with collapsible nodes and
@@ -114,6 +114,23 @@ pub struct DevTools {
     pub elements_force_focus: bool,
     pub elements_sidebar_width: f32,
     pub elements_dragging_sidebar: bool,
+    /// Horizontal scroll offset for the Elements DOM tree.
+    pub elements_tree_h_scroll: f32,
+    /// Whether the Elements DOM tree wraps long rows (true) or allows them to
+    /// overflow horizontally with a scrollbar (false).
+    pub elements_wrap_lines: bool,
+    /// Currently hovered DevTools tab (for hover styling on the tab bar).
+    pub hovered_tab: Option<DevToolsTab>,
+    /// Scrollbar drag state: when dragging the Elements vertical thumb,
+    /// records the offset from the thumb's top to the cursor at grab time.
+    pub elements_v_drag: Option<f32>,
+    /// Same for the Elements horizontal thumb.
+    pub elements_h_drag: Option<f32>,
+    /// Animated scroll targets for the Elements tree. Wheel/scroll input
+    /// updates these; `tick_scroll` lerps the live `elements_scroll` /
+    /// `elements_tree_h_scroll` toward them for smooth scrolling.
+    pub elements_scroll_target: f32,
+    pub elements_h_scroll_target: f32,
     /// Command palette (Ctrl+Shift+P) state.
     pub palette: palette::PaletteState,
 }
@@ -152,6 +169,13 @@ impl DevTools {
             elements_force_focus: false,
             elements_sidebar_width: theme::SIDEBAR_W,
             elements_dragging_sidebar: false,
+            elements_tree_h_scroll: 0.0,
+            elements_wrap_lines: false,
+            hovered_tab: None,
+            elements_v_drag: None,
+            elements_h_drag: None,
+            elements_scroll_target: 0.0,
+            elements_h_scroll_target: 0.0,
             palette: palette::PaletteState::new(),
         }
     }
@@ -296,6 +320,8 @@ impl DevTools {
             force_focus: self.elements_force_focus,
             sidebar_width: self.elements_sidebar_width,
             dragging_sidebar: self.elements_dragging_sidebar,
+            tree_h_scroll: self.elements_tree_h_scroll,
+            wrap_lines: self.elements_wrap_lines,
         }
     }
 
@@ -326,14 +352,62 @@ impl DevTools {
 
     /// Handle scroll in the DevTools panel.
     pub fn handle_scroll(&mut self, delta_y: f32) {
+        self.handle_scroll_xy(0.0, delta_y, None, 0.0, 0.0);
+    }
+
+    /// Handle scroll with both axes (trackpad / shift+wheel). Pass `doc` +
+    /// viewport so the Elements tree scroll can be clamped to the actual
+    /// content extent (otherwise wheel scrolling would never bottom out).
+    pub fn handle_scroll_xy(
+        &mut self,
+        delta_x: f32,
+        delta_y: f32,
+        doc: Option<&PrdDocument>,
+        viewport_width: f32,
+        viewport_height: f32,
+    ) {
         match self.active_tab {
             DevToolsTab::Elements => {
-                self.elements_scroll = (self.elements_scroll - delta_y).max(0.0);
+                let mut new_v = (self.elements_scroll_target - delta_y).max(0.0);
+                let mut new_h = (self.elements_h_scroll_target - delta_x).max(0.0);
+                if let Some(doc) = doc {
+                    let (cx, cy, cw, ch) = self.elements_content_rect(viewport_width, viewport_height);
+                    let state = self.elements_state();
+                    let geom = elements::Geometry::compute(&state, cx, cy, cw, ch);
+                    let max_v = elements::tree_max_v_scroll(&state, doc, &geom);
+                    new_v = new_v.min(max_v);
+                    if !self.elements_wrap_lines {
+                        let max_h = elements::tree_max_h_scroll(&state, doc, &geom);
+                        new_h = new_h.min(max_h);
+                    } else {
+                        new_h = 0.0;
+                    }
+                }
+                self.elements_scroll_target = new_v;
+                self.elements_h_scroll_target = new_h;
             }
             DevToolsTab::Console => {
                 self.console_scroll = (self.console_scroll - delta_y).max(0.0);
             }
             _ => {}
+        }
+    }
+
+    /// Per-frame scroll smoothing. Lerps the live scroll values toward the
+    /// targets that wheel/keys updated. Call once per tick from the host.
+    pub fn tick_scroll(&mut self, dt: f32) {
+        // Critically-damped-ish lerp: ~6× per second response so 60 FPS
+        // settles in ~5 frames.
+        let factor = (dt * 18.0).clamp(0.0, 1.0);
+        self.elements_scroll += (self.elements_scroll_target - self.elements_scroll) * factor;
+        self.elements_tree_h_scroll +=
+            (self.elements_h_scroll_target - self.elements_tree_h_scroll) * factor;
+        // Snap when very close to avoid endless tiny lerps.
+        if (self.elements_scroll_target - self.elements_scroll).abs() < 0.5 {
+            self.elements_scroll = self.elements_scroll_target;
+        }
+        if (self.elements_h_scroll_target - self.elements_tree_h_scroll).abs() < 0.5 {
+            self.elements_tree_h_scroll = self.elements_h_scroll_target;
         }
     }
 
@@ -377,9 +451,55 @@ impl DevTools {
             self.highlight_enabled = !self.highlight_enabled;
             return true;
         }
+        // Wrap-lines checkbox.
+        if hit_wrap_checkbox(x, y, viewport_width, cy) {
+            self.elements_wrap_lines = !self.elements_wrap_lines;
+            if self.elements_wrap_lines {
+                self.elements_tree_h_scroll = 0.0;
+            }
+            return true;
+        }
 
         let state = self.elements_state();
         let geom = elements::Geometry::compute(&state, cx, cy, cw, ch);
+
+        // Vertical scrollbar — start drag if on thumb, jump-to-click if on
+        // the empty track. Either way the click is consumed.
+        if let Some((tx, ty, tw, th, thy, thh)) = elements::tree_v_scrollbar_rect(&state, doc, &geom) {
+            if x >= tx && x <= tx + tw && y >= ty && y <= ty + th {
+                if y >= thy && y <= thy + thh {
+                    self.elements_v_drag = Some(y - thy);
+                } else {
+                    // Jump: centre the thumb on the click.
+                    let new_thy = (y - thh * 0.5).clamp(ty, ty + th - thh);
+                    let frac = (new_thy - ty) / (th - thh).max(1.0);
+                    let max_v = elements::tree_max_v_scroll(&state, doc, &geom);
+                    let v = (frac * max_v).clamp(0.0, max_v);
+                    self.elements_scroll = v;
+                    self.elements_scroll_target = v;
+                    self.elements_v_drag = Some(thh * 0.5);
+                }
+                return true;
+            }
+        }
+        // Horizontal scrollbar.
+        if let Some((tx, ty, tw, th, thx, thw)) = elements::tree_h_scrollbar_rect(&state, doc, &geom) {
+            if x >= tx && x <= tx + tw && y >= ty && y <= ty + th {
+                if x >= thx && x <= thx + thw {
+                    self.elements_h_drag = Some(x - thx);
+                } else {
+                    let new_thx = (x - thw * 0.5).clamp(tx, tx + tw - thw);
+                    let frac = (new_thx - tx) / (tw - thw).max(1.0);
+                    let max_h = elements::tree_max_h_scroll(&state, doc, &geom);
+                    let v = (frac * max_h).clamp(0.0, max_h);
+                    self.elements_tree_h_scroll = v;
+                    self.elements_h_scroll_target = v;
+                    self.elements_h_drag = Some(thw * 0.5);
+                }
+                return true;
+            }
+        }
+
         match elements::hit_test(&state, doc, &geom, x, y) {
             elements::Hit::Search => {
                 self.elements_search_focused = true;
@@ -448,13 +568,56 @@ impl DevTools {
     }
 
     /// Drop the persistent splitter-drag state (call on mouse-up).
-    pub fn end_elements_drag(&mut self) { self.elements_dragging_sidebar = false; }
+    pub fn end_elements_drag(&mut self) {
+        self.elements_dragging_sidebar = false;
+        self.elements_v_drag = None;
+        self.elements_h_drag = None;
+    }
 
     /// Move the sidebar splitter while dragging. `x` is mouse-x in viewport space.
     pub fn drag_elements_splitter(&mut self, x: f32, viewport_width: f32) {
         if !self.elements_dragging_sidebar { return; }
         let new_w = (viewport_width - x).clamp(160.0, viewport_width * 0.7);
         self.elements_sidebar_width = new_w;
+    }
+
+    /// Drive scrollbar thumb dragging while a mouse drag is in progress.
+    /// Returns true if a scrollbar drag is active and consumed the move.
+    pub fn drag_elements_scrollbar(
+        &mut self,
+        x: f32, y: f32,
+        viewport_width: f32, viewport_height: f32,
+        doc: &PrdDocument,
+    ) -> bool {
+        if self.elements_v_drag.is_none() && self.elements_h_drag.is_none() {
+            return false;
+        }
+        let (cx, cy, cw, ch) = self.elements_content_rect(viewport_width, viewport_height);
+        let state = self.elements_state();
+        let geom = elements::Geometry::compute(&state, cx, cy, cw, ch);
+        if let Some(grab) = self.elements_v_drag {
+            if let Some((_tx, ty, _tw, th, _thy, thh)) = elements::tree_v_scrollbar_rect(&state, doc, &geom) {
+                let new_thy = (y - grab).clamp(ty, ty + th - thh);
+                let frac = (new_thy - ty) / (th - thh).max(1.0);
+                let max_v = elements::tree_max_v_scroll(&state, doc, &geom);
+                let v = (frac * max_v).clamp(0.0, max_v);
+                self.elements_scroll = v;
+                self.elements_scroll_target = v;
+            }
+            return true;
+        }
+        if let Some(grab) = self.elements_h_drag {
+            if let Some((tx, _ty, tw, _th, _thx, thw)) = elements::tree_h_scrollbar_rect(&state, doc, &geom) {
+                let new_thx = (x - grab).clamp(tx, tx + tw - thw);
+                let frac = (new_thx - tx) / (tw - thw).max(1.0);
+                let max_h = elements::tree_max_h_scroll(&state, doc, &geom);
+                let v = (frac * max_h).clamp(0.0, max_h);
+                self.elements_tree_h_scroll = v;
+                self.elements_h_scroll_target = v;
+            }
+            return true;
+        }
+        false
     }
 
     /// Receive a typed character for the Elements search box. Returns true if
@@ -467,6 +630,7 @@ impl DevTools {
         if c.is_control() { return false; }
         self.elements_search.push(c);
         self.elements_scroll = 0.0;
+        self.elements_scroll_target = 0.0;
         true
     }
 
@@ -476,7 +640,7 @@ impl DevTools {
             return false;
         }
         match key {
-            ElementsKey::Backspace => { self.elements_search.pop(); self.elements_scroll = 0.0; true }
+            ElementsKey::Backspace => { self.elements_search.pop(); self.elements_scroll = 0.0; self.elements_scroll_target = 0.0; true }
             ElementsKey::Escape => {
                 self.elements_search.clear();
                 self.elements_search_focused = false;
@@ -713,7 +877,7 @@ impl DevTools {
                 width: font_size + 4.0,
                 font_size,
                 color: badge_color,
-                bold: true,
+                bold: true, clip: None,
             });
         } else {
             let label = if self.badge_rotation == 180 {
@@ -728,7 +892,7 @@ impl DevTools {
                 width: bw - 16.0,
                 font_size: 11.0,
                 color: badge_color,
-                bold: false,
+                bold: false, clip: None,
             });
         }
 
@@ -755,7 +919,7 @@ impl DevTools {
                     width: tw - 16.0,
                     font_size: 12.0,
                     color,
-                    bold: is_active,
+                    bold: is_active, clip: None,
                 });
             }
 
@@ -784,6 +948,23 @@ impl DevTools {
                             Color::new(0.55, 0.55, 0.6, 1.0)
                         },
                         bold: false,
+                        clip: None,
+                    });
+                    // "Wrap" label next to its checkbox.
+                    let (wcx, wcy, _wsize) = overlay::wrap_checkbox_box(viewport_width, content_y);
+                    entries.push(DevToolsTextEntry {
+                        text: "Wrap".to_string(),
+                        x: wcx - 40.0,
+                        y: wcy - 1.0,
+                        width: 36.0,
+                        font_size: 11.0,
+                        color: if self.elements_wrap_lines {
+                            Color::WHITE
+                        } else {
+                            Color::new(0.55, 0.55, 0.6, 1.0)
+                        },
+                        bold: false,
+                        clip: None,
                     });
                 }
                 DevToolsTab::Console => {
@@ -803,7 +984,7 @@ impl DevTools {
                         width: viewport_width - 24.0,
                         font_size: 12.0,
                         color: Color::new(0.5, 0.5, 0.5, 1.0),
-                        bold: false,
+                        bold: false, clip: None,
                     });
                 }
                 DevToolsTab::Sources => {
@@ -849,7 +1030,7 @@ impl DevTools {
                 width: viewport_width - 24.0,
                 font_size: 12.0,
                 color: Color::new(0.8, 0.8, 0.8, 1.0),
-                bold: false,
+                bold: false, clip: None,
             });
             y += line_h;
         }
@@ -863,7 +1044,7 @@ impl DevTools {
             width: viewport_width - 24.0,
             font_size: 11.0,
             color: Color::new(0.5, 0.5, 0.55, 1.0),
-            bold: false,
+            bold: false, clip: None,
         });
         y += line_h;
 
@@ -880,6 +1061,7 @@ impl DevTools {
                 font_size: 10.0,
                 color: Color::new(0.5, 0.5, 0.55, 1.0),
                 bold: false,
+                clip: None,
             });
         }
 
@@ -895,6 +1077,7 @@ impl DevTools {
                 font_size: 10.0,
                 color: Color::new(0.5, 0.5, 0.55, 1.0),
                 bold: false,
+                clip: None,
             });
         }
     }
@@ -924,6 +1107,7 @@ fn placeholder_text(
         font_size: 14.0,
         color: Color::new(0.85, 0.86, 0.90, 1.0),
         bold: true,
+        clip: None,
     });
     out.push(DevToolsTextEntry {
         text: subtitle.to_string(),
@@ -932,7 +1116,7 @@ fn placeholder_text(
         width: 480.0,
         font_size: 11.0,
         color: Color::new(0.55, 0.55, 0.60, 1.0),
-        bold: false,
+        bold: false, clip: None,
     });
 }
 
@@ -945,12 +1129,29 @@ pub struct DevToolsTextEntry {
     pub font_size: f32,
     pub color: Color,
     pub bold: bool,
+    /// Optional clip rect `[left, top, right, bottom]` in logical pixels.
+    /// When `None`, the renderer clips against the full viewport.
+    pub clip: Option<[f32; 4]>,
+}
+
+impl DevToolsTextEntry {
+    /// Create a text entry with no clip (clipped to viewport at render time).
+    pub fn new(text: impl Into<String>, x: f32, y: f32, width: f32, font_size: f32, color: Color, bold: bool) -> Self {
+        Self { text: text.into(), x, y, width, font_size, color, bold, clip: None }
+    }
 }
 
 /// Hit-test the highlight-toggle checkbox in the Elements tab header.
 fn hit_highlight_checkbox(x: f32, y: f32, viewport_width: f32, content_y: f32) -> bool {
     let (cx, cy, size) = overlay::highlight_checkbox_box(viewport_width, content_y);
     // Generous hit area to make the small box easy to click.
+    let pad = 4.0;
+    x >= cx - pad && x <= cx + size + pad && y >= cy - pad && y <= cy + size + pad
+}
+
+/// Hit-test the wrap-lines toggle checkbox in the Elements tab header.
+fn hit_wrap_checkbox(x: f32, y: f32, viewport_width: f32, content_y: f32) -> bool {
+    let (cx, cy, size) = overlay::wrap_checkbox_box(viewport_width, content_y);
     let pad = 4.0;
     x >= cx - pad && x <= cx + size + pad && y >= cy - pad && y <= cy + size + pad
 }

@@ -1,4 +1,4 @@
-﻿// prism-runtime/src/devtools/console.rs
+// prism-runtime/src/devtools/console.rs
 //
 // Console log capture for the OpenRender DevTools.
 // Stores log entries with level, message, and timestamp.
@@ -168,7 +168,7 @@ pub fn text_entries_console(
         width: 320.0,
         font_size: 14.0,
         color: Color::new(0.85, 0.86, 0.90, 1.0),
-        bold: true,
+        bold: true, clip: None,
     });
     out.push(DevToolsTextEntry {
         text: format!(
@@ -180,7 +180,7 @@ pub fn text_entries_console(
         width: 480.0,
         font_size: 11.0,
         color: Color::new(0.55, 0.55, 0.60, 1.0),
-        bold: false,
+        bold: false, clip: None,
     });
 }
 

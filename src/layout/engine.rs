@@ -32,6 +32,36 @@ pub fn compute_layout(doc: &mut PrdDocument, viewport_width: f32, viewport_heigh
     // Layout tree recursively (iterative via stack to avoid deep recursion).
     let root_id = doc.root;
     layout_node_recursive(doc, root_id, &constraints, None);
+
+    // After layout, derive the auto stacking depth for every node.
+    // Rule: each step down the tree adds 1; each later sibling (and its
+    // entire subtree) is bumped by 1 relative to its preceding sibling.
+    assign_auto_z(doc, root_id, 0);
+}
+
+/// Walk the tree in document order and assign `LayoutResult::auto_z` so that
+/// painters can resolve a node's effective stacking depth as
+/// `style.z_index + layout.auto_z`. Returns the maximum auto_z assigned in
+/// this subtree (used so the next sibling can start at max + 1).
+fn assign_auto_z(doc: &mut PrdDocument, node_id: NodeId, base: i32) -> i32 {
+    if let Some(n) = doc.nodes.get_mut(node_id as usize) {
+        n.layout.auto_z = base;
+    } else {
+        return base;
+    }
+    let children: Vec<NodeId> = doc
+        .nodes
+        .get(node_id as usize)
+        .map(|n| n.children.clone())
+        .unwrap_or_default();
+    let mut next = base + 1;
+    let mut max_z = base;
+    for cid in children {
+        let sub_max = assign_auto_z(doc, cid, next);
+        max_z = max_z.max(sub_max);
+        next = sub_max + 1;
+    }
+    max_z
 }
 
 /// Recursively layout a node and its children.

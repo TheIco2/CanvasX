@@ -209,6 +209,11 @@ fn parse_compound_selector(selector: &str) -> (Vec<CompoundSelector>, Option<Str
     let mut pseudo_class: Option<String> = None;
 
     for token in selector.split_whitespace() {
+        // Combinators (>, +, ~) aren't tracked yet — degrade to descendant
+        // matching so e.g. `.a > .b` still applies to `.b` inside `.a`.
+        if token == ">" || token == "+" || token == "~" {
+            continue;
+        }
         let token = if token.contains("::") {
             return (Vec::new(), None);
         } else if let Some(idx) = token.find(':') {

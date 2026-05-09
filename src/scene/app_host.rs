@@ -637,6 +637,30 @@ impl AppHost {
         // Track mouse position for context menu hover.
         if let RawInputEvent::MouseMove { x, y } = &event {
             self.devtools.context_menu.update_hover(*x, *y);
+            // Update DevTools tab-bar hover so the tab strip can show a
+            // hover background on the tab under the cursor.
+            self.devtools.hovered_tab = self.devtools
+                .hit_test_tab(*x, *y, viewport_width, viewport_height);
+
+            // Drive any in-progress DevTools drags (sidebar splitter,
+            // scrollbar thumbs).
+            if self.devtools.elements_dragging_sidebar {
+                self.devtools.drag_elements_splitter(*x, viewport_width);
+                return;
+            }
+            let doc_opt = self.active_scene().map(|s| s.document.clone());
+            if let Some(doc) = doc_opt.as_ref() {
+                if self.devtools.drag_elements_scrollbar(
+                    *x, *y, viewport_width, viewport_height, doc,
+                ) {
+                    return;
+                }
+            }
+        }
+
+        // Mouse-up: end any DevTools drag (splitter or scrollbar).
+        if let RawInputEvent::MouseUp { button: CxMouseButton::Left, .. } = &event {
+            self.devtools.end_elements_drag();
         }
 
         // Intercept left-clicks for DevTools badge, context menu, and panel.
@@ -727,7 +751,7 @@ impl AppHost {
         }
 
         // Intercept scroll for DevTools panel.
-        if let RawInputEvent::MouseWheel { delta_y, .. } = &event {
+        if let RawInputEvent::MouseWheel { delta_x, delta_y, .. } = &event {
             let (_, y) = if let Some(page) = self.active_page.as_ref()
                 .and_then(|id| self.pages.get(id))
             {
@@ -736,7 +760,12 @@ impl AppHost {
                 (0.0, 0.0)
             };
             if self.devtools.hit_test_panel(0.0, y, viewport_height) {
-                self.devtools.handle_scroll(*delta_y);
+                let doc_opt = self.active_scene().map(|s| s.document.clone());
+                self.devtools.handle_scroll_xy(
+                    *delta_x, *delta_y,
+                    doc_opt.as_ref(),
+                    viewport_width, viewport_height,
+                );
                 return;
             }
         }
@@ -959,6 +988,9 @@ impl AppHost {
         // Tray events are handled exclusively by `poll_tray()` (called from
         // `about_to_wait`) to avoid a double-poll race when the window is hidden.
 
+        // Smooth-scroll DevTools toward its scroll targets.
+        self.devtools.tick_scroll(dt);
+
         // Tick JS runtime (requestAnimationFrame, timers, etc.).
         if let Some(ref mut js_rt) = self.js_runtime {
             js_rt.gc_gradients();
@@ -1071,6 +1103,16 @@ impl AppHost {
     pub fn active_scene_mut(&mut self) -> Option<&mut SceneGraph> {
         let page_id = self.active_page.clone()?;
         self.pages.get_mut(&page_id).map(|p| &mut p.scene)
+    }
+
+    /// Current cursor icon for the active page (driven by CSS `cursor` and
+    /// hover state). Consumers should apply this to the window each frame.
+    pub fn current_cursor(&self) -> crate::scene::input_handler::CursorIcon {
+        self.active_page
+            .as_ref()
+            .and_then(|id| self.pages.get(id))
+            .map(|p| p.input_handler.cursor)
+            .unwrap_or(crate::scene::input_handler::CursorIcon::Default)
     }
 
     /// Get the title bar scene (for rendering text areas).

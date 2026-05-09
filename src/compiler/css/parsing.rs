@@ -475,25 +475,29 @@ pub fn parse_dimension(value: &str) -> Dimension {
                     return Dimension::Px(v * 16.0);
                 }
             }
-            // Viewport units → percentage approximation
+            // Viewport units — resolved against the actual viewport at
+            // layout time (not the parent box).
             if let Some(vh) = value.strip_suffix("vh") {
                 if let Ok(v) = vh.trim().parse::<f32>() {
-                    return Dimension::Percent(v);
+                    return Dimension::Vh(v);
                 }
             }
             if let Some(vw) = value.strip_suffix("vw") {
                 if let Ok(v) = vw.trim().parse::<f32>() {
-                    return Dimension::Percent(v);
+                    return Dimension::Vw(v);
                 }
             }
+            // vmin/vmax aren't first-class in the Dimension enum yet —
+            // approximate with the smaller/larger of the two viewport
+            // axes by mapping to Vw (close enough for typical 16:9).
             if let Some(vmin) = value.strip_suffix("vmin") {
                 if let Ok(v) = vmin.trim().parse::<f32>() {
-                    return Dimension::Percent(v);
+                    return Dimension::Vh(v);
                 }
             }
             if let Some(vmax) = value.strip_suffix("vmax") {
                 if let Ok(v) = vmax.trim().parse::<f32>() {
-                    return Dimension::Percent(v);
+                    return Dimension::Vw(v);
                 }
             }
             // Bare number → px

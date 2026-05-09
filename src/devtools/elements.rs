@@ -1,4 +1,4 @@
-﻿// prism-runtime/src/devtools/elements.rs
+// prism-runtime/src/devtools/elements.rs
 //
 // Elements panel — Chrome-DevTools-style DOM tree on the left, computed-style
 // sidebar with box-model diagram + style sections + state simulators +
@@ -64,6 +64,12 @@ pub struct ElementsState {
     pub sidebar_width: f32,
     /// Whether the user is currently dragging the sidebar splitter.
     pub dragging_sidebar: bool,
+    /// Horizontal scroll offset for the DOM tree (when wrap is off).
+    pub tree_h_scroll: f32,
+    /// When true, long rows are visually clipped at the tree width and no
+    /// horizontal scrollbar is shown. When false (default), rows can overflow
+    /// horizontally and a horizontal scrollbar appears.
+    pub wrap_lines: bool,
 }
 
 impl ElementsState {
@@ -81,6 +87,8 @@ impl ElementsState {
             force_focus: false,
             sidebar_width: theme::SIDEBAR_W,
             dragging_sidebar: false,
+            tree_h_scroll: 0.0,
+            wrap_lines: false,
         }
     }
 }
@@ -266,21 +274,161 @@ pub fn paint_panel(
 
     // Tree
     let rows = build_rows(doc, &state.expanded, &state.search_query);
-    paint_tree(rects, texts, &rows, state, doc, geom);
+    let content_width = paint_tree(rects, texts, &rows, state, doc, geom);
 
-    // Tree scrollbar
-    let total = tree_height(&rows);
-    widgets::vscrollbar(
-        rects,
-        geom.splitter_x - theme::SCROLLBAR_W - 2.0,
-        geom.tree_y, geom.tree_h, total, state.scroll,
-    );
+    // Tree vertical scrollbar — only when content overflows.
+    let total_v = rows.len() as f32 * ROW_H;
+    if total_v > geom.tree_h {
+        widgets::vscrollbar(
+            rects,
+            geom.splitter_x - theme::SCROLLBAR_W - 2.0,
+            geom.tree_y, geom.tree_h, total_v, state.scroll,
+        );
+    }
 
-    // Sidebar
+    // Tree horizontal scrollbar — only when content overflows AND wrap is off.
+    if !state.wrap_lines && content_width > geom.tree_w {
+        widgets::hscrollbar(
+            rects,
+            geom.tree_x,
+            geom.tree_y + geom.tree_h - theme::SCROLLBAR_W - 2.0,
+            geom.tree_w, content_width, state.tree_h_scroll,
+        );
+    }
+
+    // Sidebar — clip every text entry it emits to the sidebar rect so
+    // long values (e.g. computed-style strings) don't bleed leftward over
+    // the splitter into the tree pane.
+    let sidebar_clip = [
+        geom.sidebar_x,
+        geom.sidebar_y,
+        geom.sidebar_x + geom.sidebar_w,
+        geom.breadcrumb_y,
+    ];
+    let sidebar_text_start = texts.len();
     paint_sidebar(rects, texts, state, doc, geom);
+    apply_clip(texts, sidebar_text_start, sidebar_clip);
 
-    // Breadcrumb
+    // Breadcrumb — likewise clip its text to its own bar.
+    let breadcrumb_clip = [
+        geom.content_x,
+        geom.breadcrumb_y,
+        geom.content_x + geom.content_w,
+        geom.breadcrumb_y + BREADCRUMB_H,
+    ];
+    let breadcrumb_text_start = texts.len();
     paint_breadcrumb(rects, texts, state, doc, geom);
+    apply_clip(texts, breadcrumb_text_start, breadcrumb_clip);
+}
+
+/// Apply a clip rect to every text entry emitted from `start..end` that does
+/// not already have one. Used to "scope" a panel section's text without
+/// threading clip args through every helper.
+fn apply_clip(texts: &mut Vec<DevToolsTextEntry>, start: usize, clip: [f32; 4]) {
+    for entry in texts.iter_mut().skip(start) {
+        if entry.clip.is_none() {
+            entry.clip = Some(clip);
+        }
+    }
+}
+
+/// Compute the maximum vertical scroll for the Elements tree given the
+/// current viewport so callers can clamp wheel/drag input. Returns 0 when
+/// content fits.
+pub fn tree_max_v_scroll(state: &ElementsState, doc: &PrdDocument, geom: &Geometry) -> f32 {
+    let rows = build_rows(doc, &state.expanded, &state.search_query);
+    let total = rows.len() as f32 * ROW_H;
+    (total - geom.tree_h).max(0.0)
+}
+
+/// Returns `(track_x, track_y, track_w, track_h, thumb_y, thumb_h)` for the
+/// vertical tree scrollbar. Returns `None` when not shown.
+pub fn tree_v_scrollbar_rect(
+    state: &ElementsState,
+    doc: &PrdDocument,
+    geom: &Geometry,
+) -> Option<(f32, f32, f32, f32, f32, f32)> {
+    let rows = build_rows(doc, &state.expanded, &state.search_query);
+    let total = rows.len() as f32 * ROW_H;
+    if total <= geom.tree_h { return None; }
+    let track_x = geom.splitter_x - theme::SCROLLBAR_W - 2.0;
+    let track_y = geom.tree_y;
+    let track_w = theme::SCROLLBAR_W;
+    let track_h = geom.tree_h;
+    let thumb_h = ((track_h * track_h) / total).max(theme::SCROLLBAR_MIN);
+    let scroll_range = (total - track_h).max(1.0);
+    let thumb_y = track_y + (state.scroll / scroll_range).clamp(0.0, 1.0) * (track_h - thumb_h);
+    Some((track_x, track_y, track_w, track_h, thumb_y, thumb_h))
+}
+
+/// Returns `(track_x, track_y, track_w, track_h, thumb_x, thumb_w)` for the
+/// horizontal tree scrollbar. Returns `None` when not shown.
+pub fn tree_h_scrollbar_rect(
+    state: &ElementsState,
+    doc: &PrdDocument,
+    geom: &Geometry,
+) -> Option<(f32, f32, f32, f32, f32, f32)> {
+    if state.wrap_lines { return None; }
+    let max_h = tree_max_h_scroll(state, doc, geom);
+    if max_h <= 0.0 { return None; }
+    let total = max_h + geom.tree_w;
+    let track_x = geom.tree_x;
+    let track_y = geom.tree_y + geom.tree_h - theme::SCROLLBAR_W - 2.0;
+    let track_w = geom.tree_w;
+    let track_h = theme::SCROLLBAR_W;
+    let thumb_w = ((track_w * track_w) / total).max(theme::SCROLLBAR_MIN);
+    let scroll_range = (total - track_w).max(1.0);
+    let thumb_x = track_x + (state.tree_h_scroll / scroll_range).clamp(0.0, 1.0) * (track_w - thumb_w);
+    Some((track_x, track_y, track_w, track_h, thumb_x, thumb_w))
+}
+
+/// Compute the maximum horizontal scroll for the Elements tree.
+pub fn tree_max_h_scroll(state: &ElementsState, doc: &PrdDocument, geom: &Geometry) -> f32 {
+    if state.wrap_lines { return 0.0; }
+    // Re-derive content_width using the same logic as paint_tree, but
+    // without painting. Cheap because we just measure character widths.
+    let rows = build_rows(doc, &state.expanded, &state.search_query);
+    let mut max_right: f32 = 0.0;
+    for row in rows.iter() {
+        let mut x = theme::SP_2 + row.depth as f32 * INDENT + CARET_W;
+        let measure = |s: &str, x: &mut f32| {
+            let w = (s.chars().count() as f32 + 0.5) * CH_W;
+            *x += w;
+        };
+        if let Some(node) = doc.get_node(row.node_id) {
+            match &row.kind {
+                TreeRowKind::Open { inline_text, .. } => {
+                    let tag = node.tag.as_deref().unwrap_or("?");
+                    measure("<", &mut x); measure(tag, &mut x);
+                    if let Some(id) = &node.html_id {
+                        measure(" id=", &mut x);
+                        measure(&format!("\"{}\"", id), &mut x);
+                    }
+                    if !node.classes.is_empty() {
+                        measure(" class=", &mut x);
+                        measure(&format!("\"{}\"", node.classes.join(" ")), &mut x);
+                    }
+                    for (k, v) in &node.attributes {
+                        if k == "id" || k == "class" { continue; }
+                        measure(&format!(" {}=", k), &mut x);
+                        measure(&format!("\"{}\"", v), &mut x);
+                    }
+                    measure(">", &mut x);
+                    if let Some(inline) = inline_text {
+                        measure(inline, &mut x);
+                        measure("</", &mut x); measure(tag, &mut x); measure(">", &mut x);
+                    }
+                }
+                TreeRowKind::Close => {
+                    let tag = node.tag.as_deref().unwrap_or("?");
+                    measure("</", &mut x); measure(tag, &mut x); measure(">", &mut x);
+                }
+                TreeRowKind::Text(c) => measure(&format!("\"{}\"", c), &mut x),
+            }
+        }
+        if x > max_right { max_right = x; }
+    }
+    (max_right - geom.tree_w).max(0.0)
 }
 
 fn paint_tree(
@@ -290,12 +438,14 @@ fn paint_tree(
     state: &ElementsState,
     doc: &PrdDocument,
     geom: &Geometry,
-) {
+) -> f32 {
     let clip = [geom.tree_x, geom.tree_y, geom.tree_x + geom.tree_w, geom.tree_y + geom.tree_h];
 
     let visible_top = state.scroll;
     let visible_bot = state.scroll + geom.tree_h;
     let row_w = geom.tree_w;
+    let h_offset = if state.wrap_lines { 0.0 } else { state.tree_h_scroll };
+    let mut max_row_right: f32 = 0.0;
 
     for (i, row) in rows.iter().enumerate() {
         let local_top = i as f32 * ROW_H;
@@ -318,7 +468,7 @@ fn paint_tree(
             ));
         }
 
-        let base_x = geom.tree_x + theme::SP_2 + row.depth as f32 * INDENT;
+        let base_x = geom.tree_x + theme::SP_2 + row.depth as f32 * INDENT - h_offset;
         let text_y = row_y + (ROW_H - 11.0) * 0.5 - 1.0;
 
         match &row.kind {
@@ -330,64 +480,74 @@ fn paint_tree(
                             text: glyph.to_string(),
                             x: base_x, y: text_y, width: CARET_W,
                             font_size: theme::FONT_SMALL, color: theme::TEXT_MUTED, bold: false,
+                            clip: Some(clip),
                         });
                     }
                     let mut x = base_x + CARET_W;
-                    paint_open_tag(texts, node, &mut x, text_y);
+                    paint_open_tag_clipped(texts, node, &mut x, text_y, clip);
                     if let Some(inline) = inline_text {
-                        push_run(texts, inline, &mut x, text_y, theme::SYN_TEXT);
-                        push_run(texts, "</", &mut x, text_y, theme::SYN_PUNCT);
-                        push_run(texts, node.tag.as_deref().unwrap_or("?"), &mut x, text_y, theme::SYN_TAG);
-                        push_run(texts, ">", &mut x, text_y, theme::SYN_PUNCT);
+                        push_run_clipped(texts, inline, &mut x, text_y, theme::SYN_TEXT, clip);
+                        push_run_clipped(texts, "</", &mut x, text_y, theme::SYN_PUNCT, clip);
+                        push_run_clipped(texts, node.tag.as_deref().unwrap_or("?"), &mut x, text_y, theme::SYN_TAG, clip);
+                        push_run_clipped(texts, ">", &mut x, text_y, theme::SYN_PUNCT, clip);
                     }
+                    if x > max_row_right { max_row_right = x; }
                 }
             }
             TreeRowKind::Close => {
                 if let Some(node) = doc.get_node(row.node_id) {
                     let mut x = base_x + CARET_W;
-                    push_run(texts, "</", &mut x, text_y, theme::SYN_PUNCT);
-                    push_run(texts, node.tag.as_deref().unwrap_or("?"), &mut x, text_y, theme::SYN_TAG);
-                    push_run(texts, ">", &mut x, text_y, theme::SYN_PUNCT);
+                    push_run_clipped(texts, "</", &mut x, text_y, theme::SYN_PUNCT, clip);
+                    push_run_clipped(texts, node.tag.as_deref().unwrap_or("?"), &mut x, text_y, theme::SYN_TAG, clip);
+                    push_run_clipped(texts, ">", &mut x, text_y, theme::SYN_PUNCT, clip);
+                    if x > max_row_right { max_row_right = x; }
                 }
             }
             TreeRowKind::Text(content) => {
                 let mut x = base_x + CARET_W;
-                push_run(texts, &format!("\"{}\"", content), &mut x, text_y, theme::SYN_TEXT);
+                push_run_clipped(texts, &format!("\"{}\"", content), &mut x, text_y, theme::SYN_TEXT, clip);
+                if x > max_row_right { max_row_right = x; }
             }
         }
     }
+
+    // Width of widest row's right edge in absolute coordinates (already
+    // including the h-offset shift). Add the offset back to get the true
+    // unscrolled width so the caller can size the h-scrollbar correctly.
+    (max_row_right - geom.tree_x + h_offset).max(0.0)
 }
 
-fn paint_open_tag(
+fn paint_open_tag_clipped(
     texts: &mut Vec<DevToolsTextEntry>,
     node: &crate::prd::node::PrdNode,
     x: &mut f32, y: f32,
+    clip: [f32; 4],
 ) {
     let tag = node.tag.as_deref().unwrap_or("?");
-    push_run(texts, "<", x, y, theme::SYN_PUNCT);
-    push_run(texts, tag, x, y, theme::SYN_TAG);
+    push_run_clipped(texts, "<", x, y, theme::SYN_PUNCT, clip);
+    push_run_clipped(texts, tag, x, y, theme::SYN_TAG, clip);
 
     if let Some(id) = &node.html_id {
-        push_run(texts, " id=", x, y, theme::SYN_ATTR_NAME);
-        push_run(texts, &format!("\"{}\"", id), x, y, theme::SYN_ATTR_VAL);
+        push_run_clipped(texts, " id=", x, y, theme::SYN_ATTR_NAME, clip);
+        push_run_clipped(texts, &format!("\"{}\"", id), x, y, theme::SYN_ATTR_VAL, clip);
     }
     if !node.classes.is_empty() {
-        push_run(texts, " class=", x, y, theme::SYN_ATTR_NAME);
-        push_run(texts, &format!("\"{}\"", node.classes.join(" ")), x, y, theme::SYN_ATTR_VAL);
+        push_run_clipped(texts, " class=", x, y, theme::SYN_ATTR_NAME, clip);
+        push_run_clipped(texts, &format!("\"{}\"", node.classes.join(" ")), x, y, theme::SYN_ATTR_VAL, clip);
     }
     for (k, v) in &node.attributes {
         if k == "id" || k == "class" { continue; }
-        push_run(texts, &format!(" {}=", k), x, y, theme::SYN_ATTR_NAME);
-        push_run(texts, &format!("\"{}\"", v), x, y, theme::SYN_ATTR_VAL);
+        push_run_clipped(texts, &format!(" {}=", k), x, y, theme::SYN_ATTR_NAME, clip);
+        push_run_clipped(texts, &format!("\"{}\"", v), x, y, theme::SYN_ATTR_VAL, clip);
     }
-    push_run(texts, ">", x, y, theme::SYN_PUNCT);
+    push_run_clipped(texts, ">", x, y, theme::SYN_PUNCT, clip);
 }
 
-fn push_run(out: &mut Vec<DevToolsTextEntry>, s: &str, x: &mut f32, y: f32, color: Color) {
+fn push_run_clipped(out: &mut Vec<DevToolsTextEntry>, s: &str, x: &mut f32, y: f32, color: Color, clip: [f32; 4]) {
     let w = (s.chars().count() as f32 + 0.5) * CH_W;
     out.push(DevToolsTextEntry {
         text: s.to_string(), x: *x, y, width: w + 4.0,
-        font_size: theme::FONT_SMALL, color, bold: false,
+        font_size: theme::FONT_SMALL, color, bold: false, clip: Some(clip),
     });
     *x += w;
 }
@@ -514,7 +674,7 @@ fn paint_box_model(
     let push_num = |t: &mut Vec<DevToolsTextEntry>, s: String, nx: f32, ny: f32| {
         t.push(DevToolsTextEntry {
             text: s, x: nx, y: ny, width: 20.0,
-            font_size: theme::FONT_TINY, color: theme::TEXT_PRIMARY, bold: false,
+            font_size: theme::FONT_TINY, color: theme::TEXT_PRIMARY, bold: false, clip: None,
         });
     };
     push_num(texts, num(m.top),    cx + cw * 0.5 - 6.0, cy + 4.0);
@@ -590,7 +750,11 @@ fn paint_computed_props(
 
     section_header(texts, x, &mut y, w, "Effects");
     if s.opacity < 1.0  { section_row(texts, x, &mut y, w, "opacity", format!("{:.2}", s.opacity)); }
-    if s.z_index != 0   { section_row(texts, x, &mut y, w, "z-index", format!("{}", s.z_index)); }
+    let eff_z = s.z_index.saturating_add(node.layout.auto_z);
+    if s.z_index != 0 || node.layout.auto_z != 0 {
+        section_row(texts, x, &mut y, w, "z-index",
+            format!("{} (auto {} + {})", eff_z, node.layout.auto_z, s.z_index));
+    }
     let br = s.border_radius;
     if br.top_left > 0.0 || br.top_right > 0.0 || br.bottom_right > 0.0 || br.bottom_left > 0.0 {
         section_row(texts, x, &mut y, w, "border-radius",
@@ -975,5 +1139,7 @@ fn make_legacy_state(
         force_focus: false,
         sidebar_width: theme::SIDEBAR_W,
         dragging_sidebar: false,
+        tree_h_scroll: 0.0,
+        wrap_lines: false,
     }
 }
