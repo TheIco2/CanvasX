@@ -50,7 +50,7 @@ Development of PRISM originally began for [VEIL](https://github.com/TheIco2/VEIL
 | **Text rendering** | GPU text via [glyphon](https://github.com/grovesNL/glyphon) (cosmic-text). Font families, weight, size, line-height, letter-spacing, text-transform, text-align. |
 | **SVG support** | `<svg>` elements with `<path>`, `<circle>`, `<rect>`, `<line>`, `<ellipse>`, `<polygon>`, `<polyline>` — auto-rasterized via resvg. |
 | **Image support** | PNG, JPEG, WebP, ICO — embedded in the asset bundle. Object-fit modes: fill, contain, cover, none. |
-| **IPC bridge** | Named-pipe client for live data streaming. Optional OpenDesktop bridge for 16+ system data sections. JavaScript IPC API for custom commands. |
+| **IPC bridge** | Named-pipe client for live data streaming. Optional VEIL bridge for 16+ system data sections. JavaScript IPC API for custom commands. |
 | **Platform integration** | Windows desktop embedding (WorkerW) for wallpapers, monitor enumeration with DPI awareness. |
 | **Editable properties** | Runtime CSS variable overrides driven by `manifest.json` schema + `editable.yaml` user values. |
 | **Compile-once caching** | PRD documents cached to disk with SHA-256 hash invalidation. Zero parsing at render time. |
@@ -82,7 +82,7 @@ Each frame follows the same path:
 | `scene/` | Scene graph coordinator, paint pass, text painter, input handler, app host |
 | `animate/` | Animation timeline, keyframe interpolation, easing functions |
 | `scripting/` | V8 runtime, DOM bindings, Canvas 2D API, IPC bridge, JS worker |
-| `ipc/` | Named-pipe client, protocol types, OpenDesktop bridge (optional) |
+| `ipc/` | Named-pipe client, protocol types, VEIL bridge (optional) |
 | `platform/` | Monitor enumeration, WorkerW desktop embedding (Windows) |
 
 ### GPU Rendering
@@ -615,7 +615,7 @@ JavaScript can also send IPC commands directly:
 __or_sendIpc("sysdata", "get_cpu", null);
 ```
 
-When connected to OpenDesktop, the bridge polls 16+ data sections (time, CPU, GPU, RAM, storage, displays, network, Wi-Fi, Bluetooth, audio, keyboard, mouse, power, idle, system, processes) and flattens them into a key-value map consumed by the scene graph.
+When connected to [VEIL](https://github.com/TheIco2/VEIL), the bridge polls 16+ data sections (time, CPU, GPU, RAM, storage, displays, network, Wi-Fi, Bluetooth, audio, keyboard, mouse, power, idle, system, processes) and flattens them into a key-value map consumed by the scene graph.
 
 ---
 
