@@ -498,6 +498,7 @@ impl AppHost {
         self.js_runtime = None;
 
         self.active_page = Some(page_id.to_string());
+        self.assets_dirty = true; // re-upload GPU textures for the new active page
         self.pending_events.push(AppEvent::NavigateTo(page_id.to_string()));
 
         log::info!("AppHost: navigated to '{}'", page_id);
@@ -534,6 +535,7 @@ impl AppHost {
                 self.forward_stack.push(current);
             }
             self.active_page = Some(prev);
+            self.assets_dirty = true;
         }
     }
 
@@ -544,6 +546,7 @@ impl AppHost {
                 self.history.push(current);
             }
             self.active_page = Some(next);
+            self.assets_dirty = true;
         }
     }
 
@@ -1746,6 +1749,19 @@ impl AppHost {
         if let Some(ref js_rt) = self.js_runtime {
             js_rt.sync_document(&page.scene.document);
         }
+
+        // Notify JS that the page content changed so page-specific init can run.
+        let swap_code = format!(
+            "if(typeof window.__veil_on_content_swap==='function')window.__veil_on_content_swap('{}');",
+            target_id.replace('\'', "\\'")
+        );
+        if let Some(ref mut js_rt) = self.js_runtime {
+            js_rt.eval_script(&swap_code);
+        }
+
+        // Fragment may have brought new image assets (e.g. rasterized SVGs);
+        // mark dirty so the render loop uploads them to the GPU.
+        self.assets_dirty = true;
 
         log::info!("AppHost: swapped page-content to '{}'", target_id);
     }

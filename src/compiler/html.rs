@@ -373,7 +373,6 @@ fn preprocess_includes_inner_with_embed(
 fn join_embed(base: &str, sub: &str, src: &str) -> String {
     let mut out = String::new();
     let base = base.trim_matches('/');
-    let sub = sub.trim_matches('/');
     let src = src.trim_start_matches('/');
     if !base.is_empty() {
         out.push_str(base);
@@ -730,7 +729,7 @@ pub fn compile_html(
 
     // 3. Parse HTML into node tree.
     let tokens = tokenize_html(html_source);
-    let (root_children, _) = build_node_tree(&tokens, 0);
+    let (root_children, _) = build_node_tree(&tokens, 0, None);
 
     // 3b. Retrieve collected scripts.
     let scripts = COLLECTED_SCRIPTS.with(|s| s.borrow().clone());
@@ -1162,7 +1161,15 @@ fn tokenize_html(source: &str) -> Vec<HtmlToken> {
 }
 
 /// Build node tree from tokens.
-fn build_node_tree(tokens: &[HtmlToken], start: usize) -> (Vec<ParsedNode>, usize) {
+///
+/// The parser only unwinds recursion when it sees a close tag matching
+/// `expected_close_tag`. Any unmatched/stray close tags are ignored so they
+/// cannot prematurely truncate sibling layout trees.
+fn build_node_tree(
+    tokens: &[HtmlToken],
+    start: usize,
+    expected_close_tag: Option<&str>,
+) -> (Vec<ParsedNode>, usize) {
     let mut nodes = Vec::new();
     let mut i = start;
 
@@ -1188,15 +1195,25 @@ fn build_node_tree(tokens: &[HtmlToken], start: usize) -> (Vec<ParsedNode>, usiz
                 if *self_closing || is_void_element(tag) {
                     i += 1;
                 } else {
-                    let (children, end_pos) = build_node_tree(tokens, i + 1);
+                    let (children, end_pos) = build_node_tree(tokens, i + 1, Some(tag));
                     node.children = children;
                     i = end_pos + 1; // skip past the close tag
                 }
 
                 nodes.push(node);
             }
-            HtmlToken::CloseTag { .. } => {
-                return (nodes, i);
+            HtmlToken::CloseTag { tag } => {
+                // Only unwind when this close tag matches the currently-open tag.
+                if expected_close_tag
+                    .map(|expected| expected.eq_ignore_ascii_case(tag))
+                    .unwrap_or(false)
+                {
+                    return (nodes, i);
+                }
+
+                // Ignore unmatched close tags at this depth; otherwise they can
+                // incorrectly terminate parent parsing (e.g. explicit </path>).
+                i += 1;
             }
             HtmlToken::Text(text) => {
                 nodes.push(ParsedNode {
@@ -1263,10 +1280,10 @@ fn add_node_recursive(
             }
 
             // Use SVG width/height as intrinsic dimensions.
-            if let Some(w) = parsed.attributes.get("width").and_then(|v| v.parse::<f32>().ok()) {
+            if let Some(w) = parsed.attributes.get("width").and_then(|v| parse_svg_length(v)) {
                 style.width = Dimension::Px(w);
             }
-            if let Some(h) = parsed.attributes.get("height").and_then(|v| v.parse::<f32>().ok()) {
+            if let Some(h) = parsed.attributes.get("height").and_then(|v| parse_svg_length(v)) {
                 style.height = Dimension::Px(h);
             }
 
@@ -1275,15 +1292,12 @@ fn add_node_recursive(
                 let vb = parsed.attributes.get("viewBox")
                     .or_else(|| parsed.attributes.get("viewbox"));
                 if let Some(vb_str) = vb {
-                    let parts: Vec<f32> = vb_str.split_whitespace()
-                        .filter_map(|s| s.parse().ok())
-                        .collect();
-                    if parts.len() == 4 {
+                    if let Some((vw, vh)) = parse_viewbox_dims(vb_str) {
                         if matches!(style.width, Dimension::Auto) {
-                            style.width = Dimension::Px(parts[2]);
+                            style.width = Dimension::Px(vw);
                         }
                         if matches!(style.height, Dimension::Auto) {
-                            style.height = Dimension::Px(parts[3]);
+                            style.height = Dimension::Px(vh);
                         }
                     }
                 }
@@ -1699,26 +1713,112 @@ pub fn rasterize_svg(svg_markup: &str, target_w: u32, target_h: u32) -> Option<(
 /// Returns the asset index on success.
 fn rasterize_svg_node(doc: &mut PrdDocument, parsed: &ParsedNode, current_color: &Color) -> Option<u32> {
     let color_hex = current_color.to_hex_string();
-    let svg_markup = reconstruct_svg_markup(parsed).replace("currentColor", &color_hex);
+    let mut svg_markup = reconstruct_svg_markup(parsed);
+    svg_markup = svg_markup.replace("currentColor", &color_hex);
+    svg_markup = svg_markup.replace("currentcolor", &color_hex);
 
     // Parse target dimensions from width/height attributes (CSS may override later).
-    let target_w: u32 = parsed.attributes.get("width")
-        .and_then(|v| v.parse().ok())
+    let mut target_w: u32 = parsed
+        .attributes
+        .get("width")
+        .and_then(|v| parse_svg_length(v))
+        .map(|v| v.max(1.0) as u32)
         .unwrap_or(0);
-    let target_h: u32 = parsed.attributes.get("height")
-        .and_then(|v| v.parse().ok())
+    let mut target_h: u32 = parsed
+        .attributes
+        .get("height")
+        .and_then(|v| parse_svg_length(v))
+        .map(|v| v.max(1.0) as u32)
         .unwrap_or(0);
+
+    // Fall back to viewBox dimensions when width/height aren't provided.
+    if (target_w == 0 || target_h == 0) && parsed.attributes.get("viewBox").is_some() {
+        if let Some((vb_w, vb_h)) = parsed
+            .attributes
+            .get("viewBox")
+            .and_then(|vb| parse_viewbox_dims(vb))
+        {
+            if target_w == 0 { target_w = vb_w.max(1.0) as u32; }
+            if target_h == 0 { target_h = vb_h.max(1.0) as u32; }
+        }
+    }
+
+    if (target_w == 0 || target_h == 0) && parsed.attributes.get("viewbox").is_some() {
+        if let Some((vb_w, vb_h)) = parsed
+            .attributes
+            .get("viewbox")
+            .and_then(|vb| parse_viewbox_dims(vb))
+        {
+            if target_w == 0 { target_w = vb_w.max(1.0) as u32; }
+            if target_h == 0 { target_h = vb_h.max(1.0) as u32; }
+        }
+    }
+
+    // Last-resort fallback keeps icon-only SVGs visible even when attributes are omitted.
+    if target_w == 0 { target_w = 24; }
+    if target_h == 0 { target_h = 24; }
 
     // Render at 2x for crisp display on high-DPI screens.
     let scale = 2u32;
-    let raster_w = if target_w > 0 { target_w * scale } else { 64 };
-    let raster_h = if target_h > 0 { target_h * scale } else { 64 };
+    let raster_w = target_w.saturating_mul(scale).max(1);
+    let raster_h = target_h.saturating_mul(scale).max(1);
 
-    let (rgba, w, h) = rasterize_svg(&svg_markup, raster_w, raster_h)?;
+    let (rgba, w, h) = match rasterize_svg(&svg_markup, raster_w, raster_h) {
+        Some(ok) => ok,
+        None => {
+            log::warn!(
+                "[SVG] Rasterization failed (target={}x{}, attrs={:?})",
+                target_w,
+                target_h,
+                parsed.attributes
+            );
+            return None;
+        }
+    };
 
     let name = format!("svg_raster_{}x{}", w, h);
     let idx = doc.assets.add_raw_image(name, w, h, rgba);
+    log::info!(
+        "[SVG] Rasterized '{}' to {}x{} (asset #{})",
+        parsed.tag,
+        w,
+        h,
+        idx
+    );
     Some(idx)
+}
+
+fn parse_svg_length(value: &str) -> Option<f32> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    // Accept plain numeric values and values with units (e.g. "24px").
+    let numeric: String = trimmed
+        .chars()
+        .take_while(|c| c.is_ascii_digit() || *c == '.' || *c == '-')
+        .collect();
+
+    if numeric.is_empty() {
+        return None;
+    }
+
+    numeric.parse::<f32>().ok()
+}
+
+fn parse_viewbox_dims(vb: &str) -> Option<(f32, f32)> {
+    let nums: Vec<f32> = vb
+        .split(|c: char| c.is_ascii_whitespace() || c == ',')
+        .filter(|s| !s.is_empty())
+        .filter_map(|s| s.parse::<f32>().ok())
+        .collect();
+
+    if nums.len() == 4 {
+        Some((nums[2], nums[3]))
+    } else {
+        None
+    }
 }
 
 /// Determine the NodeKind from the HTML element.
@@ -1871,14 +1971,24 @@ pub fn reapply_all_styles(doc: &mut PrdDocument, rules: &[CssRule]) {
 
     // Reset and re-apply root node styles.
     if let Some(node) = doc.get_node_mut(root) {
-        let tag = node.tag.as_deref().unwrap_or("");
-        node.style = tag_default_style(tag);
+        let saved_bg = if matches!(node.kind, NodeKind::Image { .. }) {
+            Some(node.style.background.clone())
+        } else {
+            None
+        };
+        let tag = node.tag.as_deref().unwrap_or("").to_string();
+        node.style = tag_default_style(&tag);
         node.hover_style.clear();
         node.active_style.clear();
         node.focus_style.clear();
         let html_id = node.html_id.clone();
         apply_rules_to_node_with_ancestors(node, &html_id, rules, &variables, &[]);
         reapply_inline_styles(node, &variables);
+        if let Some(bg) = saved_bg {
+            if !matches!(node.style.background, Background::Image { .. }) {
+                node.style.background = bg;
+            }
+        }
     }
 
     let root_tag = doc.get_node(root).map(|n| n.tag.clone()).unwrap_or(None);
@@ -1912,6 +2022,14 @@ fn reapply_styles_recursive(
 
     // Reset to tag defaults, apply CSS rules, then inline styles.
     if let Some(node) = doc.get_node_mut(node_id) {
+        // Preserve the rasterized image backing before reset — rasterized SVG
+        // nodes have kind=NodeKind::Image but no CSS property can restore that
+        // background, so we must keep it through the style reset.
+        let saved_bg = if matches!(node.kind, NodeKind::Image { .. }) {
+            Some(node.style.background.clone())
+        } else {
+            None
+        };
         let tag_str = node.tag.as_deref().unwrap_or("");
         node.style = tag_default_style(tag_str);
         node.hover_style.clear();
@@ -1919,6 +2037,12 @@ fn reapply_styles_recursive(
         node.focus_style.clear();
         apply_rules_to_node_with_ancestors(node, &html_id, rules, variables, ancestors);
         reapply_inline_styles(node, variables);
+        // Restore the image background if CSS didn't supply one.
+        if let Some(bg) = saved_bg {
+            if !matches!(node.style.background, Background::Image { .. }) {
+                node.style.background = bg;
+            }
+        }
     }
 
     // Build ancestor chain for children.

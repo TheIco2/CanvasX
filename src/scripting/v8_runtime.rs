@@ -352,6 +352,28 @@ impl JsRuntime {
         });
     }
 
+    /// Evaluate a JS snippet without verbose logging. Used for internal
+    /// runtime notifications (e.g. content-swap hooks).
+    pub fn eval_script(&mut self, code: &str) {
+        log::debug!("[PRISM][JS] eval_script: {}", &code[..code.len().min(120)]);
+        self.activate();
+        let hs = std::pin::pin!(v8::HandleScope::new(&mut self.isolate));
+        let mut hs = hs.init();
+        let ctx = v8::Local::new(&hs, &self.context);
+        let cs = &mut v8::ContextScope::new(&mut hs, ctx);
+        if let Some(source) = v8::String::new(cs, code) {
+            let tc = std::pin::pin!(v8::TryCatch::new(cs));
+            let tc = tc.init();
+            if let Some(script) = v8::Script::compile(&tc, source, None) {
+                if script.run(&tc).is_none() {
+                    if let Some(exc) = tc.exception() {
+                        log::error!("[PRISM][JS] eval_script error: {}", exc.to_rust_string_lossy(&tc));
+                    }
+                }
+            }
+        }
+    }
+
     /// Execute script source code.
     pub fn execute(&mut self, source: &str, name: &str) {
         self.activate();
@@ -545,7 +567,10 @@ impl JsRuntime {
     /// Used after content swaps so that JS-driven DOM syncs don't overwrite
     /// the newly swapped content with a stale snapshot.
     pub fn sync_document(&self, doc: &PrdDocument) {
-        self.state.borrow_mut().document = doc.clone();
+        let mut state = self.state.borrow_mut();
+        state.document = doc.clone();
+        // Invalidate the reachability cache — it is keyed to the old document.
+        state.reachable_cache = None;
     }
 
     /// Get a mutable reference to the shared state.
@@ -1567,6 +1592,8 @@ fn cx_ipc_send(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbackArgum
     let pipe_name = v8_str(scope, &args, 0);
     let request_json = v8_str(scope, &args, 1);
 
+    log::debug!("[PRISM][IPC] cx_ipc_send: pipe={} req={}", pipe_name, &request_json[..request_json.len().min(200)]);
+
     let request: IpcRequest = match serde_json::from_str(&request_json) {
         Ok(r) => r,
         Err(e) => {
@@ -1581,9 +1608,11 @@ fn cx_ipc_send(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbackArgum
             let json = serde_json::to_string(&resp).unwrap_or_else(|_| {
                 r#"{"ok":false,"error":"Serialize error"}"#.to_string()
             });
+            log::debug!("[PRISM][IPC] cx_ipc_send ok: {}", &json[..json.len().min(200)]);
             rv.set(v8::String::new(scope, &json).unwrap().into());
         }
         Err(e) => {
+            log::warn!("[PRISM][IPC] cx_ipc_send error: {}", e);
             let err_json = format!(r#"{{"ok":false,"error":"{}"}}"#, e.replace('"', "'"));
             rv.set(v8::String::new(scope, &err_json).unwrap().into());
         }
@@ -1647,6 +1676,20 @@ fn selector_matches_node(selector: &str, node: &crate::prd::node::PrdNode, _doc:
     if sel.starts_with('.') {
         let cls = &sel[1..];
         return node.classes.iter().any(|c| c == cls);
+    }
+    // Attribute selector: [attr] or [attr="val"] or [attr='val']
+    if sel.starts_with('[') && sel.ends_with(']') {
+        let inner = &sel[1..sel.len() - 1];
+        if let Some(eq_pos) = inner.find('=') {
+            let attr_name = inner[..eq_pos].trim();
+            let raw_val = inner[eq_pos + 1..].trim();
+            let attr_val = raw_val.trim_matches(|c| c == '"' || c == '\'');
+            return node.attributes.get(attr_name).map(|v| v.as_str()) == Some(attr_val);
+        } else {
+            // Presence-only: [attr]
+            let attr_name = inner.trim();
+            return node.attributes.contains_key(attr_name);
+        }
     }
     if let Some(tag) = &node.tag {
         return tag == sel;
@@ -3313,5 +3356,41 @@ window.confirm = function(msg) { return toast.confirm(String(msg || '')); };
 window.prompt  = function(msg, def) {
     return toast.prompt(String(msg || ''), { inputPlaceholder: def || '' });
 };
+
+// ─── VEIL IPC bridge ─────────────────────────────────────────────────────
+// Exposes window.__veil_ipc(ns, cmd, args) → synchronous thenable
+// VeilFramework.js calls window.__veil_ipc if present; this wraps the
+// synchronous __or_ipc_send native into a thenable whose .then() fires
+// IMMEDIATELY (no microtask queue) so callers never depend on Promise
+// scheduling, which is unreliable in PRISM's V8 embedding.
+(function () {
+    var VEIL_PIPE = "\\\\.\\pipe\\veil";
+
+    // A lightweight thenable that calls onFulfilled synchronously.
+    function syncThenable(data) {
+        return {
+            then: function (onFulfilled) {
+                if (typeof onFulfilled === 'function') {
+                    try { onFulfilled(data); } catch (e) {}
+                }
+                return syncThenable(data);
+            },
+            catch: function () { return this; }
+        };
+    }
+    var failedThenable = { then: function () { return this; }, catch: function () { return this; } };
+
+    window.__veil_ipc = function (ns, cmd, args) {
+        try {
+            var req = JSON.stringify({ ns: String(ns), cmd: String(cmd), args: args || {} });
+            var res = __or_ipc_send(VEIL_PIPE, req);
+            var parsed = JSON.parse(res);
+            var data = (parsed && parsed.ok) ? (parsed.data !== undefined ? parsed.data : null) : null;
+            return syncThenable(data);
+        } catch (e) {
+            return failedThenable;
+        }
+    };
+})();
 "#;
 

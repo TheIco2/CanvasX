@@ -19,7 +19,7 @@ use crate::gpu::context::GpuContext;
 use crate::gpu::renderer::Renderer;
 use crate::scene::app_host::{AppEvent, AppHost};
 use crate::scene::input_handler::{
-    KeyCode, Modifiers, MouseButton as CxMouseButton, RawInputEvent,
+    CursorIcon, KeyCode, Modifiers, MouseButton as CxMouseButton, RawInputEvent,
 };
 
 /// Window options for [`run_app`].
@@ -164,6 +164,30 @@ impl HostedApp {
                 }
                 _ => {}
             }
+        }
+
+        // Upload any new GPU assets (e.g. rasterized SVG textures) that were
+        // registered during the tick above (page loads, innerHTML SVGs, etc.).
+        if self.host.take_assets_dirty() {
+            if let (Some(ctx), Some(renderer)) = (self.gpu_ctx.as_ref(), self.renderer.as_mut()) {
+                if let Some(assets) = self.host.active_scene_assets() {
+                    renderer.load_assets(&ctx.device, &ctx.queue, assets);
+                }
+            }
+        }
+
+        // Apply CSS cursor to the OS window.
+        if let Some(ref w) = self.window {
+            let winit_cursor = match self.host.current_cursor() {
+                CursorIcon::Pointer    => winit::window::CursorIcon::Pointer,
+                CursorIcon::Text       => winit::window::CursorIcon::Text,
+                CursorIcon::Move       => winit::window::CursorIcon::Move,
+                CursorIcon::NotAllowed => winit::window::CursorIcon::NotAllowed,
+                CursorIcon::ResizeNS   => winit::window::CursorIcon::NsResize,
+                CursorIcon::ResizeEW   => winit::window::CursorIcon::EwResize,
+                CursorIcon::Default    => winit::window::CursorIcon::Default,
+            };
+            w.set_cursor(winit::window::Cursor::Icon(winit_cursor));
         }
 
         let (ctx, renderer) = match (self.gpu_ctx.as_ref(), self.renderer.as_mut()) {
@@ -723,6 +747,13 @@ impl HostedApp {
             Some(p) if p.visible => p,
             _ => return,
         };
+
+        // Upload any new GPU assets registered during this tick.
+        if popup.host.take_assets_dirty() {
+            if let Some(assets) = popup.host.active_scene_assets() {
+                popup.renderer.load_assets(&popup.gpu.device, &popup.gpu.queue, assets);
+            }
+        }
 
         // Minimal render: scene instances + text only. No devtools overlay.
         let (scene_instances, _devtools_instances, clear_color) =

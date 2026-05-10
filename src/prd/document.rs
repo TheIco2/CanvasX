@@ -228,22 +228,45 @@ impl PrdDocument {
     }
 
     /// Transplant all root children from another document into this one as children of `parent_id`.
+    /// Any image assets in `source.assets` are appended to this document's asset bundle and
+    /// the transplanted nodes' `asset_index` references are remapped accordingly.
     pub fn transplant_children_from(&mut self, source: &PrdDocument, parent_id: NodeId) {
+        // Record asset offset before merging so we can remap indices.
+        let asset_offset = self.assets.images.len() as u32;
+
+        // Append all image assets from the source bundle.
+        for img in &source.assets.images {
+            self.assets.images.push(img.clone());
+        }
+
         let root_children: Vec<NodeId> = source.nodes[source.root as usize].children.clone();
         for &child_id in &root_children {
-            let new_id = self.transplant_node_recursive(source, child_id);
+            let new_id = self.transplant_node_recursive(source, child_id, asset_offset);
             self.add_child(parent_id, new_id);
         }
     }
 
-    fn transplant_node_recursive(&mut self, source: &PrdDocument, src_id: NodeId) -> NodeId {
+    fn transplant_node_recursive(&mut self, source: &PrdDocument, src_id: NodeId, asset_offset: u32) -> NodeId {
         let src_node = &source.nodes[src_id as usize];
         let src_children: Vec<NodeId> = src_node.children.clone();
         let mut new_node = src_node.clone();
         new_node.children = Vec::new();
+
+        // Remap asset indices so they point into the merged bundle.
+        if asset_offset > 0 {
+            use crate::prd::node::NodeKind;
+            use crate::prd::style::Background;
+            if let NodeKind::Image { ref mut asset_index, .. } = new_node.kind {
+                *asset_index += asset_offset;
+            }
+            if let Background::Image { ref mut asset_index } = new_node.style.background {
+                *asset_index += asset_offset;
+            }
+        }
+
         let new_id = self.add_node(new_node);
         for &child_src_id in &src_children {
-            let child_new_id = self.transplant_node_recursive(source, child_src_id);
+            let child_new_id = self.transplant_node_recursive(source, child_src_id, asset_offset);
             self.add_child(new_id, child_new_id);
         }
         new_id
