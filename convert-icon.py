@@ -135,54 +135,68 @@ def try_cairosvg(svg_file, ico_file):
         return False
 
 def try_pil_enhanced(svg_file, ico_file):
-    """Enhanced PIL rendering as fallback"""
+    """Enhanced PIL rendering as fallback (calls the HQ script)"""
+    try:
+        # Import and run the HQ generator
+        import convert_icon_hq
+        return convert_icon_hq.main()
+    except Exception:
+        # Fall back to inline version if import fails
+        return try_pil_inline(svg_file, ico_file)
+
+def try_pil_inline(svg_file, ico_file):
+    """Inline PIL rendering fallback"""
     try:
         from PIL import Image, ImageDraw
         
-        print("Note: Using PIL rendering (lower quality fallback)")
-        print("      For better quality, install ImageMagick or Inkscape")
+        print("Note: Using PIL rendering (high-quality fallback)")
+        print("      For best quality, install ImageMagick or Inkscape")
         
-        # Create high-resolution base image (512x512) then scale down
-        img = Image.new('RGBA', (512, 512), (10, 14, 39, 255))
+        # Create high-resolution base image (1024x1024) then scale down
+        img = Image.new('RGBA', (1024, 1024), (10, 14, 39, 255))
         draw = ImageDraw.Draw(img, 'RGBA')
         
-        # Draw prism with better quality
-        # Front face triangle (blue) with gradient simulation
-        points_front = [(256, 80), (140, 320), (372, 320)]
-        draw.polygon(points_front, fill=(0, 212, 255, 255))
+        scale = 2  # 512 design scaled to 1024
+        
+        def s(x, y):
+            return int(x * scale), int(y * scale)
+        
+        # Front face (blue)
+        draw.polygon([s(256, 80), s(140, 320), s(372, 320)], fill=(0, 212, 255, 255))
+        draw.polygon([s(256, 80), s(200, 180), s(312, 180)], fill=(0, 240, 255, 100))
         
         # Left face (red/pink)
-        points_left = [(140, 320), (80, 380), (180, 460)]
-        draw.polygon(points_left, fill=(255, 107, 157, 255))
+        draw.polygon([s(140, 320), s(80, 380), s(180, 460)], fill=(255, 107, 157, 255))
+        draw.polygon([s(140, 320), s(110, 350), s(130, 390)], fill=(200, 70, 120, 150))
         
         # Right face (green)
-        points_right = [(372, 320), (432, 380), (332, 460)]
-        draw.polygon(points_right, fill=(0, 255, 136, 255))
+        draw.polygon([s(372, 320), s(432, 380), s(332, 460)], fill=(0, 255, 136, 255))
+        draw.polygon([s(372, 320), s(402, 350), s(382, 390)], fill=(0, 200, 100, 150))
         
-        # Bottom connecting face
-        draw.polygon([(140, 320), (180, 460), (372, 320), (332, 460)], fill=(0, 168, 204, 150))
+        # Bottom face (shadow)
+        draw.polygon([s(140, 320), s(180, 460), s(372, 320), s(332, 460)], fill=(0, 168, 204, 120))
         
-        # Light rays (input)
-        for i in range(3):
-            x_offset = i * 60 - 60
-            draw.line([(256 + x_offset, 20), (228 + x_offset, 90)], fill=(0, 255, 255, 200), width=6)
+        # Light rays
+        draw.line([s(256, 20), s(256, 80)], fill=(255, 255, 255, 220), width=24)
+        draw.line([s(200, 30), s(180, 100)], fill=(0, 200, 255, 180), width=16)
+        draw.line([s(312, 30), s(332, 100)], fill=(0, 200, 255, 180), width=16)
         
-        # Refracted light rays (output)
-        draw.line([(140, 330), (80, 420)], fill=(255, 107, 157, 200), width=6)
-        draw.line([(256, 330), (256, 420)], fill=(255, 255, 0, 180), width=4)
-        draw.line([(372, 330), (432, 420)], fill=(0, 255, 136, 200), width=6)
+        # Refracted rays
+        draw.line([s(140, 330), s(80, 420)], fill=(255, 107, 157, 220), width=24)
+        draw.line([s(256, 330), s(256, 420)], fill=(255, 255, 0, 200), width=20)
+        draw.line([s(372, 330), s(432, 420)], fill=(0, 255, 136, 220), width=24)
         
         # Highlights
-        draw.ellipse([(220, 140), (260, 220)], fill=(255, 255, 255, 80))
+        draw.polygon([s(220, 120), s(240, 100), s(260, 110), s(250, 140), s(230, 130)],
+                    fill=(255, 255, 255, 120))
         
-        # Now resize to standard sizes
+        # Resize and save
         icon_sizes = [(16, 16), (32, 32), (48, 48), (64, 64), (128, 128), (256, 256)]
         icons = [img.resize(size, Image.Resampling.LANCZOS) for size in icon_sizes]
         
-        # Save as ICO
         icons[0].save(ico_file, format='ICO', sizes=icon_sizes)
         
-        print(f"✓ Successfully created using enhanced PIL: {ico_file}")
+        print(f"✓ Successfully created using high-quality PIL: {ico_file}")
         print(f"  File size: {ico_file.stat().st_size} bytes")
         return True
     except Exception as e:
