@@ -16,7 +16,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 const INSTALL_DIR: &str = r"C:\Program Files\PRISM";
-const UNINSTALL_NAME: &str = "PRISM";
+const BIN_DIR: &str = r"C:\Program Files\PRISM\bin";
+const LIB_DIR: &str = r"C:\Program Files\PRISM\lib";
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -60,45 +61,57 @@ fn main() {
 fn install() -> std::io::Result<()> {
     let current_exe = env::current_exe()?;
     let install_path = Path::new(INSTALL_DIR);
+    let bin_path = Path::new(BIN_DIR);
+    let lib_path = Path::new(LIB_DIR);
     
-    // Step 1: Create installation directory
-    println!("\n[1/4] Creating installation directory...");
+    // Step 1: Create installation directories
+    println!("\n[1/5] Creating installation directories...");
     if !install_path.exists() {
         fs::create_dir_all(install_path)?;
         println!("  ✓ Created: {}", INSTALL_DIR);
-    } else {
-        println!("  ℹ Directory already exists: {}", INSTALL_DIR);
+    }
+    if !bin_path.exists() {
+        fs::create_dir_all(bin_path)?;
+        println!("  ✓ Created: {}", BIN_DIR);
+    }
+    if !lib_path.exists() {
+        fs::create_dir_all(lib_path)?;
+        println!("  ✓ Created: {}", LIB_DIR);
     }
     
     // Step 2: Copy executables
-    println!("\n[2/4] Installing executables...");
+    println!("\n[2/5] Installing executables...");
     
     // Get the directory of the current exe (installer location)
     let installer_dir = current_exe.parent().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "Cannot determine installer directory")
     })?;
     
-    // Copy prism.exe from same directory as installer
+    // Copy prism.exe to bin/
     let prism_src = installer_dir.join("prism.exe");
     if prism_src.exists() {
-        let prism_dst = install_path.join("prism.exe");
+        let prism_dst = bin_path.join("prism.exe");
         fs::copy(&prism_src, &prism_dst)?;
-        println!("  ✓ Copied prism.exe");
+        println!("  ✓ Copied prism.exe to bin\\");
     } else {
         println!("  ⚠ Warning: prism.exe not found at {}", prism_src.display());
     }
     
-    // Step 3: Add to PATH
-    println!("\n[3/4] Updating system PATH...");
-    if let Err(e) = add_to_path(install_path) {
+    // Step 3: Copy library files
+    println!("\n[3/5] Installing library files...");
+    copy_library_files(installer_dir, lib_path)?;
+    
+    // Step 4: Add to PATH
+    println!("\n[4/5] Updating system PATH...");
+    if let Err(e) = add_to_path(bin_path) {
         println!("  ⚠ Warning: Could not update PATH: {}", e);
-        println!("  You may need to manually add {} to your PATH", INSTALL_DIR);
+        println!("  You may need to manually add {} to your PATH", BIN_DIR);
     } else {
-        println!("  ✓ Added {} to user PATH", INSTALL_DIR);
+        println!("  ✓ Added {} to user PATH", BIN_DIR);
     }
     
-    // Step 4: Create uninstaller shortcut
-    println!("\n[4/4] Setting up uninstaller...");
+    // Step 5: Create uninstaller shortcut
+    println!("\n[5/5] Setting up uninstaller...");
     create_uninstaller_info(install_path)?;
     println!("  ✓ Uninstaller created at: {}\\uninstall.bat", INSTALL_DIR);
     
@@ -107,15 +120,23 @@ fn install() -> std::io::Result<()> {
 
 fn uninstall() -> std::io::Result<()> {
     let install_path = Path::new(INSTALL_DIR);
+    let bin_path = Path::new(BIN_DIR);
+    let lib_path = Path::new(LIB_DIR);
     
     println!("Uninstalling PRISM...");
     
     // Remove from PATH
-    if let Err(e) = remove_from_path(install_path) {
+    if let Err(e) = remove_from_path(bin_path) {
         eprintln!("Warning: Could not remove from PATH: {}", e);
     }
     
-    // Delete installation directory
+    // Delete installation directories
+    if bin_path.exists() {
+        fs::remove_dir_all(bin_path)?;
+    }
+    if lib_path.exists() {
+        fs::remove_dir_all(lib_path)?;
+    }
     if install_path.exists() {
         fs::remove_dir_all(install_path)?;
     }
@@ -123,14 +144,51 @@ fn uninstall() -> std::io::Result<()> {
     Ok(())
 }
 
-fn add_to_path(install_dir: &Path) -> std::io::Result<()> {
+fn copy_library_files(source_dir: &Path, lib_path: &Path) -> std::io::Result<()> {
+    // Look for library files in the source directory:
+    // - prism_runtime.dll
+    // - prism_runtime.lib
+    // - prism_runtime.rlib
+    // - Any other .dll or .lib files
+    
+    let mut found_any = false;
+    
+    for entry in fs::read_dir(source_dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        let file_name = entry.file_name();
+        let file_name_str = file_name.to_string_lossy();
+        
+        // Copy DLL and LIB files
+        if file_name_str.ends_with(".dll") || 
+           file_name_str.ends_with(".lib") || 
+           file_name_str.ends_with(".rlib") ||
+           file_name_str.contains("prism_runtime") {
+            
+            if path.is_file() {
+                let dest = lib_path.join(&file_name);
+                fs::copy(&path, &dest)?;
+                println!("  ✓ Copied {}", file_name_str);
+                found_any = true;
+            }
+        }
+    }
+    
+    if !found_any {
+        println!("  ℹ No library files found (this is OK for CLI-only installations)");
+    }
+    
+    Ok(())
+}
+
+fn add_to_path(bin_path: &Path) -> std::io::Result<()> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::ffi::OsStrExt;
         use std::ffi::OsStr;
         use windows::Win32::System::Registry::*;
 
-        let install_str = install_dir.to_string_lossy().to_string();
+        let install_str = bin_path.to_string_lossy().to_string();
 
         unsafe {
             let mut key_handle = std::mem::zeroed();
@@ -228,14 +286,14 @@ fn add_to_path(install_dir: &Path) -> std::io::Result<()> {
     }
 }
 
-fn remove_from_path(install_dir: &Path) -> std::io::Result<()> {
+fn remove_from_path(bin_path: &Path) -> std::io::Result<()> {
     #[cfg(target_os = "windows")]
     {
         use std::os::windows::ffi::OsStrExt;
         use std::ffi::OsStr;
         use windows::Win32::System::Registry::*;
 
-        let install_str = install_dir.to_string_lossy().to_string();
+        let install_str = bin_path.to_string_lossy().to_string();
 
         unsafe {
             let mut key_handle = std::mem::zeroed();
