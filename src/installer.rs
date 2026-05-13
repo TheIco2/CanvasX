@@ -11,9 +11,7 @@
 
 use std::env;
 use std::fs;
-use std::io::Write;
-use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::path::Path;
 
 const INSTALL_DIR: &str = r"C:\Program Files\PRISM";
 const BIN_DIR: &str = r"C:\Program Files\PRISM\bin";
@@ -384,14 +382,59 @@ fn remove_from_path(bin_path: &Path) -> std::io::Result<()> {
 }
 
 fn create_uninstaller_info(install_path: &Path) -> std::io::Result<()> {
-    // Create a simple batch uninstaller script
+    // Create a standalone uninstaller script that requests elevation
     let uninstall_bat = install_path.join("uninstall.bat");
-    let installer_path = install_path.join("prism-installer.exe");
     
-    let content = format!(
-        "@echo off\necho Uninstalling PRISM...\n\"{:}\" --uninstall\npause\n",
-        installer_path.display()
-    );
+    // Generate a simpler batch script without complex line continuations
+    let content = r#"@echo off
+setlocal enabledelayedexpansion
+
+REM Request admin elevation if not already running as admin
+net session >nul 2>&1
+if %errorLevel% neq 0 (
+    echo Requesting administrator privileges...
+    powershell -NoProfile -Command "Start-Process cmd.exe -ArgumentList '/c \"%~f0\"' -Verb RunAs" >nul 2>&1
+    exit /b
+)
+
+echo.
+echo Uninstalling PRISM...
+echo.
+
+REM Remove from PATH using PowerShell
+powershell -NoProfile -Command "Invoke-Expression @' 
+`$path = [Environment]::GetEnvironmentVariable('Path', 'User')
+`$newPath = (`$path -split ';' | Where-Object { `$_ -and `$_ -ne 'C:\Program Files\PRISM\bin' }) -join ';'
+[Environment]::SetEnvironmentVariable('Path', `$newPath, 'User')
+Write-Host 'Removed from PATH'
+'@" 2>nul
+
+REM Wait a moment for registry to update
+timeout /t 1 /nobreak >nul
+
+REM Remove installation directories
+echo Deleting installation directories...
+if exist "C:\Program Files\PRISM\bin" (
+    rmdir /s /q "C:\Program Files\PRISM\bin" 2>nul
+    echo - Deleted bin directory
+)
+if exist "C:\Program Files\PRISM\lib" (
+    rmdir /s /q "C:\Program Files\PRISM\lib" 2>nul
+    echo - Deleted lib directory
+)
+
+REM Remove root directory
+if exist "C:\Program Files\PRISM" (
+    rmdir /s /q "C:\Program Files\PRISM" 2>nul
+    echo - Deleted PRISM directory
+)
+
+echo.
+echo PRISM has been uninstalled successfully.
+echo Please open a new terminal for the PATH changes to take effect.
+echo.
+pause
+"#;
     
     fs::write(uninstall_bat, content)?;
     Ok(())
