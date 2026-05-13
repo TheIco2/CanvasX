@@ -20,6 +20,34 @@
 > The final product/major update will be fully written by me using no AI tools what so ever
 ---
 
+## CLI Tool: `prism.exe`
+
+Use the included command-line tool to compile and test widgets:
+
+```bash
+# Compile HTML/CSS to binary .prd format
+prism -c my-widget.html
+
+# Run a widget in a GPU window  
+prism -r my-widget.prd
+
+# Auto-detect widget in current directory
+prism -c                          # Finds the only .html
+prism -r                          # Finds the only .prd or .html
+
+# Show setup instructions
+prism --setup-env
+```
+
+**Auto-Installation:** The first time you run `prism.exe`, it automatically:
+1. Copies itself to `C:\Program Files\PRISM\`
+2. Adds that directory to your PATH
+3. Relaunches with your original command
+
+See [BOOTSTRAP.md](BOOTSTRAP.md) for details on the auto-installation behavior.
+
+---
+
 ## Overview
 
 Prism compiles a practical subset of HTML, CSS, and JavaScript into a binary intermediate format (**PRD**), then renders it directly on the GPU via instanced SDF quads. No browser engine, no WebView — a single Rust library that turns markup into pixels.
