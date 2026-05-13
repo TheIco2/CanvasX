@@ -30,11 +30,20 @@ prism-installer.exe --uninstall  # Uninstall PRISM
 ```
 
 The installer will:
-1. ✓ Copy `prism.exe` to Program Files
-2. ✓ Add PRISM to your system PATH
-3. ✓ Create an uninstaller
+1. ✓ Create installation directories with proper structure:
+   - `bin/` — PRISM executables (added to PATH)
+   - `lib/` — Runtime libraries and assets
+2. ✓ Copy `prism.exe` to the bin directory
+3. ✓ Add `C:\Program Files\PRISM\bin` to your system PATH
+4. ✓ Create an uninstaller
 
-After installation, you can use `prism` from any terminal.
+After installation, open a **new terminal** and you can use `prism` from anywhere:
+
+```bash
+prism -c widget.html    # Compile
+prism -r widget.prd     # Run
+prism --help            # Show help
+```
 
 ## CLI Tool: `prism.exe`
 
