@@ -41,6 +41,10 @@ thread_local! {
     static RUNTIME_STATE: RefCell<Option<StateRef>> = RefCell::new(None);
     /// Buffer for console messages emitted by JS code (level, message).
     static CONSOLE_BUFFER: RefCell<Vec<(i32, String)>> = RefCell::new(Vec::new());
+    /// Pending request from JS to open the built-in PRISM context menu at
+    /// the given (client_x, client_y). Drained by the host once per frame.
+    /// Used to back the `__or_requestPrismMenu(x, y)` shim.
+    static PRISM_MENU_REQUEST: RefCell<Option<(f32, f32)>> = RefCell::new(None);
 }
 
 fn with_state<F, R>(f: F) -> R
@@ -558,6 +562,16 @@ impl JsRuntime {
         dirty
     }
 
+    /// Drain any pending request from JS to open the built-in PRISM
+    /// context menu. Returns the requested coordinates (in client space)
+    /// when JS called `__or_requestPrismMenu(x, y)` since the last poll.
+    /// Used to back the "long-press LMB shows the PRISM menu" and
+    /// "second right-click after `onRightClickF` shows the PRISM menu"
+    /// flows defined in the customization spec.
+    pub fn take_pending_prism_menu(&mut self) -> Option<(f32, f32)> {
+        PRISM_MENU_REQUEST.with(|cell| cell.borrow_mut().take())
+    }
+
     /// Get the document (for layout/paint passes).
     pub fn document(&self) -> std::cell::Ref<'_, PrdDocument> {
         std::cell::Ref::map(self.state.borrow(), |s| &s.document)
@@ -600,12 +614,35 @@ impl JsRuntime {
 
     /// Dispatch a DOM event to JS element listeners (with bubbling).
     /// Calls the JS-side `__or_dispatchDomEvent(nodeId, type)` function.
-    pub fn dispatch_dom_event(&mut self, node_id: u32, event_type: &str) {
+    /// Returns whether `event.preventDefault()` was called by any listener.
+    pub fn dispatch_dom_event(&mut self, node_id: u32, event_type: &str) -> bool {
+        self.dispatch_dom_event_ex(node_id, event_type, None)
+    }
+
+    /// Dispatch a DOM event with optional mouse coordinate / button detail.
+    /// `detail` is a triple `(client_x, client_y, button)` where `button` is
+    /// 0 = left, 1 = middle, 2 = right (matching the DOM `MouseEvent.button`
+    /// numbering). Used by the host's mouse-event bridge so JS handlers can
+    /// see `event.clientX`, `event.clientY`, and `event.button`.
+    /// Returns `true` when any listener called `event.preventDefault()`.
+    pub fn dispatch_dom_event_ex(
+        &mut self,
+        node_id: u32,
+        event_type: &str,
+        detail: Option<(f32, f32, u8)>,
+    ) -> bool {
         self.activate();
-        let code = format!(
-            "if(typeof __or_dispatchDomEvent==='function')__or_dispatchDomEvent({},\"{}\");",
-            node_id, event_type
-        );
+        let code = if let Some((x, y, btn)) = detail {
+            format!(
+                "(typeof __or_dispatchDomEvent==='function')?__or_dispatchDomEvent({},\"{}\",{},{},{}):false;",
+                node_id, event_type, x, y, btn as i32
+            )
+        } else {
+            format!(
+                "(typeof __or_dispatchDomEvent==='function')?__or_dispatchDomEvent({},\"{}\"):false;",
+                node_id, event_type
+            )
+        };
         let hs = std::pin::pin!(v8::HandleScope::new(&mut self.isolate));
         let mut hs = hs.init();
         let ctx = v8::Local::new(&hs, &self.context);
@@ -613,13 +650,20 @@ impl JsRuntime {
         let source = v8::String::new(cs, &code).unwrap();
         let tc = std::pin::pin!(v8::TryCatch::new(cs));
         let tc = tc.init();
+        let mut prevented = false;
         if let Some(script) = v8::Script::compile(&tc, source, None) {
-            if script.run(&tc).is_none() {
-                if let Some(exc) = tc.exception() {
-                    log::error!("[PRISM][JS] Event dispatch error: {}", exc.to_rust_string_lossy(&tc));
+            match script.run(&tc) {
+                Some(val) => {
+                    prevented = val.boolean_value(&tc);
+                }
+                None => {
+                    if let Some(exc) = tc.exception() {
+                        log::error!("[PRISM][JS] Event dispatch error: {}", exc.to_rust_string_lossy(&tc));
+                    }
                 }
             }
         }
+        prevented
     }
 }
 
@@ -700,6 +744,7 @@ fn register_all_functions(scope: &mut v8::PinScope<'_, '_>) {
     set_fn!("__or_setDataValue", cx_set_data_value);
     set_fn!("__or_getViewportSize", cx_get_viewport_size);
     set_fn!("__or_dumpDoc", cx_dump_doc);
+    set_fn!("__or_requestPrismMenu", cx_request_prism_menu);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -755,7 +800,7 @@ fn cx_query_selector(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbac
         let reachable = get_reachable(st);
         for node in &st.document.nodes {
             if !reachable.get(node.id as usize).copied().unwrap_or(false) { continue; }
-            if selector_matches_node(&selector, node, &st.document) {
+            if selector_list_matches(&selector, node, &st.document) {
                 return node.id as i32;
             }
         }
@@ -771,7 +816,7 @@ fn cx_query_selector_all(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCal
         let mut ids = Vec::new();
         for node in &st.document.nodes {
             if !reachable.get(node.id as usize).copied().unwrap_or(false) { continue; }
-            if selector_matches_node(&selector, node, &st.document) {
+            if selector_list_matches(&selector, node, &st.document) {
                 ids.push(node.id.to_string());
             }
         }
@@ -1664,37 +1709,111 @@ fn cx_dump_doc(_scope: &mut v8::PinScope<'_, '_>, _args: v8::FunctionCallbackArg
     });
 }
 
+/// `__or_requestPrismMenu(x, y)` — JS asks the host to open the built-in
+/// PRISM context menu at the given client coordinates on the next frame.
+/// The host drains the request via `JsRuntime::take_pending_prism_menu`.
+fn cx_request_prism_menu(scope: &mut v8::PinScope<'_, '_>, args: v8::FunctionCallbackArguments, _rv: v8::ReturnValue<v8::Value>) {
+    let x = v8_f32(&args, scope, 0);
+    let y = v8_f32(&args, scope, 1);
+    PRISM_MENU_REQUEST.with(|cell| { *cell.borrow_mut() = Some((x, y)); });
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 // Helper functions (engine-agnostic)
 // ═══════════════════════════════════════════════════════════════════════════
 
-fn selector_matches_node(selector: &str, node: &crate::prd::node::PrdNode, _doc: &PrdDocument) -> bool {
-    let sel = selector.trim();
-    if sel.starts_with('#') {
-        return node.html_id.as_deref() == Some(&sel[1..]);
-    }
-    if sel.starts_with('.') {
-        let cls = &sel[1..];
-        return node.classes.iter().any(|c| c == cls);
-    }
-    // Attribute selector: [attr] or [attr="val"] or [attr='val']
-    if sel.starts_with('[') && sel.ends_with(']') {
-        let inner = &sel[1..sel.len() - 1];
-        if let Some(eq_pos) = inner.find('=') {
-            let attr_name = inner[..eq_pos].trim();
-            let raw_val = inner[eq_pos + 1..].trim();
-            let attr_val = raw_val.trim_matches(|c| c == '"' || c == '\'');
-            return node.attributes.get(attr_name).map(|v| v.as_str()) == Some(attr_val);
-        } else {
-            // Presence-only: [attr]
-            let attr_name = inner.trim();
-            return node.attributes.contains_key(attr_name);
+fn selector_list_matches(selector: &str, node: &crate::prd::node::PrdNode, doc: &PrdDocument) -> bool {
+    // Support comma-separated selector lists, e.g. ".a, .b, #c".
+    // Splits naïvely on commas — attribute selectors that legitimately
+    // contain commas inside quoted values are not in use here.
+    for part in selector.split(',') {
+        let p = part.trim();
+        if p.is_empty() { continue; }
+        if selector_matches_node(p, node, doc) {
+            return true;
         }
     }
-    if let Some(tag) = &node.tag {
-        return tag == sel;
-    }
     false
+}
+
+fn selector_matches_node(selector: &str, node: &crate::prd::node::PrdNode, _doc: &PrdDocument) -> bool {
+    // Supports a single compound selector: an optional tag prefix
+    // followed by any number of `#id`, `.class`, `[attr]` and
+    // `[attr="val"]` simple selectors. All parts must match.
+    let sel = selector.trim();
+    if sel.is_empty() { return false; }
+
+    let bytes = sel.as_bytes();
+    let mut i = 0usize;
+
+    // Optional tag prefix (e.g. "tr", "div", "*")
+    let tag_start = i;
+    while i < bytes.len() {
+        let c = bytes[i];
+        if c == b'#' || c == b'.' || c == b'[' { break; }
+        i += 1;
+    }
+    if tag_start < i {
+        let tag = &sel[tag_start..i];
+        if tag != "*" {
+            match &node.tag {
+                Some(t) if t == tag => {}
+                _ => return false,
+            }
+        }
+    }
+
+    // Remaining simple-selector parts.
+    while i < bytes.len() {
+        let c = bytes[i];
+        match c {
+            b'#' => {
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len() && bytes[end] != b'#' && bytes[end] != b'.' && bytes[end] != b'[' {
+                    end += 1;
+                }
+                let id = &sel[start..end];
+                if node.html_id.as_deref() != Some(id) { return false; }
+                i = end;
+            }
+            b'.' => {
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len() && bytes[end] != b'#' && bytes[end] != b'.' && bytes[end] != b'[' {
+                    end += 1;
+                }
+                let cls = &sel[start..end];
+                if !node.classes.iter().any(|c| c == cls) { return false; }
+                i = end;
+            }
+            b'[' => {
+                // Find matching ']'. We do not try to be clever about
+                // brackets inside quoted values — none of our selectors
+                // use them.
+                let start = i + 1;
+                let mut end = start;
+                while end < bytes.len() && bytes[end] != b']' { end += 1; }
+                if end >= bytes.len() { return false; }
+                let inner = &sel[start..end];
+                if let Some(eq_pos) = inner.find('=') {
+                    let attr_name = inner[..eq_pos].trim();
+                    let raw_val = inner[eq_pos + 1..].trim();
+                    let attr_val = raw_val.trim_matches(|c| c == '"' || c == '\'');
+                    if node.attributes.get(attr_name).map(|v| v.as_str()) != Some(attr_val) {
+                        return false;
+                    }
+                } else {
+                    let attr_name = inner.trim();
+                    if !node.attributes.contains_key(attr_name) { return false; }
+                }
+                i = end + 1;
+            }
+            _ => return false, // unsupported syntax
+        }
+    }
+
+    true
 }
 
 fn collect_text_content(doc: &PrdDocument, node_id: NodeId) -> String {
@@ -2205,6 +2324,14 @@ fn restyle_node(st: &mut SharedState, node_id: NodeId) {
         .unwrap_or_default();
 
     if let Some(node) = st.document.get_node_mut(node_id) {
+        // Preserve the rasterized background for Image nodes (compiled SVGs).
+        let is_image_node = matches!(node.kind, crate::prd::node::NodeKind::Image { .. });
+        let preserved_background = if is_image_node {
+            Some(node.style.background.clone())
+        } else {
+            None
+        };
+
         // Reset to defaults
         node.style = ComputedStyle::default();
         node.hover_style.clear();
@@ -2266,6 +2393,12 @@ fn restyle_node(st: &mut SharedState, node_id: NodeId) {
                 }
             }
         }
+
+        // Restore the Image background — CSS rules cannot express asset indices
+        // so the rasterized SVG background must survive the restyle.
+        if let Some(bg) = preserved_background {
+            node.style.background = bg;
+        }
     }
 
     // Recursively restyle descendants so that descendant selectors
@@ -2311,6 +2444,16 @@ fn restyle_subtree(st: &mut SharedState, node_id: NodeId) {
         .unwrap_or_default();
 
     if let Some(node) = st.document.get_node_mut(node_id) {
+        // Preserve the rasterized background for Image nodes (compiled SVGs).
+        // restyle resets style to defaults which would clear Background::Image,
+        // making SVG icons invisible whenever a parent class changes.
+        let is_image_node = matches!(node.kind, crate::prd::node::NodeKind::Image { .. });
+        let preserved_background = if is_image_node {
+            Some(node.style.background.clone())
+        } else {
+            None
+        };
+
         node.style = ComputedStyle::default();
         node.hover_style.clear();
         node.active_style.clear();
@@ -2366,6 +2509,12 @@ fn restyle_subtree(st: &mut SharedState, node_id: NodeId) {
                     apply_property(&mut node.style, prop.trim(), val.trim(), &st.css_variables);
                 }
             }
+        }
+
+        // Restore the Image background — CSS rules cannot express asset indices
+        // so the rasterized SVG background must survive the restyle.
+        if let Some(bg) = preserved_background {
+            node.style.background = bg;
         }
     }
 
@@ -3054,6 +3203,11 @@ function removeEventListener(type, fn) {
 }
 window.addEventListener = addEventListener;
 window.removeEventListener = removeEventListener;
+// Document-level listeners are simply aliased onto the same global
+// listener table — the DOM dispatcher fires them after element-bubble
+// completes (see `__or_dispatchDomEvent`).
+document.addEventListener = addEventListener;
+document.removeEventListener = removeEventListener;
 
 // ─── console ───
 var console = {
@@ -3168,15 +3322,39 @@ try {
 
 // ─── DOM event dispatch (called from Rust) ───
 // Walk from the target element up through ancestors (bubble phase).
-function __or_dispatchDomEvent(nodeId, eventType) {
+// Optional coordinate / button data is supplied for mouse events so that
+// JS handlers can read `event.clientX`, `event.clientY`, `event.button`.
+function __or_dispatchDomEvent(nodeId, eventType, clientX, clientY, button) {
     var nid = nodeId;
+    var hasCoords = (typeof clientX === 'number' && typeof clientY === 'number');
+    var prevented = false;
+    var stopped = false;
+    function makeEvent(targetNid, currentEl) {
+        var evt = {
+            type: eventType,
+            target: __or_wrapElement(nodeId),
+            currentTarget: currentEl,
+            defaultPrevented: false,
+            stopPropagation: function(){ stopped = true; nid = -1; },
+            preventDefault: function(){ this.defaultPrevented = true; prevented = true; }
+        };
+        if (hasCoords) {
+            evt.clientX = clientX;
+            evt.clientY = clientY;
+            evt.pageX = clientX;
+            evt.pageY = clientY;
+            evt.button = (typeof button === 'number') ? button : 0;
+            evt.buttons = (eventType === 'mousedown') ? (1 << evt.button) : 0;
+        }
+        return evt;
+    }
     while (nid >= 0) {
         var el = __or_elementCache[nid];
         if (el && el._eventListeners && el._eventListeners[eventType]) {
             var fns = el._eventListeners[eventType].slice();
-            var evt = { type: eventType, target: __or_wrapElement(nodeId), currentTarget: el, stopPropagation: function(){nid=-1;}, preventDefault: function(){} };
+            var evt = makeEvent(nodeId, el);
             for (var i = 0; i < fns.length; i++) {
-                try { fns[i](evt); } catch(e) { console.error(eventType + ' handler error:', e); }
+                try { fns[i].call(el, evt); } catch(e) { console.error(eventType + ' handler error:', e); }
             }
             if (nid < 0) break; // stopPropagation was called
         }
@@ -3185,6 +3363,16 @@ function __or_dispatchDomEvent(nodeId, eventType) {
         nid = (typeof parentStr === 'number') ? parentStr : parseInt(parentStr);
         if (isNaN(nid)) break;
     }
+    // Fire document/window-level listeners after the bubble phase
+    // (unless an element listener stopped propagation).
+    if (!stopped && typeof __or_globalListeners !== 'undefined' && __or_globalListeners[eventType]) {
+        var gfns = __or_globalListeners[eventType].slice();
+        var gevt = makeEvent(nodeId, document);
+        for (var gi = 0; gi < gfns.length; gi++) {
+            try { gfns[gi].call(document, gevt); } catch(e) { console.error(eventType + ' global handler error:', e); }
+        }
+    }
+    return prevented;
 }
 
 // ─── PRISM Toast system ───

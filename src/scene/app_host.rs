@@ -202,6 +202,12 @@ pub struct AppHost {
     /// Extra JavaScript executed once per page load, after the page's own
     /// scripts. Populated by [`AppHost::inject_js`].
     injected_js: Vec<String>,
+    /// Implicit pointer capture: the node that received the most recent
+    /// `mousedown` (any button). Subsequent `mousemove` and `mouseup`
+    /// events are routed here regardless of what is hovered now, so JS
+    /// drag handlers see a continuous stream of events even when the
+    /// cursor leaves the original element. Cleared on `mouseup`.
+    js_pointer_capture: Option<NodeId>,
 }
 
 /// A compiled custom title bar scene.
@@ -302,6 +308,7 @@ impl AppHost {
             environment: env,
             injected_css: Vec::new(),
             injected_js: Vec::new(),
+            js_pointer_capture: None,
         }
     }
 
@@ -740,16 +747,26 @@ impl AppHost {
             }
         }
 
-        // Intercept right-clicks → show context menu.
-        if let RawInputEvent::MouseDown { button: CxMouseButton::Right, .. } = &event {
-            let (x, y) = if let Some(page) = self.active_page.as_ref()
+        // Intercept right-clicks → optionally show the built-in PRISM
+        // context menu. We first give JS a chance to handle the event by
+        // dispatching `contextmenu` to the hovered node. If any listener
+        // calls `event.preventDefault()` (which is also what the
+        // `onRightClick` / `onRightClickF` shims do), we suppress the
+        // built-in menu — the JS handler is fully responsible for the
+        // user-facing response. JS can still ask the host to open the
+        // built-in menu later via `__or_requestPrismMenu(x, y)`.
+        if let RawInputEvent::MouseDown { button: CxMouseButton::Right, x, y } = &event {
+            let (cx, cy) = (*x, *y);
+            let hovered = self.active_page.as_ref()
                 .and_then(|id| self.pages.get(id))
-            {
-                page.input_handler.mouse_pos
-            } else {
-                (0.0, 0.0)
-            };
-            self.devtools.context_menu.show(x, y, viewport_width, viewport_height);
+                .and_then(|p| p.input_handler.hovered);
+            let mut prevented = false;
+            if let (Some(node), Some(ref mut js_rt)) = (hovered, self.js_runtime.as_mut()) {
+                prevented = js_rt.dispatch_dom_event_ex(node, "contextmenu", Some((cx, cy, 2)));
+            }
+            if !prevented {
+                self.devtools.context_menu.show(cx, cy, viewport_width, viewport_height);
+            }
             return;
         }
 
@@ -825,6 +842,30 @@ impl AppHost {
         let is_mouse_move = matches!(event, RawInputEvent::MouseMove { .. });
         let is_mouse_down = matches!(event, RawInputEvent::MouseDown { .. });
         let is_mouse_up = matches!(event, RawInputEvent::MouseUp { .. });
+
+        // Snapshot coordinates / button so we can forward a matching DOM
+        // event to JS after the input handler has updated `hovered`.
+        let mouse_detail: Option<(f32, f32, u8, &'static str)> = match &event {
+            RawInputEvent::MouseMove { x, y } => Some((*x, *y, 0, "mousemove")),
+            RawInputEvent::MouseDown { x, y, button } => {
+                let b = match button {
+                    crate::scene::input_handler::MouseButton::Left   => 0,
+                    crate::scene::input_handler::MouseButton::Middle => 1,
+                    crate::scene::input_handler::MouseButton::Right  => 2,
+                };
+                Some((*x, *y, b, "mousedown"))
+            }
+            RawInputEvent::MouseUp { x, y, button } => {
+                let b = match button {
+                    crate::scene::input_handler::MouseButton::Left   => 0,
+                    crate::scene::input_handler::MouseButton::Middle => 1,
+                    crate::scene::input_handler::MouseButton::Right  => 2,
+                };
+                Some((*x, *y, b, "mouseup"))
+            }
+            _ => None,
+        };
+
         if let Some(ref page_id) = self.active_page.clone() {
             if let Some(page) = self.pages.get_mut(page_id) {
                 let prev_hovered = page.input_handler.hovered;
@@ -899,6 +940,32 @@ impl AppHost {
                         }
                     }
                     page.scene.invalidate_layout();
+                }
+
+                // Forward raw mouse events (mousedown / mouseup / mousemove)
+                // to JS. We honour an implicit pointer capture: while a
+                // button is held (set on mousedown, cleared on mouseup) we
+                // route to the original target so JS drag handlers see a
+                // continuous stream even when the cursor leaves the node.
+                if let Some((x, y, btn, etype)) = mouse_detail {
+                    let target = match etype {
+                        "mousedown" => {
+                            let t = page.input_handler.hovered;
+                            self.js_pointer_capture = t;
+                            t
+                        }
+                        "mouseup" => {
+                            let t = self.js_pointer_capture.or(page.input_handler.hovered);
+                            self.js_pointer_capture = None;
+                            t
+                        }
+                        _ /* mousemove */ => {
+                            self.js_pointer_capture.or(page.input_handler.hovered)
+                        }
+                    };
+                    if let (Some(node), Some(ref mut js_rt)) = (target, self.js_runtime.as_mut()) {
+                        js_rt.dispatch_dom_event_ex(node, etype, Some((x, y, btn)));
+                    }
                 }
 
                 // If hover target changed and any involved node has hover_style,
@@ -1450,6 +1517,18 @@ impl AppHost {
     /// Consumers can use this to clip scene text behind the context menu.
     pub fn context_menu_rect(&self) -> Option<(f32, f32, f32, f32)> {
         self.devtools.context_menu.overlay_rect()
+    }
+
+    /// Drain any pending request from JS to open the built-in PRISM
+    /// context menu (e.g. fired by the `onRightClickF` shim's second
+    /// click, or by the LMB long-press handler) and open it at the
+    /// requested coordinates.
+    pub fn process_pending_js_requests(&mut self, viewport_width: f32, viewport_height: f32) {
+        if let Some(ref mut js_rt) = self.js_runtime {
+            if let Some((x, y)) = js_rt.take_pending_prism_menu() {
+                self.devtools.context_menu.show(x, y, viewport_width, viewport_height);
+            }
+        }
     }
 
     /// GPU instances for the context menu overlay (rendered in a separate layer).

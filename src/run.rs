@@ -60,6 +60,11 @@ struct HostedApp {
     last_frame: Instant,
     cursor_pos: (f32, f32),
     current_modifiers: winit::keyboard::ModifiersState,
+    /// Cached cursor icon last applied to the OS window. We only call
+    /// `set_cursor` when it changes, so the OS can manage non-client-area
+    /// cursors (e.g. resize cursors at the window border) without us
+    /// stomping them every frame.
+    last_applied_cursor: Option<CursorIcon>,
 }
 
 /// Frameless popup that hosts the user-supplied tray menu HTML in its own
@@ -96,6 +101,7 @@ impl HostedApp {
             last_frame: Instant::now(),
             cursor_pos: (0.0, 0.0),
             current_modifiers: winit::keyboard::ModifiersState::empty(),
+            last_applied_cursor: None,
         }
     }
 
@@ -135,6 +141,10 @@ impl HostedApp {
             let vw = ctx.size.0 as f32 / scale;
             let vh = ctx.size.1 as f32 / scale;
             let events = self.host.tick(vw, vh, dt, &mut renderer.font_system, scale);
+            // Drain any host-action requests JS made this frame (e.g. the
+            // long-press handler asking us to open the built-in PRISM
+            // context menu).
+            self.host.process_pending_js_requests(vw, vh);
             (vw, vh, scale, events)
         };
 
@@ -162,6 +172,14 @@ impl HostedApp {
                 AppEvent::ShowCustomTrayMenu { x, y } => {
                     self.show_tray_menu(event_loop, x, y);
                 }
+                AppEvent::PageReloaded(_) => {
+                    let (w, h) = self
+                        .gpu_ctx
+                        .as_ref()
+                        .map(|c| c.size)
+                        .unwrap_or((self.opts.width, self.opts.height));
+                    self.host.init_js_for_active_page(w, h);
+                }
                 _ => {}
             }
         }
@@ -176,18 +194,28 @@ impl HostedApp {
             }
         }
 
-        // Apply CSS cursor to the OS window.
+        // Apply CSS cursor to the OS window only when it changes. Calling
+        // `set_cursor` every frame on Windows continually overrides the
+        // cursor the OS sets while hovering a non-client-area edge, which
+        // is what produces the OS-rendered resize cursors at the window
+        // border. By caching the last applied cursor we leave the OS in
+        // charge of non-client cursors and only update when our own
+        // computed cursor actually transitions.
         if let Some(ref w) = self.window {
-            let winit_cursor = match self.host.current_cursor() {
-                CursorIcon::Pointer    => winit::window::CursorIcon::Pointer,
-                CursorIcon::Text       => winit::window::CursorIcon::Text,
-                CursorIcon::Move       => winit::window::CursorIcon::Move,
-                CursorIcon::NotAllowed => winit::window::CursorIcon::NotAllowed,
-                CursorIcon::ResizeNS   => winit::window::CursorIcon::NsResize,
-                CursorIcon::ResizeEW   => winit::window::CursorIcon::EwResize,
-                CursorIcon::Default    => winit::window::CursorIcon::Default,
-            };
-            w.set_cursor(winit::window::Cursor::Icon(winit_cursor));
+            let cur = self.host.current_cursor();
+            if self.last_applied_cursor != Some(cur) {
+                let winit_cursor = match cur {
+                    CursorIcon::Pointer    => winit::window::CursorIcon::Pointer,
+                    CursorIcon::Text       => winit::window::CursorIcon::Text,
+                    CursorIcon::Move       => winit::window::CursorIcon::Move,
+                    CursorIcon::NotAllowed => winit::window::CursorIcon::NotAllowed,
+                    CursorIcon::ResizeNS   => winit::window::CursorIcon::NsResize,
+                    CursorIcon::ResizeEW   => winit::window::CursorIcon::EwResize,
+                    CursorIcon::Default    => winit::window::CursorIcon::Default,
+                };
+                w.set_cursor(winit::window::Cursor::Icon(winit_cursor));
+                self.last_applied_cursor = Some(cur);
+            }
         }
 
         let (ctx, renderer) = match (self.gpu_ctx.as_ref(), self.renderer.as_mut()) {
@@ -945,6 +973,11 @@ impl ApplicationHandler for HostedApp {
                     x: self.cursor_pos.0,
                     y: self.cursor_pos.1,
                 });
+            }
+            WindowEvent::CursorEntered { .. } => {
+                // Force-reapply our cursor on entry so we don't leave the OS
+                // showing a stale cursor from outside the window.
+                self.last_applied_cursor = None;
             }
             WindowEvent::MouseInput { state, button, .. } => {
                 let btn = match button {

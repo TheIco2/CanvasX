@@ -43,6 +43,17 @@ const HIGHLIGHT_BORDER: Color = Color { r: 0.35, g: 0.55, b: 0.95, a: 0.6 };
 const RESIZE_HANDLE: Color = Color { r: 0.3, g: 0.3, b: 0.35, a: 0.8 };
 const FILTER_BAR_BG: Color = Color { r: 0.09, g: 0.09, b: 0.11, a: 1.0 };
 
+/// Public re-export so other devtools modules (e.g. `console`) can build
+/// rectangle instances without duplicating the conversion logic.
+pub fn make_rect_instance_pub(
+    x: f32, y: f32, w: f32, h: f32,
+    bg: Color,
+    border: Option<Color>,
+    radius: f32,
+) -> UiInstance {
+    make_rect_instance(x, y, w, h, bg, border, radius)
+}
+
 fn make_rect_instance(
     x: f32, y: f32, w: f32, h: f32,
     bg: Color,
@@ -174,6 +185,11 @@ pub fn paint_panel(
             let scroll_area_y = content_y + super::console::CONSOLE_FILTER_BAR_HEIGHT;
             let scroll_area_h = content_h - super::console::CONSOLE_FILTER_BAR_HEIGHT;
             paint_scrollbar(out, viewport_width, scroll_area_y, scroll_area_h, total, devtools.console_scroll);
+
+            // Filter pills + per-row level tints
+            super::console::paint_rects_console(
+                out, &devtools.console, content_y, viewport_width, content_h, devtools.console_scroll,
+            );
         }
         DevToolsTab::Elements => {
             // Delegate the entire panel content (tree, sidebar, breadcrumb,
