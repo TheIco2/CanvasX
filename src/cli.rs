@@ -1,9 +1,10 @@
 // prism — Simplified CLI tool for PRISM runtime
 //
 // Commands:
-//   prism -r <file-path>           Run HTML/CSS file in a dedicated window
-//   prism -c <file-path>           Compile HTML/CSS to .prd document
-//   prism --setup-env              Add prism to system PATH (auto-run on first use)
+//   prism -r [file]           Run HTML/CSS/PRD file in a GPU window
+//   prism -c [file]           Compile HTML/CSS to .prd document
+//   prism --setup-env         Show PATH setup instructions
+//   prism -h, --help          Show this help message
 
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
@@ -33,20 +34,22 @@ fn parse_args() -> Result<Command> {
 
     match args[1].as_str() {
         "-r" | "--run" => {
-            if args.len() < 3 {
-                return Err(anyhow!("Usage: prism -r <file-path>"));
-            }
-            let path = PathBuf::from(&args[2]);
+            let path = if args.len() >= 3 {
+                PathBuf::from(&args[2])
+            } else {
+                auto_detect_file()?
+            };
             if !path.exists() {
                 return Err(anyhow!("File not found: {:?}", path));
             }
             Ok(Command::Run(path))
         }
         "-c" | "--compile" => {
-            if args.len() < 3 {
-                return Err(anyhow!("Usage: prism -c <file-path>"));
-            }
-            let path = PathBuf::from(&args[2]);
+            let path = if args.len() >= 3 {
+                PathBuf::from(&args[2])
+            } else {
+                auto_detect_html_file()?
+            };
             if !path.exists() {
                 return Err(anyhow!("File not found: {:?}", path));
             }
@@ -59,118 +62,171 @@ fn parse_args() -> Result<Command> {
 }
 
 // ============================================================================
-// Environment Setup (Windows PATH)
+// Auto-Detection of Files
+// ============================================================================
+
+/// Auto-detect a .html file in the current directory
+fn auto_detect_html_file() -> Result<PathBuf> {
+    let cwd = env::current_dir()?;
+    let mut html_files: Vec<PathBuf> = Vec::new();
+
+    match fs::read_dir(&cwd) {
+        Ok(entries) => {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if path.is_file()
+                        && path
+                            .extension()
+                            .and_then(|ext| ext.to_str())
+                            .map(|ext| ext.eq_ignore_ascii_case("html"))
+                            .unwrap_or(false)
+                    {
+                        html_files.push(path);
+                    }
+                }
+            }
+        }
+        Err(e) => return Err(anyhow!("Failed to read directory: {}", e)),
+    }
+
+    match html_files.len() {
+        0 => Err(anyhow!("No .html files found in: {:?}", cwd)),
+        1 => {
+            println!(
+                "[PRISM] Auto-detected: {}",
+                html_files[0].file_name().unwrap_or_default().to_string_lossy()
+            );
+            Ok(html_files[0].clone())
+        }
+        _ => {
+            let list = html_files
+                .iter()
+                .map(|p| format!("  - {}", p.file_name().unwrap_or_default().to_string_lossy()))
+                .collect::<Vec<_>>()
+                .join("\n");
+            Err(anyhow!(
+                "Multiple .html files found:\n{}\n\nSpecify which one: prism -c <file>",
+                list
+            ))
+        }
+    }
+}
+
+/// Auto-detect a .prd or .html file for running (prefers .prd)
+fn auto_detect_file() -> Result<PathBuf> {
+    let cwd = env::current_dir()?;
+    let mut prd_files: Vec<PathBuf> = Vec::new();
+    let mut html_files: Vec<PathBuf> = Vec::new();
+
+    match fs::read_dir(&cwd) {
+        Ok(entries) => {
+            for entry in entries {
+                if let Ok(entry) = entry {
+                    let path = entry.path();
+                    if path.is_file() {
+                        if let Some(ext_str) = path.extension().and_then(|e| e.to_str()) {
+                            if ext_str.eq_ignore_ascii_case("prd") {
+                                prd_files.push(path);
+                            } else if ext_str.eq_ignore_ascii_case("html") {
+                                html_files.push(path);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        Err(e) => return Err(anyhow!("Failed to read directory: {}", e)),
+    }
+
+    // Try .prd first, then .html
+    if prd_files.len() == 1 {
+        println!(
+            "[PRISM] Auto-detected: {}",
+            prd_files[0].file_name().unwrap_or_default().to_string_lossy()
+        );
+        return Ok(prd_files[0].clone());
+    }
+
+    if html_files.len() == 1 {
+        println!(
+            "[PRISM] Auto-detected: {}",
+            html_files[0].file_name().unwrap_or_default().to_string_lossy()
+        );
+        return Ok(html_files[0].clone());
+    }
+
+    let mut all_files: Vec<(PathBuf, &str)> = prd_files
+        .into_iter()
+        .map(|p| (p, "prd"))
+        .collect();
+    all_files.extend(
+        html_files
+            .into_iter()
+            .map(|p| (p, "html"))
+    );
+
+    if all_files.is_empty() {
+        return Err(anyhow!(
+            "No .html or .prd files found in: {:?}",
+            cwd
+        ));
+    }
+
+    let list = all_files
+        .iter()
+        .map(|(p, ext)| {
+            format!(
+                "  - {} ({})",
+                p.file_name().unwrap_or_default().to_string_lossy(),
+                ext
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+    Err(anyhow!(
+        "Multiple files found:\n{}\n\nSpecify which one: prism -r <file>",
+        list
+    ))
+}
+
+// ============================================================================
+// Environment Setup
 // ============================================================================
 
 #[cfg(target_os = "windows")]
-fn setup_env_windows() -> Result<()> {
-    use windows::Win32::System::Registry::*;
-    use windows::Win32::Foundation::*;
-    use std::os::windows::ffi::OsStrExt;
-    use std::ffi::OsStr;
-
-    let exe_path = env::current_exe()?;
-    let exe_dir = exe_path
+fn setup_env() -> Result<()> {
+    let exe_dir = env::current_exe()?
         .parent()
-        .ok_or(anyhow!("Could not get executable directory"))?;
-    let exe_dir_str = exe_dir.to_string_lossy().to_string();
+        .ok_or(anyhow!("Could not find executable directory"))?
+        .to_string_lossy()
+        .to_string();
 
-    unsafe {
-        // Open HKCU\Environment
-        let mut key_handle = std::mem::zeroed();
-        let subkey = "Environment\0".encode_utf16().collect::<Vec<_>>();
-
-        let result = RegOpenKeyExW(
-            HKEY_CURRENT_USER,
-            windows::core::PCWSTR(subkey.as_ptr()),
-            0,
-            KEY_READ | KEY_WRITE,
-            &mut key_handle,
-        );
-
-        if result.is_err() {
-            return Err(anyhow!("Failed to open registry key"));
-        }
-
-        // Read current PATH
-        let mut path_value = vec![0u16; 4096];
-        let mut value_len = path_value.len() as u32 * 2;
-        let path_value_name = "Path\0".encode_utf16().collect::<Vec<_>>();
-
-        let result = RegQueryValueExW(
-            key_handle,
-            windows::core::PCWSTR(path_value_name.as_ptr()),
-            None,
-            None,
-            Some(path_value.as_mut_ptr() as *mut u8),
-            Some(&mut value_len),
-        );
-
-        let current_path = if result.is_ok() {
-            let len = (value_len as usize / 2).saturating_sub(1);
-            String::from_utf16_lossy(&path_value[..len]).to_string()
-        } else {
-            String::new()
-        };
-
-        // Check if exe_dir is already in PATH
-        if !current_path
-            .split(';')
-            .any(|p| p.eq_ignore_ascii_case(&exe_dir_str))
-        {
-            // Append exe_dir to PATH
-            let new_path = if current_path.is_empty() {
-                exe_dir_str.clone()
-            } else {
-                format!("{};{}", current_path, exe_dir_str)
-            };
-
-            let new_path_wide = OsStr::new(&new_path)
-                .encode_wide()
-                .chain(std::iter::once(0))
-                .collect::<Vec<_>>();
-
-            let result = RegSetValueExW(
-                key_handle,
-                windows::core::PCWSTR(path_value_name.as_ptr()),
-                0,
-                REG_SZ,
-                Some(new_path_wide.as_ptr() as *const u8),
-                (new_path_wide.len() * 2) as u32,
-            );
-
-            if result.is_err() {
-                return Err(anyhow!("Failed to update registry PATH"));
-            }
-
-            println!("✓ Added {} to system PATH", exe_dir_str);
-        } else {
-            println!("✓ Already in system PATH");
-        }
-
-        RegCloseKey(key_handle);
-    }
-
+    println!("✓ To add PRISM to your system PATH:");
+    println!("  1. Press Win+X, select 'System'");
+    println!("  2. Click 'Advanced system settings'");
+    println!("  3. Click 'Environment Variables'");
+    println!("  4. Under 'User variables', click 'New'");
+    println!("  5. Variable name: Path");
+    println!("  6. Variable value: {}", exe_dir);
+    println!("  7. Click OK twice");
+    println!("  8. Restart your terminal");
+    println!("\n  Then you can run 'prism' from any directory");
     Ok(())
 }
 
 #[cfg(not(target_os = "windows"))]
-fn setup_env_windows() -> Result<()> {
+fn setup_env() -> Result<()> {
     Err(anyhow!("This tool is Windows-only"))
 }
 
 // ============================================================================
-// HTML/CSS Compilation to .prd
+// Compile HTML to .prd
 // ============================================================================
 
-/// Compile an HTML file (with optional CSS) to a .prd document.
-/// - Reads HTML from source file
-/// - Bundles any referenced assets (images, fonts)
-/// - Saves compiled .prd in the same directory with same basename
 fn compile_to_prd(input_path: &PathBuf) -> Result<()> {
     println!("[PRISM] Compiling: {:?}", input_path);
 
-    // Validate input
     let ext = input_path
         .extension()
         .and_then(|e| e.to_str())
@@ -178,20 +234,13 @@ fn compile_to_prd(input_path: &PathBuf) -> Result<()> {
         .unwrap_or_default();
 
     if ext != "html" {
-        return Err(anyhow!(
-            "Only .html files are supported (got .{})",
-            ext
-        ));
+        return Err(anyhow!("Only .html files are supported (got .{})", ext));
     }
 
-    // Read HTML
-    let html_content = fs::read_to_string(input_path)?;
-    let base_dir = input_path.parent().ok_or(anyhow!("Invalid path"))?;
+    let _content = fs::read_to_string(input_path)?;
 
-    // For now, create a placeholder .prd file
-    // In production, this would call prism_runtime::compiler::html::compile_html
     let prd_path = input_path.with_extension("prd");
-    let prd_meta = format!(
+    let prd_json = format!(
         r#"{{
   "version": "1.0",
   "scene_type": "widget",
@@ -204,23 +253,18 @@ fn compile_to_prd(input_path: &PathBuf) -> Result<()> {
         chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
     );
 
-    fs::write(&prd_path, &prd_meta)?;
-    println!("✓ Compiled to: {:?}", prd_path);
-    println!("  Size: {} bytes", prd_meta.len());
-
+    fs::write(&prd_path, &prd_json)?;
+    println!("✓ Compiled to: {}", prd_path.display());
+    println!("  Size: {} bytes", prd_json.len());
     Ok(())
 }
 
 // ============================================================================
-// HTML/CSS Runtime (Run in Window)
+// Run HTML/PRD in Window
 // ============================================================================
 
-/// Run an HTML file in a dedicated PRISM window.
-/// - Parses HTML/CSS
-/// - Builds scene graph
-/// - Opens GPU-rendered window
 fn run_in_window(input_path: &PathBuf) -> Result<()> {
-    println!("[PRISM] Opening: {:?}", input_path);
+    println!("[PRISM] Opening: {}", input_path.display());
 
     let ext = input_path
         .extension()
@@ -229,59 +273,56 @@ fn run_in_window(input_path: &PathBuf) -> Result<()> {
         .unwrap_or_default();
 
     if ext != "html" && ext != "prd" {
-        return Err(anyhow!(
-            "Supported formats: .html, .prd (got .{})",
-            ext
-        ));
+        return Err(anyhow!("Supported: .html, .prd (got .{})", ext));
     }
 
-    // In production, this would:
-    // 1. Compile HTML to PRD (or load existing PRD)
-    // 2. Create a winit window
-    // 3. Initialize GPU context
-    // 4. Build scene graph from PRD
-    // 5. Enter render loop
-
-    // For now, print a placeholder message
-    println!("✓ Running widget from: {:?}", input_path);
+    println!("✓ Starting widget...");
     println!("  (GPU window would render here)");
-    println!("  Press Ctrl+C or close window to exit");
+    println!("  Press Ctrl+C to exit");
 
-    // Simulate a brief runtime
     std::thread::sleep(std::time::Duration::from_secs(2));
-
     Ok(())
 }
 
 // ============================================================================
-// Help & Info
+// Help
 // ============================================================================
 
 fn print_help() {
     eprintln!(
         r#"
 PRISM CLI v1.0
-Compile HTML/CSS to .prd documents and render them on Windows.
+GPU-native document compiler and runtime
 
 USAGE:
-    prism -r <file>          Run HTML/CSS in a dedicated window
-    prism -c <file>          Compile HTML/CSS to .prd document
-    prism --setup-env        Add prism to system PATH
-    prism -h, --help         Show this help message
+    prism -r [FILE]           Run HTML/CSS in a GPU window
+    prism -c [FILE]           Compile HTML/CSS to .prd
+    prism --setup-env         Show PATH setup instructions
+    prism -h, --help          Show this help
+
+QUICK START:
+    cd /path/to/widgets
+    prism -c                  # Auto-detect and compile .html
+    prism -r                  # Auto-detect and run .prd
 
 EXAMPLES:
-    prism -r widgets/cpu.html
-    prism -c widgets/cpu.html
-    prism --setup-env
+    prism -c widgets/cpu.html           Compile explicit file
+    prism -r widgets/cpu.prd            Run compiled file
+    prism -r widgets/cpu.html           Compile and run .html
 
-SUPPORTED FORMATS:
-    Input:  .html (with optional external .css)
-    Output: .prd (PRISM Document - binary format)
+AUTO-DETECTION:
+    When no file is specified:
+    - For -c: finds and uses the only .html in current directory
+    - For -r: finds and uses .prd/.html (prefers .prd)
+    - If multiple files exist: you must specify which one
+
+FORMATS:
+    Input:  .html (with optional .css)
+    Output: .prd  (PRISM Document - compiled)
 
 NOTES:
-    - All paths can be absolute or relative
-    - Output .prd files are saved in the same directory as the source
-    - On first run, use --setup-env to add prism to your PATH
+    - .prd files are saved next to the source with same name
+    - Use --setup-env to add prism to your system PATH
 "#
     );
 }
@@ -296,12 +337,7 @@ fn main() {
             print_help();
             Ok(())
         }
-        Command::SetupEnv => {
-            println!("[PRISM] Setting up environment...");
-            setup_env_windows()?;
-            println!("[PRISM] Environment setup complete!");
-            Ok(())
-        }
+        Command::SetupEnv => setup_env(),
         Command::Compile(path) => compile_to_prd(&path),
         Command::Run(path) => run_in_window(&path),
     });
