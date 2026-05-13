@@ -6,10 +6,6 @@
 //   prism --setup-env         Show PATH setup instructions
 //   prism -h, --help          Show this help message
 
-#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
-
-mod bootstrap;
-
 use std::env;
 use std::fs;
 use std::path::PathBuf;
@@ -334,14 +330,6 @@ NOTES:
 // ============================================================================
 
 fn main() {
-    // Check if we need to bootstrap (install to Program Files)
-    if bootstrap::should_bootstrap() {
-        if let Err(e) = bootstrap::bootstrap() {
-            eprintln!("[ERROR] Bootstrap failed: {}", e);
-            std::process::exit(1);
-        }
-    }
-
     let result = parse_args().and_then(|cmd| match cmd {
         Command::Help => {
             print_help();

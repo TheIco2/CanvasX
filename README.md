@@ -20,9 +20,25 @@
 > The final product/major update will be fully written by me using no AI tools what so ever
 ---
 
+## Installation
+
+Download `prism-installer.exe` and run it to install PRISM to `C:\Program Files\PRISM\`:
+
+```bash
+prism-installer.exe              # Install PRISM
+prism-installer.exe --uninstall  # Uninstall PRISM
+```
+
+The installer will:
+1. ✓ Copy `prism.exe` to Program Files
+2. ✓ Add PRISM to your system PATH
+3. ✓ Create an uninstaller
+
+After installation, you can use `prism` from any terminal.
+
 ## CLI Tool: `prism.exe`
 
-Use the included command-line tool to compile and test widgets:
+Once installed, use the command-line tool to compile and render widgets:
 
 ```bash
 # Compile HTML/CSS to binary .prd format
@@ -35,16 +51,9 @@ prism -r my-widget.prd
 prism -c                          # Finds the only .html
 prism -r                          # Finds the only .prd or .html
 
-# Show setup instructions
-prism --setup-env
+# Show help
+prism --help
 ```
-
-**Auto-Installation:** The first time you run `prism.exe`, it automatically:
-1. Copies itself to `C:\Program Files\PRISM\`
-2. Adds that directory to your PATH
-3. Relaunches with your original command
-
-See [BOOTSTRAP.md](BOOTSTRAP.md) for details on the auto-installation behavior.
 
 ---
 
