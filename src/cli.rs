@@ -235,25 +235,9 @@ fn compile_to_prd(input_path: &PathBuf) -> Result<()> {
         return Err(anyhow!("Only .html files are supported (got .{})", ext));
     }
 
-    let _content = fs::read_to_string(input_path)?;
+    // Use the library's real compiler to generate actual scene graph
+    prism_runtime::compiler::compile_html_file(input_path)?;
 
-    let prd_path = input_path.with_extension("prd");
-    let prd_json = format!(
-        r#"{{
-  "version": "1.0",
-  "scene_type": "widget",
-  "source": "{}",
-  "compiled_at": "{}",
-  "nodes": [],
-  "assets": []
-}}"#,
-        input_path.display(),
-        chrono::Local::now().format("%Y-%m-%d %H:%M:%S")
-    );
-
-    fs::write(&prd_path, &prd_json)?;
-    println!("✓ Compiled to: {}", prd_path.display());
-    println!("  Size: {} bytes", prd_json.len());
     Ok(())
 }
 
@@ -270,15 +254,192 @@ fn run_in_window(input_path: &PathBuf) -> Result<()> {
         .map(|e| e.to_lowercase())
         .unwrap_or_default();
 
-    if ext != "html" && ext != "prd" {
-        return Err(anyhow!("Supported: .html, .prd (got .{})", ext));
+    if ext == "html" {
+        // If .html is provided, compile to .prd first
+        println!("[PRISM] Compiling HTML to .prd...");
+        compile_to_prd(input_path)?;
+        
+        // Now open the generated .prd
+        let prd_path = input_path.with_extension("prd");
+        return render_prd(&prd_path);
     }
 
-    println!("✓ Starting widget...");
-    println!("  (GPU window would render here)");
-    println!("  Press Ctrl+C to exit");
+    if ext == "prd" {
+        return render_prd(input_path);
+    }
 
-    std::thread::sleep(std::time::Duration::from_secs(2));
+    Err(anyhow!("Supported: .html, .prd (got .{})", ext))
+}
+
+/// Extract viewport dimensions from HTML meta tag
+fn extract_viewport_size(html_path: &PathBuf) -> Option<(u32, u32)> {
+    if !html_path.exists() {
+        return None;
+    }
+    
+    let html = fs::read_to_string(html_path).ok()?;
+    
+    // Look for: <meta name="prism:viewport" content="WIDTHxHEIGHT">
+    let re = regex::Regex::new(r#"<meta\s+name="prism:viewport"\s+content="(\d+)x(\d+)""#).ok()?;
+    if let Some(caps) = re.captures(&html) {
+        if let (Ok(w), Ok(h)) = (
+            caps.get(1)?.as_str().parse::<u32>(),
+            caps.get(2)?.as_str().parse::<u32>(),
+        ) {
+            return Some((w, h));
+        }
+    }
+    
+    None
+}
+
+/// Render a .prd document in a GPU window
+fn render_prd(prd_path: &PathBuf) -> Result<()> {
+    println!("[PRISM] Loading PRD: {}", prd_path.display());
+
+    let prd_data = fs::read(prd_path)?;
+    let doc = prism_runtime::PrdDocument::from_binary(&prd_data)
+        .map_err(|e| anyhow!("Failed to load .prd: {}", e))?;
+    
+    // Try to get custom viewport size from HTML meta tags
+    let (viewport_w, viewport_h) = if let Some(parent) = prd_path.parent() {
+        let stem = prd_path.file_stem().unwrap_or_default();
+        let html_path = parent.join(format!("{}.html", stem.to_string_lossy()));
+        
+        if let Some((w, h)) = extract_viewport_size(&html_path) {
+            (w, h)
+        } else {
+            (doc.viewport_width as u32, doc.viewport_height as u32)
+        }
+    } else {
+        (doc.viewport_width as u32, doc.viewport_height as u32)
+    };
+
+    println!("\n📦 PRD Document Loaded:");
+    println!("  Name: {}", doc.meta.name);
+    println!("  Type: {:?}", doc.meta.scene_type);
+    println!("  Nodes: {}", doc.nodes.len());
+    println!("  Assets: {} items", doc.assets.images.len() + doc.assets.fonts.len());
+    println!("  Viewport: {}x{}", viewport_w, viewport_h);
+    println!("\n→ Opening GPU window...\n");
+
+    // Render using GPU
+    render_document_in_window(&doc, viewport_w, viewport_h)?;
+    
+    println!("\n✓ Widget closed");
+    Ok(())
+}
+
+/// Render a PRD document in a GPU window using wgpu + winit
+fn render_document_in_window(doc: &prism_runtime::PrdDocument, viewport_w: u32, viewport_h: u32) -> Result<()> {
+    use winit::event_loop::EventLoop;
+    use winit::window::WindowAttributes;
+    use winit::dpi::PhysicalSize;
+    use winit::keyboard::{Key, NamedKey};
+    use std::sync::Arc;
+
+    // Create event loop
+    let event_loop = EventLoop::new()?;
+    
+    // Create window with custom viewport size
+    let window = Arc::new(
+        event_loop.create_window(
+            WindowAttributes::default()
+                .with_title(&doc.meta.name)
+                .with_inner_size(PhysicalSize::new(viewport_w, viewport_h))
+        )?
+    );
+
+    // Create GPU context
+    let gpu_ctx = pollster::block_on(prism_runtime::GpuContext::new(window.clone()))?;
+    let mut renderer = prism_runtime::gpu::renderer::Renderer::new(&gpu_ctx)?;
+    
+    // Create scene graph from document
+    let mut scene = prism_runtime::SceneGraph::new(doc.clone());
+
+    println!("✓ GPU context initialized (backend: {:?})", gpu_ctx.backend);
+    println!("✓ Scene graph created with {} nodes", doc.nodes.len());
+    println!();
+    println!("Press ESC or close the window to exit...");
+    println!();
+
+    let mut running = true;
+    let mut last_frame_time = std::time::Instant::now();
+
+    event_loop.run(move |event, target| {
+        use winit::event::{Event, WindowEvent};
+
+        match event {
+            Event::WindowEvent { window_id, event } if window_id == window.id() => {
+                match event {
+                    WindowEvent::CloseRequested => {
+                        running = false;
+                        target.exit();
+                    }
+                    WindowEvent::KeyboardInput { event, .. } => {
+                        if event.logical_key == Key::Named(NamedKey::Escape) {
+                            running = false;
+                            target.exit();
+                        }
+                    }
+                    WindowEvent::RedrawRequested => {
+                        if !running {
+                            return;
+                        }
+
+                        // Calculate delta time
+                        let now = std::time::Instant::now();
+                        let dt = (now - last_frame_time).as_secs_f32();
+                        last_frame_time = now;
+
+                        // Tick scene (layout, animate, paint) using desired viewport size
+                        scene.tick(
+                            viewport_w as f32,
+                            viewport_h as f32,
+                            dt,
+                            &mut renderer.font_system,
+                            window.scale_factor() as f32,
+                        );
+
+                        // Get instances and text areas
+                        let instances = &scene.cached_instances;
+                        let text_areas = scene.text_areas();
+                        let clear_color = prism_runtime::prd::value::Color::BLACK;
+
+                        // Render
+                        match renderer.render(&gpu_ctx, instances, text_areas, clear_color) {
+                            Ok(_) => {},
+                            Err(wgpu::SurfaceError::Outdated) => {
+                                // Window was resized, reconfigure surface
+                                let size = window.inner_size();
+                                gpu_ctx.surface.configure(&gpu_ctx.device, &wgpu::SurfaceConfiguration {
+                                    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+                                    format: gpu_ctx.surface_format,
+                                    width: size.width.max(1),
+                                    height: size.height.max(1),
+                                    present_mode: gpu_ctx.surface_config.present_mode,
+                                    alpha_mode: gpu_ctx.surface_config.alpha_mode,
+                                    desired_maximum_frame_latency: gpu_ctx.surface_config.desired_maximum_frame_latency,
+                                    view_formats: vec![],
+                                });
+                            }
+                            Err(e) => {
+                                eprintln!("GPU render error: {:?}", e);
+                                running = false;
+                                target.exit();
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            Event::AboutToWait => {
+                window.request_redraw();
+            }
+            _ => {}
+        }
+    })?;
+
     Ok(())
 }
 

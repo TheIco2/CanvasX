@@ -1,0 +1,139 @@
+warning: unused `WIN32_ERROR` that must be used
+   --> src\installer.rs:240:17
+    |
+240 |                 RegCloseKey(key_handle);
+    |                 ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_must_use)]` (part of `#[warn(unused)]`) on by default
+help: use `let _ = ...` to ignore the resulting value
+    |
+240 |                 let _ = RegCloseKey(key_handle);
+    |                 +++++++
+
+warning: unused `WIN32_ERROR` that must be used
+   --> src\installer.rs:268:13
+    |
+268 |             RegCloseKey(key_handle);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+268 |             let _ = RegCloseKey(key_handle);
+    |             +++++++
+
+warning: unused `WIN32_ERROR` that must be used
+   --> src\installer.rs:365:13
+    |
+365 |             RegCloseKey(key_handle);
+    |             ^^^^^^^^^^^^^^^^^^^^^^^
+    |
+help: use `let _ = ...` to ignore the resulting value
+    |
+365 |             let _ = RegCloseKey(key_handle);
+    |             +++++++
+
+   Compiling prism-runtime v0.1.0 (D:\DevProjects\OpenProject\PRISM)
+warning: `prism-runtime` (bin "prism-installer") generated 3 warnings
+warning: unused import: `winit::keyboard::KeyCode`
+   --> src\cli.rs:335:13
+    |
+335 |         use winit::keyboard::KeyCode;
+    |             ^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: use of deprecated method `winit::event_loop::EventLoop::<T>::create_window`: use `ActiveEventLoop::create_window` instead
+   --> src\cli.rs:308:20
+    |
+308 |         event_loop.create_window(
+    |                    ^^^^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+error[E0308]: mismatched types
+   --> src\cli.rs:319:69
+    |
+319 |     let gpu_ctx = pollster::block_on(prism_runtime::GpuContext::new(&window))?;
+    |                                      ------------------------------ ^^^^^^^ expected `Arc<Window>`, found `&Arc<Window>`
+    |                                      |
+    |                                      arguments to this function are incorrect
+    |
+    = note: expected struct `Arc<_>`
+            found reference `&Arc<_>`
+note: associated function defined here
+   --> D:\DevProjects\OpenProject\PRISM\src\gpu\context.rs:26:18
+    |
+ 26 |     pub async fn new(window: Arc<winit::window::Window>) -> Result<Self> {
+    |                  ^^^
+help: consider removing the borrow
+    |
+319 -     let gpu_ctx = pollster::block_on(prism_runtime::GpuContext::new(&window))?;
+319 +     let gpu_ctx = pollster::block_on(prism_runtime::GpuContext::new(window))?;
+    |
+
+error[E0609]: no field `adapter_info` on type `GpuContext`
+   --> src\cli.rs:325:67
+    |
+325 |     println!("Γ£ô GPU context initialized (backend: {:?})", gpu_ctx.adapter_info.backend);
+    |                                                                   ^^^^^^^^^^^^ unknown field
+    |
+    = note: available fields are: `instance`, `adapter`, `device`, `queue`, `surface` ... and 4 others
+
+warning: use of deprecated method `winit::event_loop::EventLoop::<T>::run`: use `EventLoop::run_app` instead
+   --> src\cli.rs:333:16
+    |
+333 |     event_loop.run(move |event, target| {
+    |                ^^^
+
+error[E0599]: no method named `update_layout` found for struct `SceneGraph` in the current scope
+   --> src\cli.rs:356:31
+    |
+356 |                         scene.update_layout();
+    |                               ^^^^^^^^^^^^^
+    |
+help: there is a method `update_data` with a similar name, but with different arguments
+   --> D:\DevProjects\OpenProject\PRISM\src\scene\graph.rs:157:5
+    |
+157 |     pub fn update_data(&mut self, key: String, value: String) {
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error[E0599]: no method named `paint` found for struct `SceneGraph` in the current scope
+   --> src\cli.rs:357:31
+    |
+357 |                         scene.paint();
+    |                               ^^^^^ method not found in `SceneGraph`
+
+error[E0599]: no method named `get_cached_instances` found for struct `SceneGraph` in the current scope
+   --> src\cli.rs:360:47
+    |
+360 |                         let instances = scene.get_cached_instances();
+    |                                               ^^^^^^^^^^^^^^^^^^^^ method not found in `SceneGraph`
+
+error[E0063]: missing field `depth_slice` in initializer of `wgpu::RenderPassColorAttachment<'_>`
+   --> src\cli.rs:373:67
+    |
+373 | ...                   color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+    |                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `depth_slice`
+
+error[E0063]: missing field `multiview_mask` in initializer of `wgpu::RenderPassDescriptor<'_>`
+   --> src\cli.rs:371:79
+    |
+371 | ...                   let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+    |                                                                 ^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `multiview_mask`
+
+error[E0599]: no method named `render_instances` found for struct `Renderer` in the current scope
+   --> src\cli.rs:392:46
+    |
+392 | ...                   renderer.render_instances(&mut pass, instances)?;
+    |                                ^^^^^^^^^^^^^^^^ method not found in `Renderer`
+
+error[E0063]: missing field `desired_maximum_frame_latency` in initializer of `wgpu::wgpu_types::SurfaceConfiguration<Vec<TextureFormat>>`
+   --> src\cli.rs:401:77
+    |
+401 | ...                   gpu_ctx.surface.configure(&gpu_ctx.device, &wgpu::SurfaceConfiguration {
+    |                                                                   ^^^^^^^^^^^^^^^^^^^^^^^^^^ missing `desired_maximum_frame_latency`
+
+Some errors have detailed explanations: E0063, E0308, E0599, E0609.
+For more information about an error, try `rustc --explain E0063`.
+warning: `prism-runtime` (bin "prism") generated 3 warnings
+error: could not compile `prism-runtime` (bin "prism") due to 9 previous errors; 3 warnings emitted
